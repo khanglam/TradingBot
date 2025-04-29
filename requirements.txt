@@ -1,0 +1,16 @@
+tvdatafeed
+pandas
+ta
+flask
+flask-login
+flask-wtf
+bootstrap-flask
+sqlalchemy
+pyotp
+python-telegram-bot
+scikit-learn
+deap
+pytest
+pyyaml
+python-dotenv
+aiohttp

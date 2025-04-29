@@ -1,0 +1,48 @@
+# Example configuration for TradingBot
+tradingview:
+  username: "your_tradingview_username"
+  password: "your_tradingview_password"
+
+trading:
+  pairs:
+    - symbol: "BINANCE:BTCUSDT"
+      type: "crypto"
+    - symbol: "NASDAQ:AAPL"
+      type: "stock"
+  base_currency: "USDT"
+  initial_balance: 10000
+  risk:
+    max_position_size_pct: 5
+    stop_loss_pct: 2
+
+strategy:
+  name: "SampleStrategy"
+  parameters:
+    param1: 10
+    param2: 0.5
+
+ui:
+  host: "127.0.0.1"
+  port: 5000
+
+alerts:
+  email:
+    enabled: false
+    smtp_server: "smtp.example.com"
+    smtp_port: 587
+    username: ""
+    password: ""
+    recipient: ""
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+security:
+  enable_2fa: true
+
+community:
+  enable_sharing: true
+
+database:
+  path: "tradingbot.db"

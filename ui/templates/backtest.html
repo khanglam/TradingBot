@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Backtest & Optimization</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body>
+<div class="container mt-4" style="max-width: 700px;">
+    <h2>Backtest & Optimization</h2>
+    <form method="post" enctype="multipart/form-data">
+        <div class="mb-3">
+            <label for="symbol">Symbol (e.g. BTCUSD, AAPL):</label>
+            <input type="text" class="form-control" name="symbol" id="symbol" value="{{ symbol|default('BTCUSD') }}">
+        </div>
+        <div class="mb-3">
+            <label for="interval">Interval (e.g. 1d, 1h):</label>
+            <input type="text" class="form-control" name="interval" id="interval" value="{{ interval|default('1d') }}">
+        </div>
+        <div class="mb-3">
+            <label for="csv">Or upload CSV (columns: datetime, open, high, low, close, volume):</label>
+            <input type="file" class="form-control" name="csv" id="csv">
+        </div>
+            <label for="strategy_choice">Strategy:</label>
+            <select class="form-control" name="strategy_choice" id="strategy_choice" onchange="toggleFields()">
+                <option value="ma" {% if strategy_choice == 'ma' %}selected{% endif %}>Moving Average Crossover</option>
+                <option value="lorentzian" {% if strategy_choice == 'lorentzian' %}selected{% endif %}>Lorentzian Classification</option>
+            </select>
+        </div>
+        <div id="ma-fields">
+            <div class="mb-3">
+                <label for="fast">Fast MA:</label>
+                <input type="number" class="form-control" name="fast" id="fast" value="{{ fast|default(10) }}">
+            </div>
+            <div class="mb-3">
+                <label for="slow">Slow MA:</label>
+                <input type="number" class="form-control" name="slow" id="slow" value="{{ slow|default(30) }}">
+            </div>
+        </div>
+        <div id="lorentzian-fields">
+            <div class="mb-3">
+                <label for="neighbors_count">Neighbors Count:</label>
+                <input type="number" class="form-control" name="neighbors_count" id="neighbors_count" value="{{ neighbors_count|default(8) }}">
+            </div>
+            <div class="mb-3">
+                <label for="feature_count">Feature Count (2-5):</label>
+                <input type="number" class="form-control" name="feature_count" id="feature_count" min="2" max="5" value="{{ feature_count|default(5) }}">
+            </div>
+            <div class="mb-3">
+                <label for="max_bars_back">Max Bars Back:</label>
+                <input type="number" class="form-control" name="max_bars_back" id="max_bars_back" value="{{ max_bars_back|default(200) }}">
+            </div>
+        </div>
+        <div class="mb-3">
+            <label for="mode">Mode:</label>
+            <select class="form-control" name="mode" id="mode">
+                <option value="backtest" {% if mode == 'backtest' %}selected{% endif %}>Backtest</option>
+                <option value="optimize" {% if mode == 'optimize' %}selected{% endif %}>Optimize</option>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Run</button>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back</a>
+    </form>
+    <script>
+    function toggleFields() {
+        var strat = document.getElementById('strategy_choice').value;
+        document.getElementById('ma-fields').style.display = strat === 'ma' ? '' : 'none';
+        document.getElementById('lorentzian-fields').style.display = strat === 'lorentzian' ? '' : 'none';
+    }
+    window.onload = toggleFields;
+    </script>
+    {% if results %}
+    <div class="mt-4">
+        <h4>Results</h4>
+        <ul>
+            <li>Final Equity: ${{ results.final_equity|round(2) }}</li>
+            <li>Sharpe Ratio: {{ results.sharpe|round(3) }}</li>
+            <li>Max Drawdown: {{ results.max_drawdown|round(3) }}</li>
+            <li>Total Return: {{ (results.total_return * 100)|round(2) }}%</li>
+        </ul>
+        <h5>Trade Log</h5>
+        <table class="table table-sm">
+            <thead><tr><th>Type</th><th>Price</th><th>Qty</th><th>Index</th></tr></thead>
+            <tbody>
+            {% for trade in results.trade_log %}
+            <tr>
+                <td>{{ trade.type }}</td>
+                <td>{{ trade.price }}</td>
+                <td>{{ trade.qty }}</td>
+                <td>{{ trade.index }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% with messages = get_flashed_messages() %}
+    {% if messages %}
+        <div class="alert alert-info mt-3">{{ messages[0] }}</div>
+    {% endif %}
+    {% endwith %}
+</div>
+</body>
+</html>
