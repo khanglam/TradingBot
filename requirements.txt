@@ -1,0 +1,17 @@
+# Core scientific and data libraries
+numpy
+pandas
+scikit-learn
+matplotlib
+mplfinance
+
+# Technical analysis
+backtesting
+TA-Lib
+# or, if TA-Lib is not used, use ta
+# ta
+
+yfinance
+
+# Project-specific (local import, but list for completeness)
+advanced-ta

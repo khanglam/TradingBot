@@ -1,0 +1,39 @@
+2025-04-29 00:06:41,999 - DEBUG - Entering download()
+2025-04-29 00:06:41,999 - DEBUG - Disabling multithreading because DEBUG logging enabled
+2025-04-29 00:06:42,000 - DEBUG - Using User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36
+2025-04-29 00:06:42,000 - DEBUG -  Entering history()
+2025-04-29 00:06:42,002 - DEBUG - ('CREATE TABLE IF NOT EXISTS "_kv" ("key" VARCHAR(255) NOT NULL PRIMARY KEY, "value" VARCHAR(255)) WITHOUT ROWID', [])
+2025-04-29 00:06:42,002 - DEBUG - ('SELECT "t1"."key", "t1"."value" FROM "_kv" AS "t1" WHERE ("t1"."key" = ?) LIMIT ? OFFSET ?', ['TSLA', 1, 0])
+2025-04-29 00:06:42,114 - DEBUG -   Entering history()
+2025-04-29 00:06:42,114 - DEBUG - TSLA: Yahoo GET parameters: {'range': '5y', 'interval': '1d', 'includePrePost': False, 'events': 'div,splits,capitalGains'}
+2025-04-29 00:06:42,114 - DEBUG -    Entering get()
+2025-04-29 00:06:42,114 - DEBUG -     Entering _make_request()
+2025-04-29 00:06:42,114 - DEBUG - url=https://query2.finance.yahoo.com/v8/finance/chart/TSLA
+2025-04-29 00:06:42,114 - DEBUG - params={'range': '5y', 'interval': '1d', 'includePrePost': False, 'events': 'div,splits,capitalGains'}
+2025-04-29 00:06:42,114 - DEBUG -      Entering _get_cookie_and_crumb()
+2025-04-29 00:06:42,114 - DEBUG - cookie_mode = 'basic'
+2025-04-29 00:06:42,114 - DEBUG -       Entering _get_cookie_and_crumb_basic()
+2025-04-29 00:06:42,115 - DEBUG - ('CREATE TABLE IF NOT EXISTS "_cookieschema" ("strategy" VARCHAR(255) NOT NULL PRIMARY KEY, "fetch_date" DATETIME NOT NULL, "cookie_bytes" BLOB NOT NULL) WITHOUT ROWID', [])
+2025-04-29 00:06:42,116 - DEBUG - ('SELECT "t1"."strategy", "t1"."fetch_date", "t1"."cookie_bytes" FROM "_cookieschema" AS "t1" WHERE ("t1"."strategy" = ?) LIMIT ? OFFSET ?', ['basic', 1, 0])
+2025-04-29 00:06:42,116 - DEBUG - loaded persistent cookie
+2025-04-29 00:06:42,116 - DEBUG - reusing cookie
+2025-04-29 00:06:42,118 - DEBUG - Starting new HTTPS connection (1): query1.finance.yahoo.com:443
+2025-04-29 00:06:42,240 - DEBUG - https://query1.finance.yahoo.com:443 "GET /v1/test/getcrumb HTTP/1.1" 200 11
+2025-04-29 00:06:42,240 - DEBUG - crumb = 'zFeDipxSDKu'
+2025-04-29 00:06:42,240 - DEBUG -       Exiting _get_cookie_and_crumb_basic()
+2025-04-29 00:06:42,240 - DEBUG -      Exiting _get_cookie_and_crumb()
+2025-04-29 00:06:42,242 - DEBUG - Starting new HTTPS connection (1): query2.finance.yahoo.com:443
+2025-04-29 00:06:42,383 - DEBUG - https://query2.finance.yahoo.com:443 "GET /v8/finance/chart/TSLA?range=5y&interval=1d&includePrePost=False&events=div%2Csplits%2CcapitalGains&crumb=zFeDipxSDKu HTTP/1.1" 200 None
+2025-04-29 00:06:42,417 - DEBUG - response code=200
+2025-04-29 00:06:42,417 - DEBUG -     Exiting _make_request()
+2025-04-29 00:06:42,417 - DEBUG -    Exiting get()
+2025-04-29 00:06:42,422 - DEBUG - TSLA: yfinance received OHLC data: 2020-04-29 13:30:00 -> 2025-04-28 13:30:00
+2025-04-29 00:06:42,427 - DEBUG - TSLA: OHLC after cleaning: 2020-04-29 09:30:00-04:00 -> 2025-04-28 09:30:00-04:00
+2025-04-29 00:06:42,436 - DEBUG - TSLA: OHLC after combining events: 2020-04-29 00:00:00-04:00 -> 2025-04-28 00:00:00-04:00
+2025-04-29 00:06:42,440 - DEBUG - TSLA: yfinance returning OHLC: 2020-04-29 00:00:00-04:00 -> 2025-04-28 00:00:00-04:00
+2025-04-29 00:06:42,441 - DEBUG -   Exiting history()
+2025-04-29 00:06:42,441 - DEBUG -  Exiting history()
+2025-04-29 00:06:42,443 - DEBUG - Exiting download()
+2025-04-29 00:06:42,444 - DEBUG - Initializing LorentzianClassification
+2025-04-29 00:06:42,444 - DEBUG - Initializing data features in LorentzianClassification
+2025-04-29 00:06:42,445 - ERROR - Error during initialization of LorentzianClassification: Column 'columns' not in data
