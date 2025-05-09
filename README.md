@@ -1,5 +1,50 @@
 # TraderBot
-Build a trader bot which looks at sentiment of live news events and trades appropriately. 
+Build a trader bot which looks at sentiment of live news events and trades appropriately.
+
+# Lorentzian Strategy Optimizer
+This project includes an optimized Lorentzian Classification trading strategy with parameter optimization capabilities.
+
+## Lorentzian Strategy Files
+- `lorentzian_strategy.py` - Original Lorentzian strategy implementation
+- `lorentzian_optimized_strategy.py` - Optimized version with improved parameters
+- `basic_optimizer.py` - Parameter optimization tool for the Lorentzian strategy
+
+## How to Run the Optimizer
+
+### 1. Install Required Dependencies
+```bash
+python -m pip install deap tqdm matplotlib
+```
+
+### 2. Run the Parameter Optimizer
+```bash
+python basic_optimizer.py
+```
+This will test different parameter combinations and save the results to the `optimization_results` directory.
+
+### 3. Apply Optimized Parameters
+The optimizer automatically creates an optimized strategy file with the best parameters. You can run it directly:
+```bash
+python lorentzian_optimized_strategy.py
+```
+
+## Parameter Configurations
+The optimizer tests several parameter configurations:
+
+1. **Base Configuration** - The original parameters
+2. **Optimized Configuration** - Best overall balance of returns and risk
+3. **Aggressive Configuration** - Higher returns but more volatility
+4. **Conservative Configuration** - Lower returns but less drawdown
+5. **Fast RSI with Volatility Filter** - Responsive RSI with volatility protection
+6. **All Filters Enabled** - Maximum protection with all filters active
+7. **Trend Following** - Optimized for trending markets
+8. **Range Trading** - Optimized for ranging markets
+
+## Optimization Tips
+- For longer backtests, modify the date range in `basic_optimizer.py`
+- To add custom parameter sets, edit the `parameter_sets` list in `basic_optimizer.py`
+- Set `force_signals: True` to ensure trades occur despite data limitations
+- Use `position_size` to control risk exposure (0.1 = 10% of cash per trade)
 
 ## See it live and in action 📺
 <img src="https://i.imgur.com/FaQH8rz.png"/>

@@ -1,0 +1,109 @@
+from lumibot.strategies.strategy import Strategy
+from lumibot.traders import Trader
+from lumibot.entities import Asset, Order, TradingFee
+from lumibot.credentials import IS_BACKTESTING
+import pandas as pd
+import pytz
+
+# For backtesting using Yahoo finance data for stocks
+if IS_BACKTESTING:
+    from lumibot.backtesting import PolygonDataBacktesting
+
+
+class Strategy_200MA(Strategy):
+    # Added a parameters dict if future customization is needed
+    parameters = {
+        'symbol': 'TSLA'
+    }
+    
+    def initialize(self):
+        # Set the frequency for each trading iteration: daily here
+        self.sleeptime = '1D'
+        
+        # Get the stock symbol to trade from parameters
+        self.symbol = self.parameters.get('symbol', 'TSLA')
+
+    def on_trading_iteration(self):
+        # Retrieve historical daily price data for TSLA.
+        # Request 210 days to ensure at least 200 valid days for SMA calculation
+        bars = self.get_historical_prices(self.symbol, 210, 'day')
+        if bars is None:
+            self.log_message('Historical data unavailable for ' + self.symbol)
+            return
+
+        # Convert the historical data into a DataFrame
+        df = bars.df
+        if df.shape[0] < 200:
+            self.log_message('Not enough historical data to compute 200-day SMA.')
+            return
+
+        # Calculate the 200-day simple moving average (SMA) using closing prices
+        sma200 = df['close'].tail(200).mean()
+        self.log_message(f'Calculated 200-day SMA: {sma200:.2f}')
+
+        # Fetch the latest price of TSLA
+        current_price = self.get_last_price(self.symbol)
+        if current_price is None:
+            self.log_message('Current price data unavailable.')
+            return
+
+        self.log_message(f'Current price of {self.symbol}: {current_price:.2f}')
+
+        # Check current position for TSLA
+        position = self.get_position(self.symbol)
+        current_qty = position.quantity if position is not None else 0
+
+        # New logic for handling trade reversals separately from new entries
+        # When reversing a position, we exit in one iteration and wait for the next to enter
+        
+        # If price is above the SMA, we want to be long
+        if current_price > sma200:
+            if current_qty > 0:
+                self.log_message('Already long. No action required.')
+            elif current_qty < 0:
+                # Currently short: cover short position first and wait for next iteration to go long
+                cover_qty = abs(current_qty)
+                cover_order = self.create_order(self.symbol, cover_qty, Order.OrderSide.BUY)
+                self.submit_order(cover_order)
+                self.log_message(f'Covering short position of {cover_qty} shares. Waiting for next iteration to enter long.')
+            else:
+                # No position: calculate shares to enter new long position
+                available_cash = self.get_cash()
+                shares_to_trade = int(available_cash // current_price)
+                if shares_to_trade <= 0:
+                    self.log_message('Not enough cash to buy. Available cash: ' + str(available_cash))
+                else:
+                    buy_order = self.create_order(self.symbol, shares_to_trade, Order.OrderSide.BUY)
+                    self.submit_order(buy_order)
+                    self.log_message(f'Placing BUY order for {shares_to_trade} shares of {self.symbol}.')
+        else:
+            # Price is below the SMA, so we want to be short
+            if current_qty < 0:
+                self.log_message('Already short. No action required.')
+            elif current_qty > 0:
+                # Currently long: sell the entire position to exit and wait for next iteration to short
+                sell_order = self.create_order(self.symbol, current_qty, Order.OrderSide.SELL)
+                self.submit_order(sell_order)
+                self.log_message(f'Selling long position of {current_qty} shares. Waiting for next iteration to enter short.')
+
+
+if __name__ == '__main__':
+    tzinfo = pytz.timezone('America/Los_Angeles')
+    if IS_BACKTESTING:
+        # Backtesting block: use YahooDataBacktesting with stock data
+        trading_fee = TradingFee(percent_fee=0.001)
+        params = {}  # Parameters can be extended as needed
+        result = Strategy_200MA.backtest(
+            datasource_class=PolygonDataBacktesting,
+            benchmark_asset=Asset('TSLA', Asset.AssetType.STOCK),
+            buy_trading_fees=[trading_fee],
+            sell_trading_fees=[trading_fee],
+            parameters=params,
+            budget=20000
+        )
+    else:
+        # Live trading block
+        trader = Trader()
+        strategy = Strategy_200MA(quote_asset=Asset('USD', Asset.AssetType.FOREX))
+        trader.add_strategy(strategy)
+        trader.run_all()
