@@ -17,7 +17,7 @@ ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL')
 CASH_AT_RISK = os.getenv('CASH_AT_RISK')
 PROBABILITY_THRESHOLD = float(os.getenv('PROBABILITY_THRESHOLD'))
 
-class MLTrader(Strategy):
+class StockTrader(Strategy):
     def initialize(self, symbol="TSLA"):
         self.symbol = symbol
         self.sleeptime = "5M"
@@ -178,17 +178,16 @@ if __name__ == "__main__":
     IS_BACKTESTING=False
     if IS_BACKTESTING:
         symbol = "TSLA"
-        result = MLTrader.backtest(
+        result = StockTrader.backtest(
             PolygonDataBacktesting,
             symbol=symbol,
             benchmark_asset=symbol,
         )
     else:
-        strategy = MLTrader(broker=broker)
+        strategy = StockTrader(broker=broker)
         trader = Trader()
         trader.add_strategy(strategy)
         trader.run_all()
-
 
         # symbol = "TSLA"
         # timestep = 'day'
@@ -196,7 +195,7 @@ if __name__ == "__main__":
         # warm_up_trading_days = 0
         # refresh_cache = False
 
-        # results, strategy = MLTrader.run_backtest(
+        # results, strategy = StockTrader.run_backtest(
         #     datasource_class=PolygonDataBacktesting,
         #     cash_at_risk=float(CASH_AT_RISK),
         #     minutes_before_closing=0,

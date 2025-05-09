@@ -1,65 +1,71 @@
-from lumibot.backtesting import CcxtDataBacktesting
+from lumibot.backtesting import PolygonDataBacktesting
 from lumibot.credentials import IS_BACKTESTING
-from lumibot.strategies import Strategy
+from lumibot.strategies.strategy import Strategy
 from lumibot.traders import Trader
-from lumibot.entities import Order
-from lumibot.brokers import Ccxt
+from lumibot.entities import Asset, Order
+from lumibot.brokers import Ccxt, Alpaca
+from datetime import datetime, timedelta
+from lumibot.example_strategies import ccxt_backtesting_example
 
-from pandas import Timedelta  # For time calculations
 import os  # Import os to load environment variables
 import pandas as pd
 from pandas_ta import atr, rsi  # For technical indicators
-import ccxt  # For crypto exchange access
+from pandas import DataFrame, Timedelta
 
 # Load environment variables
-CASH_AT_RISK = os.getenv('CASH_AT_RISK', '0.02')  # Default to 2% if not set
-EXCHANGE_NAME = os.getenv('EXCHANGE_NAME', 'binance')  # Default to Binance
-API_KEY = os.getenv('CRYPTO_API_KEY', '')  # Your crypto exchange API key
-API_SECRET = os.getenv('CRYPTO_API_SECRET', '')  # Your crypto exchange API secret
-
-# Crypto configuration
-CCXT_CONFIG = {
-    "exchange_id": EXCHANGE_NAME,
-    "apiKey": API_KEY,
-    "secret": API_SECRET,
-    "enableRateLimit": True,
-    "options": {"defaultType": "spot"}  # For spot trading
-}
+CASH_AT_RISK = float(os.getenv('CASH_AT_RISK', 0.25))
+EXCHANGE_ID = os.getenv('EXCHANGE_ID', 'kraken')
 
 class CryptoTrader(Strategy):
-    def initialize(self, symbol="PEPE/USDT"):
-        self.symbol = symbol
-        self.sleeptime = "1M"  # Check every minute for crypto's faster markets
-        self.set_market("crypto")
+    def initialize(self, asset=None, cash_at_risk=0.25, window=21):
+        if asset is None:
+            raise ValueError("You must provide a valid asset pair")
+        # For crypto, market is 24/7
+        self.set_market("24/7")
+        self.sleeptime = "1D"  # Daily trading
+        self.asset = asset
+        self.base, self.quote = asset
+        self.window = window
+        self.symbol = f"{self.base.symbol}/{self.quote.symbol}"
         self.positions_data = {}  # To track entry prices and stop/target levels
-        
-        # Create a direct ccxt instance for additional data if needed
-        self.exchange = ccxt.binance({
-            'apiKey': API_KEY,
-            'secret': API_SECRET,
-            'enableRateLimit': True
-        })
+        self.last_trade = None
+        self.order_quantity = 0.0
+        self.cash_at_risk = cash_at_risk
 
-    def get_sma(self):
-        # Request 210 days to ensure at least 200 valid days for SMA calculation
-        bars = self.get_historical_prices(self.symbol, 210, 'day')
+    def _position_sizing(self):
+        cash = self.get_cash()
+        last_price = self.get_last_price(asset=self.asset, quote=self.quote)
+        if last_price is None:
+            return cash, last_price, 0.0
+        quantity = round(cash * self.cash_at_risk / last_price, 6)  # More precision for crypto
+        return cash, last_price, quantity
+        
+    def _get_historical_prices(self):
+        return self.get_historical_prices(asset=self.asset, length=self.window,
+                                    timestep="day", quote=self.quote).df
+                                    
+    def get_sma(self, length=200):
+        # Request more days to ensure enough valid data for SMA calculation
+        bars = self.get_historical_prices(asset=self.asset, length=length+10, 
+                                         timestep="day", quote=self.quote)
         if bars is None:
-            self.log_message('Historical data unavailable for ' + self.symbol)
-            return
+            self.log_message(f'Historical data unavailable for {self.symbol}')
+            return None
 
         # Convert the historical data into a DataFrame
         df = bars.df
-        if df.shape[0] < 200:
-            self.log_message('Not enough historical data to compute 200-day SMA.')
-            return
+        if df.shape[0] < length:
+            self.log_message(f'Not enough historical data to compute {length}-day SMA.')
+            return None
 
-        # Calculate the 200-day simple moving average (SMA) using closing prices
-        sma200 = df['close'].tail(200).mean()
-        self.log_message(f'Calculated 200-day SMA: {sma200:.2f}')
-        return sma200
+        # Calculate the SMA using closing prices
+        sma = df['close'].tail(length).mean()
+        self.log_message(f'Calculated {length}-day SMA: {sma:.2f}')
+        return sma
 
     def calculate_atr(self, length=14):
-        bars = self.get_historical_prices(self.symbol, length+1, "day")
+        bars = self.get_historical_prices(asset=self.asset, length=length+1, 
+                                         timestep="day", quote=self.quote)
         if bars is None:
             return None
         # Access the DataFrame through the .df attribute
@@ -73,7 +79,8 @@ class CryptoTrader(Strategy):
             return None  # Return None and handle the default in on_trading_iteration
 
     def calculate_rsi(self, length=14):
-        bars = self.get_historical_prices(self.symbol, length+1, "day") 
+        bars = self.get_historical_prices(asset=self.asset, length=length+1, 
+                                         timestep="day", quote=self.quote)
         if bars is None:
             return None
         # Access the DataFrame through the .df attribute
@@ -86,179 +93,220 @@ class CryptoTrader(Strategy):
             self.log_message(f"Error calculating RSI: {str(e)}")
             return 50  # Default to neutral RSI
 
-    def get_crypto_volatility(self, length=14):
-        """Calculate crypto volatility based on ATR/price ratio"""
-        atr_value = self.calculate_atr(length)
-        current_price = self.get_last_price(self.symbol)
-        
-        if atr_value is None or pd.isna(atr_value) or current_price is None:
-            return 0.02  # Default to 2% volatility
+    def _get_bbands(self, history_df=None):
+        """Calculate Bollinger Bands for the asset"""
+        if history_df is None:
+            history_df = self._get_historical_prices()
             
-        # Normalize ATR as percentage of price
-        return atr_value / current_price
-        
-    def get_market_trend(self):
-        """Determine market trend using RSI and price vs SMA"""
-        rsi_value = self.calculate_rsi()
-        sma200 = self.get_sma()
-        current_price = self.get_last_price(self.symbol)
-        
-        if sma200 is None or rsi_value is None:
-            return "neutral"
-            
-        # Bullish conditions
-        if current_price > sma200 and rsi_value > 50:
-            return "bullish"
-        # Bearish conditions
-        elif current_price < sma200 and rsi_value < 50:
-            return "bearish"
-        # Neutral conditions
-        else:
-            return "neutral"
+        num_std_dev = 2.0
+        close = 'close'
+
+        df = DataFrame(index=history_df.index)
+        df[close] = history_df[close]
+        df['bbm'] = df[close].rolling(window=self.window).mean()
+        df['bbu'] = df['bbm'] + df[close].rolling(window=self.window).std() * num_std_dev
+        df['bbl'] = df['bbm'] - df[close].rolling(window=self.window).std() * num_std_dev
+        df['bbb'] = (df['bbu'] - df['bbl']) / df['bbm']
+        df['bbp'] = (df[close] - df['bbl']) / (df['bbu'] - df['bbl'])
+        return df
 
     def on_trading_iteration(self):
-        # Get SMA and check if it's available
-        sma200 = self.get_sma()
-        if sma200 is None:
-            self.log_message("SMA calculation failed, skipping iteration")
+        # During the backtest, we get the current time with self.get_datetime()
+        current_dt = self.get_datetime()
+        self.log_message(f"Trading iteration at {current_dt}")
+        
+        # Get position sizing information
+        cash, last_price, quantity = self._position_sizing()
+        if last_price is None:
+            self.log_message("Could not get last price, skipping iteration")
             return
             
-        # Get current position, price, and holdings
-        position = self.get_position(self.symbol)
-        current_price = self.get_last_price(self.symbol)
-        current_holdings = position.quantity if position is not None else 0
+        # Get historical data and technical indicators
+        history_df = self._get_historical_prices()
+        bbands = self._get_bbands(history_df)
+        sma200 = self.get_sma(length=200)
+        rsi_value = self.calculate_rsi(length=14)
+        atr_value = self.calculate_atr(length=14)
         
-        # Log current state
-        self.log_message(f"Current {self.symbol} price: {current_price}, Holdings: {current_holdings}")
-        self.log_message(f"200-day SMA: {sma200}")
+        if bbands.empty or sma200 is None or pd.isna(rsi_value) or atr_value is None or pd.isna(atr_value):
+            self.log_message("Missing technical indicators, skipping iteration")
+            return
+            
+        # Get current position and holdings
+        # For crypto, we need to use a different approach to get position
+        position = self.get_positions()
+        current_holdings = 0
+        for pos in position:
+            if pos.asset == self.base:
+                current_holdings = pos.quantity
+                break
+        self.log_message(f"Current holdings of {self.base.symbol}: {current_holdings}")
         
+        # Default to 2% of price if ATR calculation fails
+        if atr_value is None or pd.isna(atr_value):
+            atr_value = last_price * 0.02
+            
+        # Get Bollinger Band Percentage for signal generation
+        try:
+            prev_bbp = bbands[bbands.index < current_dt].tail(1).bbp.values[0]
+        except (IndexError, KeyError):
+            self.log_message("Could not get BBP value, skipping iteration")
+            return
+            
         # Check for take profit or stop loss if we have a position
         if current_holdings > 0 and self.symbol in self.positions_data:
             position_data = self.positions_data[self.symbol]
             
             # Take profit condition
-            if current_price >= position_data["take_profit"]:
-                sell_order = self.create_order(self.symbol, current_holdings, Order.OrderSide.SELL)
-                self.submit_order(sell_order)
-                profit = (current_price - position_data["entry_price"]) * current_holdings
-                print(f"\nTAKE PROFIT: Selling {current_holdings} {self.symbol} at ${current_price:.6f}")
-                print(f"Entry: ${position_data['entry_price']:.6f}, Profit: ${profit:.6f}")
-                del self.positions_data[self.symbol]
-                return
+            if last_price >= position_data["take_profit"]:
+                try:
+                    sell_order = self.create_order(self.base,
+                                                current_holdings,
+                                                side=Order.OrderSide.SELL,
+                                                type=Order.OrderType.MARKET,
+                                                quote=self.quote)
+                    self.submit_order(sell_order)
+                    profit = (last_price - position_data["entry_price"]) * current_holdings
+                    self.log_message(f"TAKE PROFIT: Selling {current_holdings} units at {last_price:.2f}")
+                    self.log_message(f"Entry: {position_data['entry_price']:.2f}, Profit: {profit:.2f}")
+                    del self.positions_data[self.symbol]
+                    self.last_trade = Order.OrderSide.SELL
+                    self.order_quantity = 0.0
+                    return
+                except Exception as e:
+                    self.log_message(f"Error executing take profit: {e}")
                 
             # Stop loss condition
-            if current_price <= position_data["stop_loss"]:
-                sell_order = self.create_order(self.symbol, current_holdings, Order.OrderSide.SELL)
-                self.submit_order(sell_order)
-                loss = (position_data["entry_price"] - current_price) * current_holdings
-                print(f"\nSTOP LOSS: Selling {current_holdings} {self.symbol} at ${current_price:.6f}")
-                print(f"Entry: ${position_data['entry_price']:.6f}, Loss: ${loss:.6f}")
-                del self.positions_data[self.symbol]
-                return
+            if last_price <= position_data["stop_loss"]:
+                try:
+                    sell_order = self.create_order(self.base,
+                                                current_holdings,
+                                                side=Order.OrderSide.SELL,
+                                                type=Order.OrderType.MARKET,
+                                                quote=self.quote)
+                    self.submit_order(sell_order)
+                    loss = (position_data["entry_price"] - last_price) * current_holdings
+                    self.log_message(f"STOP LOSS: Selling {current_holdings} units at {last_price:.2f}")
+                    self.log_message(f"Entry: {position_data['entry_price']:.2f}, Loss: {loss:.2f}")
+                    del self.positions_data[self.symbol]
+                    self.last_trade = Order.OrderSide.SELL
+                    self.order_quantity = 0.0
+                    return
+                except Exception as e:
+                    self.log_message(f"Error executing stop loss: {e}")
         
-        # Get market trend for entry/exit signals
-        market_trend = self.get_market_trend()
-        self.log_message(f"Current market trend: {market_trend}")
-        
-        # Calculate volatility for position sizing and stop loss
-        volatility = self.get_crypto_volatility()
-        atr_value = self.calculate_atr(length=14)
-        if atr_value is None or pd.isna(atr_value):
-            # Default to 2% of price if ATR calculation fails
-            atr_value = current_price * volatility
-
-        # BUY SIGNAL - If 0 holding AND bullish trend
-        if current_holdings == 0 and market_trend == "bullish":
-            available_cash = self.get_cash()
-            # Use a percentage of available cash for crypto (more volatile)
-            cash_to_use = available_cash * float(CASH_AT_RISK)
-            coins_to_trade = cash_to_use / current_price
+        # BUY SIGNAL - Oversold condition (BBP < -0.13) or RSI < 30
+        if (prev_bbp < -0.13 or rsi_value < 30) and cash > 0 and self.last_trade != Order.OrderSide.BUY and quantity > 0.0:
+            # Set stop loss at 2 ATR below entry price
+            stop_loss = last_price - (2 * atr_value)
+            take_profit = last_price + (3 * atr_value)  # 3:2 reward-to-risk ratio
             
-            # Round to appropriate decimal places for the crypto
-            # For small value coins like PEPE, we might need more precision
-            coins_to_trade = round(coins_to_trade, 2)  
-            
-            if coins_to_trade <= 0:
-                print(f"\nNot enough cash to buy. Available cash: {available_cash}")
-            else:
-                # Set stop loss at 2 ATR below entry price
-                stop_loss = current_price - (2 * atr_value)
-                take_profit = current_price + (3 * atr_value)  # 3:2 reward-to-risk ratio
-                
-                # Store position data for tracking
-                self.positions_data[self.symbol] = {
-                    "entry_price": current_price,
-                    "take_profit": take_profit,
-                    "stop_loss": stop_loss,
-                    "quantity": coins_to_trade,
-                    "entry_date": self.get_datetime()
-                }
+            # Store position data for tracking
+            self.positions_data[self.symbol] = {
+                "entry_price": last_price,
+                "take_profit": take_profit,
+                "stop_loss": stop_loss,
+                "quantity": quantity,
+                "entry_date": current_dt
+            }
 
-                # Execute buy order
-                buy_order = self.create_order(self.symbol, coins_to_trade, Order.OrderSide.BUY)
-                self.submit_order(buy_order)
-                print(f"\nBUY ORDER: {coins_to_trade} {self.symbol} at ${current_price:.6f}")
-                print(f"Stop Loss: ${stop_loss:.6f}, Take Profit: ${take_profit:.6f}")
-                print(f"Risk: ${(current_price - stop_loss) * coins_to_trade:.6f}, Reward: ${(take_profit - current_price) * coins_to_trade:.6f}")
+            # Execute buy order
+            order = self.create_order(self.base,
+                                    quantity,
+                                    side=Order.OrderSide.BUY,
+                                    type=Order.OrderType.MARKET,
+                                    quote=self.quote)
+            self.submit_order(order)
+            self.last_trade = Order.OrderSide.BUY
+            self.order_quantity = quantity
+            self.log_message(f"BUY ORDER: {quantity} units of {self.symbol} at {last_price:.2f}")
+            self.log_message(f"Stop Loss: {stop_loss:.2f}, Take Profit: {take_profit:.2f}")
+            self.log_message(f"Risk: {(last_price - stop_loss) * quantity:.2f}, Reward: {(take_profit - last_price) * quantity:.2f}")
 
-        # SELL SIGNAL - If we have a position AND bearish trend
-        elif current_holdings > 0 and market_trend == "bearish":
-            sell_order = self.create_order(self.symbol, current_holdings, Order.OrderSide.SELL)
-            self.submit_order(sell_order)
+        # SELL SIGNAL - Overbought condition (BBP > 1.2) or RSI > 70
+        elif (prev_bbp > 1.2 or rsi_value > 70) and self.last_trade != Order.OrderSide.SELL and current_holdings > 0:
+            order = self.create_order(self.base,
+                                    current_holdings,
+                                    side=Order.OrderSide.SELL,
+                                    type=Order.OrderType.MARKET,
+                                    quote=self.quote)
+            self.submit_order(order)
             
             # Calculate profit/loss if we have the entry data
             if self.symbol in self.positions_data:
                 entry_price = self.positions_data[self.symbol]["entry_price"]
-                profit = (current_price - entry_price) * current_holdings
-                print(f"\nSELL SIGNAL: Selling {current_holdings} {self.symbol} at ${current_price:.6f}")
-                print(f"Entry: ${entry_price:.6f}, P/L: ${profit:.6f}")
+                profit = (last_price - entry_price) * current_holdings
+                self.log_message(f"SELL SIGNAL: Selling {current_holdings} units at {last_price:.2f}")
+                self.log_message(f"Entry: {entry_price:.2f}, P/L: {profit:.2f}")
                 del self.positions_data[self.symbol]
             else:
-                print(f"\nSELL SIGNAL: Selling {current_holdings} {self.symbol} at ${current_price:.6f}")
+                self.log_message(f"SELL SIGNAL: Selling {current_holdings} units at {last_price:.2f}")
+                
+            self.last_trade = Order.OrderSide.SELL
+            self.order_quantity = 0.0
 
-# Initialize the CCXT broker
-broker = Ccxt(CCXT_CONFIG)
+# Define CCXT configuration if not imported
+if 'CCXT_CONFIG' not in globals():
+    CCXT_CONFIG = {
+        "exchange_id": EXCHANGE_ID,
+        "sandbox": True,  # Use sandbox for testing
+        # Add your API credentials here if needed
+        # "api_key": "YOUR_API_KEY",
+        # "secret": "YOUR_SECRET_KEY",
+    }
 
 if __name__ == "__main__":
-    IS_BACKTESTING = False
+    IS_BACKTESTING = True
+    
+    # Define crypto asset pair
+    base_symbol = "ETH"
+    quote_symbol = "USDT"
+    asset = (Asset(symbol=base_symbol, asset_type="crypto"),
+            Asset(symbol=quote_symbol, asset_type="crypto"))
+    
     if IS_BACKTESTING:
-        symbol = "PEPE/USDT"
-        result = CryptoTrader.backtest(
-            CcxtDataBacktesting,
-            symbol=symbol,
-            benchmark_asset="BTC/USDT",  # Use BTC as benchmark
-            quote_asset="USDT",
-            exchange_name=EXCHANGE_NAME,
-            start_date="2023-01-01",
-            end_date="2023-12-31",
+        # Backtesting configuration
+        kwargs = {
+            "exchange_id": EXCHANGE_ID,
+            # "max_data_download_limit": 10000,  # Optional
+        }
+        
+        # Run backtest
+        results, strat_obj = CryptoTrader.run_backtest(
+            PolygonDataBacktesting,
+            benchmark_asset=f"{base_symbol}/{quote_symbol}",
+            quote_asset=Asset(symbol=quote_symbol, asset_type="crypto"),
+            parameters={
+                "asset": asset,
+                "cash_at_risk": CASH_AT_RISK,
+                "window": 21,
+            },
+            **kwargs,
         )
+        
+        # Print backtest results
+        print("Backtest completed!")
+        try:
+            print(f"Sharpe Ratio: {results.get('sharpe', 'N/A')}")
+            print(f"Max Drawdown: {results.get('max_drawdown', 'N/A')}")
+            print(f"Returns: {results.get('return', 'N/A')}")
+        except Exception as e:
+            print(f"Could not print all results: {e}")
+            print(f"Available results: {results.keys() if isinstance(results, dict) else 'None'}")
     else:
-        strategy = CryptoTrader(broker=broker, symbol="PEPE/USDT")
+        # Live trading setup with Alpaca
+        alpaca_config = {
+            "API_KEY": os.getenv("ALPACA_API_KEY"),
+            "API_SECRET": os.getenv("ALPACA_API_SECRET"),
+            "PAPER": os.getenv("ALPACA_IS_PAPER", "True").lower() == "true",
+            "BASE_URL": os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        }
+        
+        broker = Alpaca(alpaca_config)
+        strategy = CryptoTrader(broker=broker, 
+                              asset=asset,
+                              cash_at_risk=CASH_AT_RISK,
+                              window=21)
         trader = Trader()
         trader.add_strategy(strategy)
         trader.run_all()
-
-
-        # symbol = "TSLA"
-        # timestep = 'day'
-        # auto_adjust = True
-        # warm_up_trading_days = 0
-        # refresh_cache = False
-
-        # results, strategy = MLTrader.run_backtest(
-        #     datasource_class=PolygonDataBacktesting,
-        #     cash_at_risk=float(CASH_AT_RISK),
-        #     minutes_before_closing=0,
-        #     symbol=symbol,
-        #     benchmark_asset='SPY',
-        #     analyze_backtest=True,
-        #     show_progress_bar=True,
-
-        #     # AlpacaBacktesting kwargs
-        #     timestep=timestep,
-        #     market='NYSE',
-        #     config=ALPACA_CONFIG,
-        #     refresh_cache=refresh_cache,
-        #     warm_up_trading_days=warm_up_trading_days,
-        #     # auto_adjust=auto_adjust,
-        # )
