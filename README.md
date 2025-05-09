@@ -46,9 +46,6 @@ The optimizer tests several parameter configurations:
 - Set `force_signals: True` to ensure trades occur despite data limitations
 - Use `position_size` to control risk exposure (0.1 = 10% of cash per trade)
 
-## See it live and in action 📺
-<img src="https://i.imgur.com/FaQH8rz.png"/>
-
 # Startup 🚀
 1. Create a virtual environment `conda create -n trader python=3.10` 
 2. Activate it `conda activate trader`
@@ -75,9 +72,3 @@ If you're getting an SSL error when you attempt to call out to the Alpaca Tradin
 # Other References 🔗
 
 <p>-<a href="github.com/Lumiwealth/lumibot)">Lumibot</a>:trading bot library, makes lifecycle stuff easier .</p>
-
-# Who, When, Why?
-
-👨🏾‍💻 Author: Nick Renotte <br />
-📅 Version: 1.x<br />
-📜 License: This project is licensed under the MIT License </br>
