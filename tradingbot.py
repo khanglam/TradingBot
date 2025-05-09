@@ -1,0 +1,130 @@
+from lumibot.backtesting import PolygonDataBacktesting
+from lumibot.credentials import IS_BACKTESTING, ALPACA_CONFIG
+from lumibot.strategies import Strategy
+from lumibot.traders import Trader
+from lumibot.entities import Order
+
+from alpaca_trade_api import REST  # Alpaca's REST API client
+from timedelta import Timedelta  # For time calculations
+from finbert_utils import estimate_sentiment  # For sentiment analysis
+import os  # Import os to load environment variables
+from pandas_ta import atr, rsi  # Add to imports
+
+# Load environment variables
+ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL')
+CASH_AT_RISK = os.getenv('CASH_AT_RISK')
+PROBABILITY_THRESHOLD = float(os.getenv('PROBABILITY_THRESHOLD'))
+
+class MLTrader(Strategy):
+    def initialize(self, symbol="TSLA"):
+        self.symbol = symbol
+        self.sleeptime = "1D"
+        self.set_market("NYSE")
+        self.last_trade = None
+        self.api = REST(base_url=ALPACA_BASE_URL, key_id=ALPACA_CONFIG['API_KEY'], secret_key=ALPACA_CONFIG['API_SECRET'])
+
+    def get_sma(self):
+        # Request 210 days to ensure at least 200 valid days for SMA calculation
+        bars = self.get_historical_prices(self.symbol, 210, 'day')
+        if bars is None:
+            self.log_message('Historical data unavailable for ' + self.symbol)
+            return
+
+        # Convert the historical data into a DataFrame
+        df = bars.df
+        if df.shape[0] < 200:
+            self.log_message('Not enough historical data to compute 200-day SMA.')
+            return
+
+        # Calculate the 200-day simple moving average (SMA) using closing prices
+        sma200 = df['close'].tail(200).mean()
+        self.log_message(f'Calculated 200-day SMA: {sma200:.2f}')
+        return sma200
+        
+    def calculate_atr(self, length=14):
+        bars = self.get_historical_prices(self.symbol, length+1, "1D")
+        return atr(bars['high'], bars['low'], bars['close'], length=length).iloc[-1]
+
+    def calculate_rsi(self, length=14):
+        bars = self.get_historical_prices(self.symbol, length+1, "1D") 
+        return rsi(bars['close'], length=length).iloc[-1]
+
+    def get_dates(self):
+        today = self.get_datetime()
+        three_days_prior = today - Timedelta(days=3)
+        return today.strftime('%Y-%m-%d'), three_days_prior.strftime('%Y-%m-%d')
+
+    def get_sentiment(self):
+        today, three_days_prior = self.get_dates()  # Get date range
+        # Fetch news articles for the stock and cache
+        if not hasattr(self, "last_news_date") or self.last_news_date != today:
+            news = self.api.get_news(symbol=self.symbol, start=three_days_prior, end=today)
+            self.news_headlines = [ev.__dict__["_raw"]["headline"] for ev in news]
+            self.last_news_date = today
+        # Analyze sentiment of the news articles
+        return estimate_sentiment(self.news_headlines)
+
+    def on_trading_iteration(self):
+        sma200 = self.get_sma()
+        if sma200 is None:
+            return
+        position = self.get_position(self.symbol)
+        probability, sentiment = self.get_sentiment() 
+        current_holdings = position.quantity if position is not None else 0
+        current_price = self.get_last_price(self.symbol)
+
+        # BUY SIGNAL - If 0 holding AND current price is above SMA AND sentiment is negative
+        if current_holdings == 0 and current_price > sma200 and sentiment == "negative" and probability > PROBABILITY_THRESHOLD:
+            available_cash = self.get_cash()
+            shares_to_trade = int(available_cash // current_price)
+            if shares_to_trade <= 0:
+                print("\n" + 'Not enough cash to buy. Available cash: ' + str(available_cash))
+            else:
+                buy_order = self.create_order(self.symbol, shares_to_trade, Order.OrderSide.BUY)
+                self.submit_order(buy_order)
+                print("\n" + f'BUY ORDER:{shares_to_trade} shares of {self.symbol} at ${current_price:.2f}.')
+
+        # SELL SIGNAL - If we have a position AND current price is below SMA AND sentiment is positive
+        elif current_holdings > 0 and current_price < sma200 and sentiment == "positive" and probability > PROBABILITY_THRESHOLD:
+            sell_order = self.create_order(self.symbol, current_holdings, Order.OrderSide.SELL)
+            self.submit_order(sell_order)
+            print("\n" + f'SELL ORDER:{current_holdings} shares of {self.symbol} at ${current_price:.2f}.')
+
+if __name__ == "__main__":
+    if IS_BACKTESTING:
+        symbol = "TSLA"
+        result = MLTrader.backtest(
+            PolygonDataBacktesting,
+            symbol=symbol,
+            benchmark_asset=symbol,
+        )
+    else:
+        strategy = MLTrader(broker=broker)
+        trader = Trader()
+        trader.add_strategy(strategy)
+        trader.run_all()
+
+
+        # symbol = "TSLA"
+        # timestep = 'day'
+        # auto_adjust = True
+        # warm_up_trading_days = 0
+        # refresh_cache = False
+
+        # results, strategy = MLTrader.run_backtest(
+        #     datasource_class=PolygonDataBacktesting,
+        #     cash_at_risk=float(CASH_AT_RISK),
+        #     minutes_before_closing=0,
+        #     symbol=symbol,
+        #     benchmark_asset='SPY',
+        #     analyze_backtest=True,
+        #     show_progress_bar=True,
+
+        #     # AlpacaBacktesting kwargs
+        #     timestep=timestep,
+        #     market='NYSE',
+        #     config=ALPACA_CONFIG,
+        #     refresh_cache=refresh_cache,
+        #     warm_up_trading_days=warm_up_trading_days,
+        #     # auto_adjust=auto_adjust,
+        # )
