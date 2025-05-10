@@ -1,16 +1,15 @@
-from lumibot.backtesting import PolygonDataBacktesting
-from lumibot.credentials import IS_BACKTESTING
+from lumibot.backtesting import CcxtBacktesting
+from lumibot.credentials import IS_BACKTESTING, ALPACA_CONFIG
 from lumibot.strategies.strategy import Strategy
 from lumibot.traders import Trader
 from lumibot.entities import Asset, Order
 from lumibot.brokers import Ccxt, Alpaca
-from datetime import datetime, timedelta
-from lumibot.example_strategies import ccxt_backtesting_example
 
 import os  # Import os to load environment variables
 import pandas as pd
 from pandas_ta import atr, rsi  # For technical indicators
 from pandas import DataFrame, Timedelta
+import numpy as np
 
 # Load environment variables
 CASH_AT_RISK = float(os.getenv('CASH_AT_RISK', 0.25))
@@ -31,85 +30,7 @@ class CryptoTrader(Strategy):
         self.last_trade = None
         self.order_quantity = 0.0
         self.cash_at_risk = cash_at_risk
-
-    def _position_sizing(self):
-        cash = self.get_cash()
-        last_price = self.get_last_price(asset=self.asset, quote=self.quote)
-        if last_price is None:
-            return cash, last_price, 0.0
-        quantity = round(cash * self.cash_at_risk / last_price, 6)  # More precision for crypto
-        return cash, last_price, quantity
-        
-    def _get_historical_prices(self):
-        return self.get_historical_prices(asset=self.asset, length=self.window,
-                                    timestep="day", quote=self.quote).df
-                                    
-    def get_sma(self, length=200):
-        # Request more days to ensure enough valid data for SMA calculation
-        bars = self.get_historical_prices(asset=self.asset, length=length+10, 
-                                         timestep="day", quote=self.quote)
-        if bars is None:
-            self.log_message(f'Historical data unavailable for {self.symbol}')
-            return None
-
-        # Convert the historical data into a DataFrame
-        df = bars.df
-        if df.shape[0] < length:
-            self.log_message(f'Not enough historical data to compute {length}-day SMA.')
-            return None
-
-        # Calculate the SMA using closing prices
-        sma = df['close'].tail(length).mean()
-        self.log_message(f'Calculated {length}-day SMA: {sma:.2f}')
-        return sma
-
-    def calculate_atr(self, length=14):
-        bars = self.get_historical_prices(asset=self.asset, length=length+1, 
-                                         timestep="day", quote=self.quote)
-        if bars is None:
-            return None
-        # Access the DataFrame through the .df attribute
-        df = bars.df
-        if df.empty:
-            return None
-        try:
-            return atr(df['high'], df['low'], df['close'], length=length).iloc[-1]
-        except Exception as e:
-            self.log_message(f"Error calculating ATR: {str(e)}")
-            return None  # Return None and handle the default in on_trading_iteration
-
-    def calculate_rsi(self, length=14):
-        bars = self.get_historical_prices(asset=self.asset, length=length+1, 
-                                         timestep="day", quote=self.quote)
-        if bars is None:
-            return None
-        # Access the DataFrame through the .df attribute
-        df = bars.df
-        if df.empty:
-            return None
-        try:
-            return rsi(df['close'], length=length).iloc[-1]
-        except Exception as e:
-            self.log_message(f"Error calculating RSI: {str(e)}")
-            return 50  # Default to neutral RSI
-
-    def _get_bbands(self, history_df=None):
-        """Calculate Bollinger Bands for the asset"""
-        if history_df is None:
-            history_df = self._get_historical_prices()
-            
-        num_std_dev = 2.0
-        close = 'close'
-
-        df = DataFrame(index=history_df.index)
-        df[close] = history_df[close]
-        df['bbm'] = df[close].rolling(window=self.window).mean()
-        df['bbu'] = df['bbm'] + df[close].rolling(window=self.window).std() * num_std_dev
-        df['bbl'] = df['bbm'] - df[close].rolling(window=self.window).std() * num_std_dev
-        df['bbb'] = (df['bbu'] - df['bbl']) / df['bbm']
-        df['bbp'] = (df[close] - df['bbl']) / (df['bbu'] - df['bbl'])
-        return df
-
+    
     def on_trading_iteration(self):
         # During the backtest, we get the current time with self.get_datetime()
         current_dt = self.get_datetime()
@@ -244,36 +165,122 @@ class CryptoTrader(Strategy):
                 
             self.last_trade = Order.OrderSide.SELL
             self.order_quantity = 0.0
+            
+    def _position_sizing(self):
+        cash = self.get_cash()
+        last_price = self.get_last_price(asset=self.asset, quote=self.quote)
+        if last_price is None:
+            return cash, last_price, 0.0
+        quantity = round(cash * self.cash_at_risk / last_price, 6)  # More precision for crypto
+        return cash, last_price, quantity
+        
+    def _get_historical_prices(self):
+        return self.get_historical_prices(asset=self.asset, length=self.window,
+                                    timestep="day", quote=self.quote).df
+                                    
+    def get_sma(self, length=200):
+        # Request more days to ensure enough valid data for SMA calculation
+        bars = self.get_historical_prices(asset=self.asset, length=length+10, 
+                                         timestep="day", quote=self.quote)
+        if bars is None:
+            self.log_message(f'Historical data unavailable for {self.symbol}')
+            return None
 
-# Define CCXT configuration if not imported
-if 'CCXT_CONFIG' not in globals():
-    CCXT_CONFIG = {
-        "exchange_id": EXCHANGE_ID,
-        "sandbox": True,  # Use sandbox for testing
-        # Add your API credentials here if needed
-        # "api_key": "YOUR_API_KEY",
-        # "secret": "YOUR_SECRET_KEY",
-    }
+        # Convert the historical data into a DataFrame
+        df = bars.df
+        if df.shape[0] < length:
+            self.log_message(f'Not enough historical data to compute {length}-day SMA.')
+            return None
+
+        # Calculate the SMA using closing prices
+        sma = df['close'].tail(length).mean()
+        self.log_message(f'Calculated {length}-day SMA: {sma:.2f}')
+        return sma
+
+    def calculate_atr(self, length=14):
+        bars = self.get_historical_prices(asset=self.asset, length=length+1, 
+                                         timestep="day", quote=self.quote)
+        if bars is None:
+            return None
+        # Access the DataFrame through the .df attribute
+        df = bars.df
+        if df.empty:
+            return None
+        try:
+            return atr(df['high'], df['low'], df['close'], length=length).iloc[-1]
+        except Exception as e:
+            self.log_message(f"Error calculating ATR: {str(e)}")
+            return None  # Return None and handle the default in on_trading_iteration
+
+    def calculate_rsi(self, length=14):
+        bars = self.get_historical_prices(asset=self.asset, length=length+1, 
+                                         timestep="day", quote=self.quote)
+        if bars is None:
+            return None
+        # Access the DataFrame through the .df attribute
+        df = bars.df
+        if df.empty:
+            return None
+        try:
+            return rsi(df['close'], length=length).iloc[-1]
+        except Exception as e:
+            self.log_message(f"Error calculating RSI: {str(e)}")
+            return 50  # Default to neutral RSI
+
+    def _get_bbands(self, history_df=None):
+        """Calculate Bollinger Bands for the asset with error handling"""
+        if history_df is None:
+            history_df = self._get_historical_prices()
+        
+        if history_df is None or history_df.empty or len(history_df) < self.window:
+            self.log_message(f"Not enough data for BBands (need {self.window} periods)")
+            return pd.DataFrame()  # Return empty DataFrame
+
+        num_std_dev = 2.0
+        close = 'close'
+
+        df = pd.DataFrame(index=history_df.index)
+        df[close] = history_df[close]
+        df['bbm'] = df[close].rolling(window=self.window, min_periods=1).mean()
+        std = df[close].rolling(window=self.window, min_periods=1).std()
+        df['bbu'] = df['bbm'] + std * num_std_dev
+        df['bbl'] = df['bbm'] - std * num_std_dev
+
+        # Avoid division by zero in 'bbp'
+        denom = (df['bbu'] - df['bbl']).replace(0, np.nan)
+        df['bbb'] = (df['bbu'] - df['bbl']) / df['bbm']
+        df['bbp'] = (df[close] - df['bbl']) / denom
+
+        return df
 
 if __name__ == "__main__":
     IS_BACKTESTING = True
     
     # Define crypto asset pair
-    base_symbol = "ETH"
-    quote_symbol = "USDT"
+    base_symbol = "BTC"
+    quote_symbol = "USDT"  # Changed from USD to USDT for better exchange compatibility
     asset = (Asset(symbol=base_symbol, asset_type="crypto"),
             Asset(symbol=quote_symbol, asset_type="crypto"))
     
     if IS_BACKTESTING:
+        # Define backtesting date range
+        from datetime import datetime
+        start_date = datetime(2025, 4, 1)  # From .env BACKTESTING_START
+        end_date = datetime(2025, 5, 1)    # From .env BACKTESTING_END
+        
         # Backtesting configuration
         kwargs = {
             "exchange_id": EXCHANGE_ID,
-            # "max_data_download_limit": 10000,  # Optional
         }
         
+        # Set minimum timestep for backtesting
+        CcxtBacktesting.MIN_TIMESTEP = "day"
+        
         # Run backtest
-        results, strat_obj = CryptoTrader.run_backtest(
-            PolygonDataBacktesting,
+        results, strategy_obj = CryptoTrader.run_backtest(
+            CcxtBacktesting,
+            start_date,
+            end_date,
             benchmark_asset=f"{base_symbol}/{quote_symbol}",
             quote_asset=Asset(symbol=quote_symbol, asset_type="crypto"),
             parameters={
@@ -294,19 +301,7 @@ if __name__ == "__main__":
             print(f"Could not print all results: {e}")
             print(f"Available results: {results.keys() if isinstance(results, dict) else 'None'}")
     else:
-        # Live trading setup with Alpaca
-        alpaca_config = {
-            "API_KEY": os.getenv("ALPACA_API_KEY"),
-            "API_SECRET": os.getenv("ALPACA_API_SECRET"),
-            "PAPER": os.getenv("ALPACA_IS_PAPER", "True").lower() == "true",
-            "BASE_URL": os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-        }
-        
-        broker = Alpaca(alpaca_config)
-        strategy = CryptoTrader(broker=broker, 
-                              asset=asset,
-                              cash_at_risk=CASH_AT_RISK,
-                              window=21)
+        strategy = CryptoTrader(broker=Alpaca(ALPACA_CONFIG))
         trader = Trader()
         trader.add_strategy(strategy)
         trader.run_all()
