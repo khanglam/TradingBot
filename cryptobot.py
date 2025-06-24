@@ -1,9 +1,9 @@
-from lumibot.backtesting import PolygonDataBacktesting, CcxtBacktesting
+from lumibot.backtesting import PolygonDataBacktesting
 from lumibot.credentials import IS_BACKTESTING
 from lumibot.strategies.strategy import Strategy
 from lumibot.traders import Trader
 from lumibot.entities import Asset, Order
-from lumibot.brokers import Ccxt, Alpaca
+from lumibot.brokers import Alpaca
 from datetime import datetime, timedelta
 from lumibot.example_strategies import ccxt_backtesting_example
 
@@ -269,13 +269,6 @@ if __name__ == "__main__":
         
         # Print backtest results
         print("Backtest completed!")
-        # try:
-        #     print(f"Sharpe Ratio: {results.get('sharpe', 'N/A')}")
-        #     print(f"Max Drawdown: {results.get('max_drawdown', 'N/A')}")
-        #     print(f"Returns: {results.get('return', 'N/A')}")
-        # except Exception as e:
-        #     print(f"Could not print all results: {e}")
-        #     print(f"Available results: {results.keys() if isinstance(results, dict) else 'None'}")
     else:
         # Live trading setup with Alpaca
         alpaca_config = {

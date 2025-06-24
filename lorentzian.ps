@@ -1,0 +1,114 @@
+indicator('ML: Lorentzian Classification', 'Lorentzian', true, max_labels_count=100) 
+
+import jdehorty/MLExtensions/2 as ml
+import jdehorty/KernelFunctions/2 as kernels
+
+type Settings
+    float source
+    int neighborsCount
+    int maxBarsBack
+    int featureCount
+
+type FeatureArrays
+    array<float> f1
+    array<float> f2
+    array<float> f3
+    array<float> f4
+    array<float> f5
+
+type FeatureSeries
+    float f1
+    float f2
+    float f3
+    float f4
+    float f5
+
+series_from(feature_string, _close, _high, _low, _hlc3, f_paramA, f_paramB) =>
+    switch feature_string
+        "RSI" => ml.n_rsi(_close, f_paramA, f_paramB)
+        "WT" => ml.n_wt(_hlc3, f_paramA, f_paramB)
+        "CCI" => ml.n_cci(_close, f_paramA, f_paramB)
+        "ADX" => ml.n_adx(_high, _low, _close, f_paramA)
+
+get_lorentzian_distance(int i, int featureCount, FeatureSeries featureSeries, FeatureArrays featureArrays) =>
+    switch featureCount
+        5 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) + 
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) + 
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i))) + 
+             math.log(1+math.abs(featureSeries.f4 - array.get(featureArrays.f4, i))) + 
+             math.log(1+math.abs(featureSeries.f5 - array.get(featureArrays.f5, i)))
+        4 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) +
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i))) +
+             math.log(1+math.abs(featureSeries.f4 - array.get(featureArrays.f4, i)))
+        3 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) +
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i)))
+
+Settings settings = Settings.new(close, 8, 2000, 5)
+
+f1_string = input.string("RSI", "Feature 1", ["RSI", "WT", "CCI", "ADX"])
+f1_paramA = input.int(14, "Parameter A")
+f1_paramB = input.int(1, "Parameter B")
+f2_string = input.string("WT", "Feature 2", ["RSI", "WT", "CCI", "ADX"])
+f2_paramA = input.int(10, "Parameter A")
+f2_paramB = input.int(11, "Parameter B")
+f3_string = input.string("CCI", "Feature 3", ["RSI", "WT", "CCI", "ADX"])
+f3_paramA = input.int(20, "Parameter A")
+f3_paramB = input.int(1, "Parameter B")
+
+featureSeries = FeatureSeries.new(
+    series_from(f1_string, close, high, low, hlc3, f1_paramA, f1_paramB),
+    series_from(f2_string, close, high, low, hlc3, f2_paramA, f2_paramB),
+    series_from(f3_string, close, high, low, hlc3, f3_paramA, f3_paramB),
+    0, 0
+)
+
+var f1Array = array.new_float()
+var f2Array = array.new_float()
+var f3Array = array.new_float()
+var f4Array = array.new_float()
+var f5Array = array.new_float()
+
+array.push(f1Array, featureSeries.f1)
+array.push(f2Array, featureSeries.f2)
+array.push(f3Array, featureSeries.f3)
+
+featureArrays = FeatureArrays.new(f1Array, f2Array, f3Array, f4Array, f5Array)
+
+src = settings.source
+y_train_series = src[4] < src[0] ? -1 : src[4] > src[0] ? 1 : 0
+var y_train_array = array.new_int(0)
+var predictions = array.new_float(0)
+var prediction = 0.
+var signal = 0
+var distances = array.new_float(0)
+
+array.push(y_train_array, y_train_series)
+
+maxBarsBackIndex = last_bar_index >= settings.maxBarsBack ? last_bar_index - settings.maxBarsBack : 0
+
+if bar_index >= maxBarsBackIndex
+    lastDistance = -1.0
+    size = math.min(settings.maxBarsBack-1, array.size(y_train_array)-1)
+    sizeLoop = math.min(settings.maxBarsBack-1, size)
+    
+    for i = 0 to sizeLoop
+        d = get_lorentzian_distance(i, 3, featureSeries, featureArrays) 
+        if d >= lastDistance and i%4
+            lastDistance := d            
+            array.push(distances, d)
+            array.push(predictions, math.round(array.get(y_train_array, i)))
+            if array.size(predictions) > settings.neighborsCount
+                lastDistance := array.get(distances, math.round(settings.neighborsCount*3/4))
+                array.shift(distances)
+                array.shift(predictions)
+    prediction := array.sum(predictions)
+
+signal := prediction > 0 ? 1 : prediction < 0 ? -1 : nz(signal[1])
+
+isNewBuySignal = ta.change(signal) and signal == 1
+isNewSellSignal = ta.change(signal) and signal == -1
+
+plotshape(isNewBuySignal ? low : na, 'Buy', shape.labelup, location.belowbar, color.green, size.small)
+plotshape(isNewSellSignal ? high : na, 'Sell', shape.labeldown, location.abovebar, color.red, size.small)

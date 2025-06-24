@@ -13,9 +13,9 @@ import pandas as pd
 from pandas_ta import atr, rsi  # Add to imports
 
 # Load environment variables
-ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL')
-CASH_AT_RISK = os.getenv('CASH_AT_RISK')
-PROBABILITY_THRESHOLD = float(os.getenv('PROBABILITY_THRESHOLD'))
+ALPACA_BASE_URL = os.getenv('ALPACA_BASE_URL', 'https://paper-api.alpaca.markets')
+CASH_AT_RISK = float(os.getenv('CASH_AT_RISK', '0.25'))
+PROBABILITY_THRESHOLD = float(os.getenv('PROBABILITY_THRESHOLD', '0.7'))
 
 class StockTrader(Strategy):
     def initialize(self, symbol="TSLA"):
@@ -175,7 +175,7 @@ class StockTrader(Strategy):
 broker = Alpaca(ALPACA_CONFIG)
 
 if __name__ == "__main__":
-    IS_BACKTESTING=False
+    IS_BACKTESTING=True
     if IS_BACKTESTING:
         symbol = "TSLA"
         result = StockTrader.backtest(
