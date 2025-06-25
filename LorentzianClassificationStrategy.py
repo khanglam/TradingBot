@@ -71,15 +71,7 @@ def wavetrend(df: pd.DataFrame, channel_length: int = 10, average_length: int = 
 # -------------------------------  Strategy class  -------------------------------------
 
 class LorentzianClassificationStrategy(Strategy):
-    parameters = {
-        "symbols": ["TSLA"],      # You can override with any list of tickers
-        "neighbors": 8,          # k in k-Nearest-Neighbours
-        "history_window": 300,   # how many past days to feed into the model
-        "rsi_length": 14,
-        "wt_channel": 10,
-        "wt_average": 11,
-        "cci_length": 20,
-    }
+    parameters = {"symbols": ["TSLA"],'neighbors': 5, 'history_window': 50, 'rsi_length': 22, 'wt_channel': 14, 'wt_average': 7, 'cci_length': 16} 
 
     # ---------------------------  Initialise (runs once)  ---------------------------
     def initialize(self):
