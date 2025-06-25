@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 """
 Strategy Description
 --------------------
-Monthly Bull-Call Spread on PLTR.
+Monthly Bull-Call Spread on configurable stock symbol.
 
 How it works (high-level):
 1.  Once per *calendar* month the bot looks for the nearest option expiration
@@ -16,12 +16,12 @@ How it works (high-level):
 2.  It BUYS a call ~10 % above the current stock price and SELLS a call ~20 %
     above the price (classic debit-spread / bull-call spread).
 3.  It trades **20 contracts per leg** (i.e. 20 complete spreads) in one shot.
-4.  Because option chains often have missing “open” prices early in the day (and
-    that causes the “`<=` not supported between float and NoneType” error inside
+4.  Because option chains often have missing "open" prices early in the day (and
+    that causes the "`<=` not supported between float and NoneType" error inside
     the back-tester) the bot **waits until after 12 PM New-York time** before it
     will place any orders.  By midday most contracts have traded at least once
     so the required OHLC data is available.
-5.  Orders are sent as *market* orders — this eliminates the broker’s internal
+5.  Orders are sent as *market* orders — this eliminates the broker's internal
     limit-price comparisons that triggered the original error.
 
 This code was refined based on the user prompt: "Polygon rate-limit pauses then
@@ -30,6 +30,9 @@ so the back-test can complete without errors."
 """
 
 class BullCallSpreadPLTR(Strategy):
+    parameters = {
+        "symbol": "TSLA",  # Change this to trade different stocks (e.g., "AAPL", "TSLA", "NVDA")
+    }
 
     def initialize(self):
         # We only need to wake up a few times per day.  30-minute cadence keeps
@@ -48,9 +51,10 @@ class BullCallSpreadPLTR(Strategy):
         dt = self.get_datetime()                        # Exchange-aware timestamp
         today = dt.date()
         current_month = today.month
+        symbol = self.parameters["symbol"]  # Get the configurable symbol
 
         # 0) Trade ONLY between 12:00 and 15:30 ET so that most option series
-        #    have produced an "open" price in Polygon’s data.
+        #    have produced an "open" price in Polygon's data.
         if dt.hour < 12 or dt.hour >= 15:               # Simple time window
             self.log_message("Waiting until after noon ET to check trades…", color="blue")
             return
@@ -61,24 +65,27 @@ class BullCallSpreadPLTR(Strategy):
             return
 
         # 2) Get the underlying stock price --------------------------------------
-        underlying = Asset("PLTR", asset_type=Asset.AssetType.STOCK)
+        underlying = Asset(symbol, asset_type=Asset.AssetType.STOCK)
         last_price = self.get_last_price(underlying)
         if last_price is None:
-            self.log_message("PLTR price unavailable – will try later.", color="red")
+            self.log_message(f"{symbol} price unavailable – will try later.", color="red")
             return
 
-        # Draw / update a price line on the chart so you can visually follow PLTR
-        self.add_line("PLTR", last_price, color="black", width=2, detail_text="PLTR Price")
+        # Convert to float for calculations and chart display
+        price_float = float(last_price)
+        
+        # Draw / update a price line on the chart so you can visually follow the stock
+        self.add_line(symbol, price_float, color="black", width=2, detail_text=f"{symbol} Price")
 
         # 3) Download CALL chains -------------------------------------------------
         chains_raw = self.get_chains(underlying)
         if not chains_raw:
-            self.log_message("Unable to download option chains for PLTR.", color="red")
+            self.log_message(f"Unable to download option chains for {symbol}.", color="red")
             return
 
         call_chains = chains_raw.get("Chains", {}).get("CALL", {})
         if not call_chains:
-            self.log_message("No CALL option chains found for PLTR.", color="red")
+            self.log_message(f"No CALL option chains found for {symbol}.", color="red")
             return
 
         # 4) Find the soonest expiration ≥ 30 days away --------------------------
@@ -89,7 +96,7 @@ class BullCallSpreadPLTR(Strategy):
             if datetime.strptime(e, "%Y-%m-%d").date() >= min_expiry_date
         ]
         if not valid_expiries:
-            self.log_message("No PLTR expirations 30+ days out – skipping.", color="red")
+            self.log_message(f"No {symbol} expirations 30+ days out – skipping.", color="red")
             return
 
         target_expiry = min(valid_expiries)                # soonest eligible expiry
@@ -100,8 +107,8 @@ class BullCallSpreadPLTR(Strategy):
             return
 
         # 5) Choose strikes ≈10 % & ≈20 % OTM ------------------------------------
-        buy_target  = last_price * 1.10
-        sell_target = last_price * 1.20
+        buy_target  = price_float * 1.10
+        sell_target = price_float * 1.20
 
         buy_strike  = next((s for s in strikes if s >= buy_target), strikes[-1])
         sell_strike = next((s for s in strikes if s >= sell_target), strikes[-1])
@@ -112,7 +119,7 @@ class BullCallSpreadPLTR(Strategy):
 
         # 6) Build the two option Asset objects ----------------------------------
         buy_option_asset = Asset(
-            "PLTR",
+            symbol,
             asset_type=Asset.AssetType.OPTION,
             expiration=target_expiry,
             strike=buy_strike,
@@ -120,7 +127,7 @@ class BullCallSpreadPLTR(Strategy):
             multiplier=100,
         )
         sell_option_asset = Asset(
-            "PLTR",
+            symbol,
             asset_type=Asset.AssetType.OPTION,
             expiration=target_expiry,
             strike=sell_strike,
@@ -155,10 +162,10 @@ class BullCallSpreadPLTR(Strategy):
         submitted_orders = self.submit_orders([buy_order, sell_order])
 
         if submitted_orders:
-            # Mark the trade on the chart so it’s easy to see when the spread was opened
+            # Mark the trade on the chart so it's easy to see when the spread was opened
             self.add_marker(
                 name="Bull-Call Spread Opened",
-                value=last_price,
+                value=price_float,
                 color="green",
                 symbol="star",
                 size=12,
@@ -166,7 +173,7 @@ class BullCallSpreadPLTR(Strategy):
             )
             self.vars.last_trade_month = current_month
             self.log_message(
-                f"Executed 20× bull-call spread | Buy {buy_strike} / Sell {sell_strike} exp {expiry_str}",
+                f"Executed 20× bull-call spread on {symbol} | Buy {buy_strike} / Sell {sell_strike} exp {expiry_str}",
                 color="green",
             )
         else:
@@ -182,7 +189,7 @@ if __name__ == "__main__":
 
         BullCallSpreadPLTR.backtest(
             datasource_class=PolygonDataBacktesting,
-            benchmark_asset=Asset("SPY", Asset.AssetType.STOCK),
+            benchmark_asset=Asset("TSLA", Asset.AssetType.STOCK),
             buy_trading_fees=[trading_fee],
             sell_trading_fees=[trading_fee],
             quote_asset=Asset("USD", Asset.AssetType.FOREX),
