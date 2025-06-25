@@ -14,13 +14,13 @@ Total optimization time: 1-3 minutes vs 30-60 minutes
 
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import yfinance as yf
+from datetime import datetime, timedelta
 from math import log
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import warnings
 import os
 from dotenv import load_dotenv
+from polygon import RESTClient
 warnings.filterwarnings('ignore')
 
 # Load environment variables
@@ -28,55 +28,78 @@ load_dotenv()
 
 
 class TurboLorentzianOptimizer:
-    def __init__(self, symbol: str = None, start_date: str = None, end_date: str = None):
+    def __init__(self, symbol: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
         # Use environment variables if not provided
         self.symbol = symbol or os.getenv('SYMBOL', 'TSLA')
-        self.start_date = start_date or os.getenv('BACKTESTING_START', '2023-01-01')
-        self.end_date = end_date or os.getenv('BACKTESTING_END', '2023-06-30')
+        self.start_date = start_date or os.getenv('BACKTESTING_START', '2024-01-01')
+        self.end_date = end_date or os.getenv('BACKTESTING_END', '2024-06-30')
+        
+        # Initialize Polygon client
+        self.polygon_api_key = os.getenv('POLYGON_API_KEY')
+        if not self.polygon_api_key:
+            raise ValueError("POLYGON_API_KEY environment variable is required")
+        self.polygon_client = RESTClient(self.polygon_api_key)
         
         # Pre-computed data (loaded once)
-        self.data = None
+        self.data: Optional[pd.DataFrame] = None
         self.indicators_cache = {}
         
         # Results tracking
         self.best_return = -999
         self.best_params = None
-        self.all_results = []        
+        self.all_results = []
+        
     def download_data_once(self):
-        """Download data ONCE and cache it"""
-        print(f"📥 Downloading {self.symbol} data once...")
+        """Download data ONCE using Polygon API and cache it"""
+        print(f"📥 Downloading {self.symbol} data from Polygon...")
         
         # Add buffer for indicators (need extra days)
-        buffer_start = pd.to_datetime(self.start_date) - pd.Timedelta(days=60)
+        buffer_start = pd.to_datetime(self.start_date) - timedelta(days=60)
         
         try:
-            # Use yfinance for fast data download (alternative to Polygon)
-            ticker = yf.Ticker(self.symbol)
-            data = ticker.history(
-                start=buffer_start.strftime('%Y-%m-%d'),
-                end=self.end_date,
-                interval='1d'
-            )
+            # Use Polygon API for fast data download
+            print(f"📊 Fetching data from {buffer_start.strftime('%Y-%m-%d')} to {self.end_date}")
             
-            if data.empty:
-                raise ValueError(f"No data found for {self.symbol}")
-                
-            # Standardize column names to match lumibot format
-            data.columns = data.columns.str.lower()
-            data = data.reset_index()
-            data['date'] = data['date'].dt.date
+            # Get aggregates (daily bars) from Polygon
+            aggs = []
+            for agg in self.polygon_client.get_aggs(
+                ticker=self.symbol,
+                multiplier=1,
+                timespan="day",
+                from_=buffer_start.strftime('%Y-%m-%d'),
+                to=self.end_date,
+                limit=5000
+            ):
+                aggs.append(agg)
             
-            self.data = data
-            print(f"✅ Downloaded {len(data)} days of data")
+            if not aggs:
+                raise ValueError(f"No data found for {self.symbol} from Polygon")
+            
+            # Convert to DataFrame
+            data_list = []
+            for agg in aggs:
+                data_list.append({
+                    'date': datetime.fromtimestamp(agg.timestamp / 1000).date(),
+                    'open': agg.open,
+                    'high': agg.high,
+                    'low': agg.low,
+                    'close': agg.close,
+                    'volume': agg.volume
+                })
+            
+            self.data = pd.DataFrame(data_list)
+            self.data = self.data.sort_values('date').reset_index(drop=True)
+            
+            print(f"✅ Downloaded {len(self.data)} days of data from Polygon")
             
         except Exception as e:
-            print(f"❌ Failed to download data: {e}")
+            print(f"❌ Failed to download data from Polygon: {e}")
             print("💡 Falling back to manual data creation...")
             
             # Fallback: create synthetic data for testing
             dates = pd.date_range(start=buffer_start, end=self.end_date, freq='D')
             dates = [d for d in dates if d.weekday() < 5]  # Remove weekends
-            print(f"🔧 Creating {len(dates)} days of data from {buffer_start.date()} to {self.end_date}")
+            print(f"🔧 Creating {len(dates)} days of synthetic data from {buffer_start.date()} to {self.end_date}")
             
             np.random.seed(42)  # Reproducible
             base_price = 200
@@ -94,14 +117,16 @@ class TurboLorentzianOptimizer:
                 'close': prices,
                 'volume': np.random.randint(1000000, 10000000, len(dates))
             })
-            print(f"✅ Created {len(self.data)} days of synthetic data")    
+            print(f"✅ Created {len(self.data)} days of synthetic data")
+    
     def calculate_rsi(self, series: pd.Series, length: int = 14) -> pd.Series:
         """Fast RSI calculation"""
         delta = series.diff()
         gain = (delta.clip(lower=0)).rolling(length).mean()
         loss = (-delta.clip(upper=0)).rolling(length).mean()
         rs = gain / (loss + 1e-10)  # Avoid division by zero
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
     
     def calculate_wavetrend(self, df: pd.DataFrame, channel_length: int = 10, average_length: int = 11) -> pd.Series:
         """Fast Wave Trend calculation"""
@@ -109,14 +134,16 @@ class TurboLorentzianOptimizer:
         esa = hlc3.ewm(span=channel_length, adjust=False).mean()
         de = np.abs(hlc3 - esa).ewm(span=channel_length, adjust=False).mean()
         ci = (hlc3 - esa) / (0.015 * de + 1e-10)  # Avoid division by zero
-        return ci.ewm(span=average_length, adjust=False).mean()
+        wt = ci.ewm(span=average_length, adjust=False).mean()
+        return wt
     
     def calculate_cci(self, df: pd.DataFrame, length: int = 20) -> pd.Series:
         """Fast CCI calculation"""
         tp = (df["high"] + df["low"] + df["close"]) / 3
         sma = tp.rolling(length).mean()
         mad = tp.rolling(length).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
-        return (tp - sma) / (0.015 * mad + 1e-10)  # Avoid division by zero
+        cci = (tp - sma) / (0.015 * mad + 1e-10)  # Avoid division by zero
+        return cci
     
     def get_indicators(self, rsi_length: int, wt_channel: int, wt_average: int, cci_length: int) -> pd.DataFrame:
         """Get or calculate indicators (with caching)"""
@@ -124,6 +151,9 @@ class TurboLorentzianOptimizer:
         
         if cache_key in self.indicators_cache:
             return self.indicators_cache[cache_key]
+        
+        if self.data is None:
+            raise ValueError("Data not loaded. Call download_data_once() first.")
         
         # Calculate indicators
         df = self.data.copy()
@@ -136,7 +166,8 @@ class TurboLorentzianOptimizer:
         
         # Cache for reuse
         self.indicators_cache[cache_key] = df
-        return df    
+        return df
+    
     def vectorized_lorentzian_backtest(self, params: Dict) -> float:
         """Ultra-fast vectorized backtest"""
         try:
@@ -211,7 +242,8 @@ class TurboLorentzianOptimizer:
             return total_return
             
         except Exception as e:
-            return -999    
+            return -999
+
     def optimize_turbo(self, max_tests: int = 50):
         """Turbo optimization with pre-computed data"""
         print("\n" + "="*70)
@@ -747,8 +779,8 @@ class UltraMegaOptimizer(TurboLorentzianOptimizer):
 def get_optimizer_config():
     """Get configuration from environment or user input"""
     symbol = os.getenv('SYMBOL') or input("Enter stock symbol (default: TSLA): ").strip() or 'TSLA'
-    start_date = os.getenv('BACKTESTING_START', '2023-01-01')
-    end_date = os.getenv('BACKTESTING_END', '2023-06-30')
+    start_date = os.getenv('BACKTESTING_START', '2024-01-01')
+    end_date = os.getenv('BACKTESTING_END', '2024-06-30')
     
     print(f"📊 Configuration:")
     print(f"   Symbol: {symbol}")
