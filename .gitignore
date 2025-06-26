@@ -8,3 +8,6 @@ __pycache__
 .windsurfrules
 optimization_results
 *.env
+.vscode/settings.json
+lorentzian_strategy/advanced_ta/results_logs
+results_logs

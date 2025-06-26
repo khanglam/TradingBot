@@ -1,0 +1,50 @@
+{
+  "optimization_info": {
+    "symbol": "TSLA",
+    "optimization_date": "2025-06-25T19:31:58.135018",
+    "start_date": "2024-01-31",
+    "end_date": "2024-12-31",
+    "initial_capital": 10000.0,
+    "optimization_score": 0.7784113337979959,
+    "total_return": 106.47378681738063,
+    "win_rate": 91.66666666666666,
+    "total_trades": 12,
+    "final_portfolio_value": 20647.37868173806
+  },
+  "best_parameters": {
+    "neighborsCount": 6,
+    "maxBarsBack": 1000,
+    "useDynamicExits": false,
+    "features": [
+      {
+        "type": "RSI",
+        "param1": 18,
+        "param2": 1
+      },
+      {
+        "type": "WT",
+        "param1": 6,
+        "param2": 8
+      },
+      {
+        "type": "CCI",
+        "param1": 10,
+        "param2": 2
+      }
+    ],
+    "filter_settings": {
+      "useVolatilityFilter": false,
+      "useRegimeFilter": false,
+      "useAdxFilter": false,
+      "regimeThreshold": 0.0,
+      "adxThreshold": 20
+    },
+    "kernel_filter": {
+      "useKernelSmoothing": false,
+      "lookbackWindow": 8,
+      "relativeWeight": 8.0,
+      "regressionLevel": 25,
+      "crossoverLag": 2
+    }
+  }
+}

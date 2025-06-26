@@ -71,7 +71,7 @@ def wavetrend(df: pd.DataFrame, channel_length: int = 10, average_length: int = 
 # -------------------------------  Strategy class  -------------------------------------
 
 class LorentzianClassificationStrategy(Strategy):
-    parameters = {'symbols': ['TSLA'], 'neighbors': 5, 'history_window': 35, 'rsi_length': 14, 'wt_channel': 12, 'wt_average': 15, 'cci_length': 20}
+    parameters = {'neighbors': 3, 'history_window': 50, 'rsi_length': 10, 'wt_channel': 8, 'wt_average': 7, 'cci_length': 24}
     # ---------------------------  Initialise (runs once)  ---------------------------
     def initialize(self):
         # Run the bot once per trading day – ideal for end-of-day swing signals
@@ -82,7 +82,7 @@ class LorentzianClassificationStrategy(Strategy):
         self.set_market("NYSE")
         
         p = self.parameters
-        self.symbols: List[str] = p.get("symbols")
+        self.symbols = ["SPY"]
         self.k = int(p.get("neighbors"))
         self.window = int(p.get("history_window"))
         self.rsi_len = int(p.get("rsi_length"))
@@ -123,15 +123,30 @@ class LorentzianClassificationStrategy(Strategy):
             # 4) Today’s feature vector
             today = df.iloc[-1]
             current_features = [today["RSI"], today["WT"], today["CCI"]]
+            
+            # Skip if today's features contain NaN
+            if any(pd.isna(val) for val in current_features):
+                self.log_message(f"Today's indicators contain NaN for {symbol}, skipping...", color="yellow")
+                continue
 
             # 5) k-NN using Lorentzian distance
             distances = []
             for _, row in dataset.iterrows():
-                d = sum(log(1 + abs(a - b)) for a, b in zip(current_features, [row["RSI"], row["WT"], row["CCI"]]))
+                # Skip rows with NaN values in indicators
+                row_features = [row["RSI"], row["WT"], row["CCI"]]
+                if any(pd.isna(val) for val in row_features):
+                    continue
+                    
+                d = sum(log(1 + abs(a - b)) for a, b in zip(current_features, row_features))
                 distances.append((d, row["label"]))
             distances.sort(key=lambda x: x[0])
+            
+            # Ensure we have enough valid neighbors after NaN filtering
+            if len(distances) < self.k:
+                self.log_message(f"Not enough valid neighbors ({len(distances)}) for {symbol}, need {self.k}", color="yellow")
+                continue
+                
             nearest = distances[: self.k]
-
             prediction_score = sum(lbl for _, lbl in nearest)
             if prediction_score > 0:
                 prediction = 1
@@ -176,7 +191,7 @@ if __name__ == "__main__":
         trading_fee = TradingFee(percent_fee=0.001)
         LorentzianClassificationStrategy.backtest(
             datasource_class=PolygonDataBacktesting,  # Polygon gives us robust daily/minute data
-            benchmark_asset=Asset("TSLA", Asset.AssetType.STOCK),
+            benchmark_asset=Asset("SPY", Asset.AssetType.STOCK),
             buy_trading_fees=[trading_fee],
             sell_trading_fees=[trading_fee],
             quote_asset=Asset("USD", Asset.AssetType.FOREX),
