@@ -28,11 +28,16 @@ load_dotenv()
 
 
 class TurboLorentzianOptimizer:
-    def __init__(self, symbol: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    def __init__(self, symbol: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, realistic_mode: bool = True):
         # Use environment variables if not provided
-        self.symbol = symbol or os.getenv('SYMBOL', 'TSLA')
+        self.symbol = symbol or os.getenv('SYMBOL', 'SPY')
         self.start_date = start_date or os.getenv('BACKTESTING_START', '2024-01-01')
         self.end_date = end_date or os.getenv('BACKTESTING_END', '2024-06-30')
+        
+        # Realistic trading constraints (matches real strategy)
+        self.realistic_mode = realistic_mode
+        self.trading_fee_percent = 0.001  # 0.1% per trade (same as real strategy)
+        self.cash_utilization = 0.99      # 99% cash usage (same as real strategy)
         
         # Initialize Polygon client
         self.polygon_api_key = os.getenv('POLYGON_API_KEY')
@@ -53,12 +58,9 @@ class TurboLorentzianOptimizer:
         """Download data ONCE using Polygon API and cache it"""
         print(f"📥 Downloading {self.symbol} data from Polygon...")
         
-        # Add buffer for indicators (need extra days)
-        buffer_start = pd.to_datetime(self.start_date) - timedelta(days=60)
-        
         try:
             # Use Polygon API for fast data download
-            print(f"📊 Fetching data from {buffer_start.strftime('%Y-%m-%d')} to {self.end_date}")
+            print(f"📊 Fetching data from {self.start_date} to {self.end_date}")
             
             # Get aggregates (daily bars) from Polygon
             aggs = []
@@ -66,7 +68,7 @@ class TurboLorentzianOptimizer:
                 ticker=self.symbol,
                 multiplier=1,
                 timespan="day",
-                from_=buffer_start.strftime('%Y-%m-%d'),
+                from_=self.start_date,
                 to=self.end_date,
                 limit=5000
             ):
@@ -97,9 +99,9 @@ class TurboLorentzianOptimizer:
             print("💡 Falling back to manual data creation...")
             
             # Fallback: create synthetic data for testing
-            dates = pd.date_range(start=buffer_start, end=self.end_date, freq='D')
+            dates = pd.date_range(start=self.start_date, end=self.end_date, freq='D')
             dates = [d for d in dates if d.weekday() < 5]  # Remove weekends
-            print(f"🔧 Creating {len(dates)} days of synthetic data from {buffer_start.date()} to {self.end_date}")
+            print(f"🔧 Creating {len(dates)} days of synthetic data from {self.start_date} to {self.end_date}")
             
             np.random.seed(42)  # Reproducible
             base_price = 200
@@ -223,19 +225,47 @@ class TurboLorentzianOptimizer:
                 
                 # Trading logic
                 current_price = current_row['close']
-                next_price = df.iloc[i + 1]['close']
                 
-                if prediction == 1 and position == 0:  # Buy signal
-                    position = portfolio_value / current_price
-                    portfolio_value = 0
-                elif prediction == -1 and position > 0:  # Sell signal
-                    portfolio_value = position * current_price
-                    position = 0
+                if self.realistic_mode:
+                    # REALISTIC MODE: Match real strategy constraints
+                    if prediction == 1 and position == 0:  # Buy signal
+                        available_cash = portfolio_value * self.cash_utilization  # 99% utilization
+                        shares_affordable = available_cash / current_price
+                        position = int(shares_affordable)  # INTEGER SHARES ONLY
+                        if position > 0:
+                            # Calculate cost with trading fee
+                            gross_cost = position * current_price
+                            trading_fee = gross_cost * self.trading_fee_percent
+                            total_cost = gross_cost + trading_fee
+                            portfolio_value -= total_cost
+                    elif prediction == -1 and position > 0:  # Sell signal
+                        # Calculate proceeds with trading fee
+                        gross_proceeds = position * current_price
+                        trading_fee = gross_proceeds * self.trading_fee_percent
+                        net_proceeds = gross_proceeds - trading_fee
+                        portfolio_value += net_proceeds
+                        position = 0
+                else:
+                    # THEORETICAL MODE: Perfect execution (original logic)
+                    if prediction == 1 and position == 0:  # Buy signal
+                        position = portfolio_value / current_price
+                        portfolio_value = 0
+                    elif prediction == -1 and position > 0:  # Sell signal
+                        portfolio_value = position * current_price
+                        position = 0
             
             # Final portfolio value
             if position > 0:
                 final_price = df.iloc[-1]['close']
-                portfolio_value = position * final_price
+                if self.realistic_mode:
+                    # Apply trading fee for final liquidation
+                    gross_proceeds = position * final_price
+                    trading_fee = gross_proceeds * self.trading_fee_percent
+                    net_proceeds = gross_proceeds - trading_fee
+                    portfolio_value += net_proceeds
+                else:
+                    # Theoretical mode - perfect execution
+                    portfolio_value = position * final_price
             
             # Calculate return
             total_return = (portfolio_value - 100000) / 100000
@@ -243,6 +273,37 @@ class TurboLorentzianOptimizer:
             
         except Exception as e:
             return -999
+
+    def calculate_max_safe_window(self):
+        """Calculate the maximum safe history window to prevent 'not enough data' warnings"""
+        if self.data is None:
+            return 30
+            
+        # Test with standard indicator parameters to see how much data we lose
+        sample_df = self.data.copy()
+        sample_df['rsi'] = self.calculate_rsi(sample_df['close'], 14)
+        sample_df['wt'] = self.calculate_wavetrend(sample_df, 10, 11) 
+        sample_df['cci'] = self.calculate_cci(sample_df, 20)
+        
+        # Remove NaN rows (same as get_indicators does)
+        clean_df = sample_df.dropna()
+        
+        # Filter to actual backtest period (no buffer)
+        start_date = pd.to_datetime(self.start_date).date()
+        end_date = pd.to_datetime(self.end_date).date()
+        backtest_df = clean_df[(clean_df['date'] >= start_date) & (clean_df['date'] <= end_date)]
+        
+        # Calculate safe window: need history_window + 10 days minimum for trading
+        usable_days = len(backtest_df)
+        max_safe_window = max(20, usable_days - 15)  # Leave 15 days buffer
+        
+        print(f"📊 Data safety analysis:")
+        print(f"   Total downloaded: {len(self.data)} days")
+        print(f"   After indicators: {len(clean_df)} days") 
+        print(f"   Backtest period: {usable_days} days")
+        print(f"   Max safe window: {max_safe_window} days")
+        
+        return max_safe_window
 
     def optimize_turbo(self, max_tests: int = 50):
         """Turbo optimization with pre-computed data"""
@@ -252,6 +313,8 @@ class TurboLorentzianOptimizer:
         print(f"Symbol: {self.symbol}")
         print(f"Date Range: {self.start_date} to {self.end_date}")
         print(f"Max Tests: {max_tests}")
+        mode_desc = "REALISTIC (fees, integer shares, 99% cash)" if self.realistic_mode else "THEORETICAL (perfect execution)"
+        print(f"Mode: {mode_desc}")
         print("Strategy: Pre-computed data + Vectorized backtesting")
         
         # Step 1: Download data once
@@ -260,24 +323,33 @@ class TurboLorentzianOptimizer:
             print("❌ Failed to download data")
             return None, None
         
-        # Step 2: Generate smart parameter combinations
+        # Step 2: Calculate safe window limits to prevent "not enough data" warnings
+        max_safe_window = self.calculate_max_safe_window()
+        
+        # Step 3: Generate smart parameter combinations
         print(f"\n🧠 Generating {max_tests} smart parameter combinations...")
         
         # Smart parameter ranges (focused on most impactful)
         param_combinations = []
         
-        # Generate combinations (adjusted for available data)
-        data_length = len(self.data) if self.data is not None else 100
-        max_window = min(data_length // 3, 150)  # Use at most 1/3 of data for window
-        
         neighbors_range = [5, 8, 12, 15, 20]
-        window_range = [30, 50, 70, 90, max_window] if max_window >= 30 else [20, 30, 40]
+        # Use only safe window sizes
+        safe_windows = []
+        for w in [20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80, 90]:
+            if w <= max_safe_window:
+                safe_windows.append(w)
+        
+        # Ensure we have at least some window options
+        if not safe_windows:
+            safe_windows = [min(20, max_safe_window)]
+        
+        window_range = safe_windows
         rsi_range = [12, 14, 16]
         wt_channel_range = [8, 10, 12]
         wt_avg_range = [9, 11, 13]
         cci_range = [18, 20, 22]
         
-        print(f"📏 Adjusted window range to {window_range} (data length: {data_length})")
+        print(f"📏 Safe window range: {window_range} (max safe: {max_safe_window})")
         
         import itertools
         import random
@@ -379,20 +451,37 @@ class QuickTurboOptimizer(TurboLorentzianOptimizer):
         # Download data
         self.download_data_once()
         if self.data is None:
-            return None, None        
-        # 10 hand-picked smart combinations (adjusted window sizes)
-        smart_params = [
+            return None, None
+            
+        # Calculate safe window limits
+        max_safe_window = self.calculate_max_safe_window()
+        
+        # 10 hand-picked smart combinations (filtered for safe windows)
+        base_params = [
             {'neighbors': 8, 'history_window': 50, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
             {'neighbors': 5, 'history_window': 40, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
             {'neighbors': 12, 'history_window': 60, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
-            {'neighbors': 8, 'history_window': 70, 'rsi_length': 12, 'wt_channel': 8, 'wt_average': 9, 'cci_length': 18},
-            {'neighbors': 15, 'history_window': 80, 'rsi_length': 16, 'wt_channel': 12, 'wt_average': 13, 'cci_length': 22},
-            {'neighbors': 8, 'history_window': 45, 'rsi_length': 14, 'wt_channel': 12, 'wt_average': 13, 'cci_length': 20},
-            {'neighbors': 10, 'history_window': 90, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
-            {'neighbors': 6, 'history_window': 35, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
-            {'neighbors': 20, 'history_window': 65, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
-            {'neighbors': 8, 'history_window': 55, 'rsi_length': 14, 'wt_channel': 8, 'wt_average': 11, 'cci_length': 22}
+            {'neighbors': 8, 'history_window': 35, 'rsi_length': 12, 'wt_channel': 8, 'wt_average': 9, 'cci_length': 18},
+            {'neighbors': 15, 'history_window': 45, 'rsi_length': 16, 'wt_channel': 12, 'wt_average': 13, 'cci_length': 22},
+            {'neighbors': 8, 'history_window': 30, 'rsi_length': 14, 'wt_channel': 12, 'wt_average': 13, 'cci_length': 20},
+            {'neighbors': 10, 'history_window': 55, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
+            {'neighbors': 6, 'history_window': 25, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
+            {'neighbors': 20, 'history_window': 40, 'rsi_length': 14, 'wt_channel': 10, 'wt_average': 11, 'cci_length': 20},
+            {'neighbors': 8, 'history_window': 35, 'rsi_length': 14, 'wt_channel': 8, 'wt_average': 11, 'cci_length': 22}
         ]
+        
+        # Filter out unsafe window sizes
+        smart_params = []
+        for params in base_params:
+            if params['history_window'] <= max_safe_window:
+                smart_params.append(params)
+            else:
+                # Adjust window to safe size
+                safe_params = params.copy()
+                safe_params['history_window'] = min(params['history_window'], max_safe_window)
+                smart_params.append(safe_params)
+        
+        print(f"📏 Using window range up to {max_safe_window} days")
         
         start_time = datetime.now()
         
@@ -778,7 +867,7 @@ class UltraMegaOptimizer(TurboLorentzianOptimizer):
 # Configuration helper
 def get_optimizer_config():
     """Get configuration from environment or user input"""
-    symbol = os.getenv('SYMBOL') or input("Enter stock symbol (default: TSLA): ").strip() or 'TSLA'
+    symbol = os.getenv('SYMBOL') or input("Enter stock symbol (default: SPY): ").strip() or 'SPY'
     start_date = os.getenv('BACKTESTING_START', '2024-01-01')
     end_date = os.getenv('BACKTESTING_END', '2024-06-30')
     

@@ -71,8 +71,7 @@ def wavetrend(df: pd.DataFrame, channel_length: int = 10, average_length: int = 
 # -------------------------------  Strategy class  -------------------------------------
 
 class LorentzianClassificationStrategy(Strategy):
-    parameters = {"symbols": ["TSLA"],'neighbors': 5, 'history_window': 50, 'rsi_length': 22, 'wt_channel': 14, 'wt_average': 7, 'cci_length': 16} 
-
+    parameters = {'symbols': ['TSLA'], 'neighbors': 5, 'history_window': 35, 'rsi_length': 14, 'wt_channel': 12, 'wt_average': 15, 'cci_length': 20}
     # ---------------------------  Initialise (runs once)  ---------------------------
     def initialize(self):
         # Run the bot once per trading day – ideal for end-of-day swing signals
