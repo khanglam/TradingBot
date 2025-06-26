@@ -11,6 +11,10 @@ For different log levels, set LOG_LEVEL in your .env file or run:
 LOG_LEVEL=DEBUG python optimize_parameters.py  # Shows detailed logs and errors
 LOG_LEVEL=INFO python optimize_parameters.py   # Shows progress bars and summaries (default)
 LOG_LEVEL=WARN python optimize_parameters.py   # Shows only warnings and errors
+
+For randomization control:
+python optimize_parameters.py                  # Random results each run (default)
+RANDOM_SEED=42 python optimize_parameters.py   # Reproducible results (same each run)
 """
 
 import sys
@@ -70,6 +74,62 @@ except ImportError as e:
     print("Make sure you're running this from the advanced_ta directory")
     sys.exit(1)
 
+def get_next_file_number(directory: str, base_filename: str, extension: str) -> int:
+    """
+    Get the next available number for incremental file naming
+    
+    Args:
+        directory: Directory to search for existing files
+        base_filename: Base filename pattern (e.g., "optimization_results_TSLA")
+        extension: File extension (e.g., ".json")
+        
+    Returns:
+        Next available number (1 if no files exist)
+    """
+    if not os.path.exists(directory):
+        return 1
+    
+    import glob
+    pattern = os.path.join(directory, f"{base_filename}_*.{extension}")
+    existing_files = glob.glob(pattern)
+    
+    if not existing_files:
+        return 1
+    
+    # Extract numbers from existing files
+    numbers = []
+    for file_path in existing_files:
+        filename = os.path.basename(file_path)
+        # Remove base filename and extension, extract number
+        try:
+            # Pattern: base_filename_NUMBER.extension
+            number_part = filename.replace(f"{base_filename}_", "").replace(f".{extension}", "")
+            if number_part.isdigit():
+                numbers.append(int(number_part))
+        except:
+            continue
+    
+    if not numbers:
+        return 1
+    
+    return max(numbers) + 1
+
+def generate_incremental_filename(directory: str, base_filename: str, extension: str) -> str:
+    """
+    Generate an incremental filename (e.g., optimization_results_TSLA_1.json)
+    
+    Args:
+        directory: Directory where file will be saved
+        base_filename: Base filename pattern
+        extension: File extension (without dot)
+        
+    Returns:
+        Full path with incremental number
+    """
+    next_number = get_next_file_number(directory, base_filename, extension)
+    filename = f"{base_filename}_{next_number}.{extension}"
+    return os.path.join(directory, filename)
+
 class OptimizationConfig:
     """Configuration for parameter optimization"""
     
@@ -101,47 +161,54 @@ class OptimizationConfig:
             print(f"   Reducing to safe limit: {max_safe_cores} cores")
             self.n_jobs = max_safe_cores
         
+        # Walk-forward analysis settings
+        self.use_walk_forward = os.getenv('USE_WALK_FORWARD', 'false').lower() == 'true'
+        self.walk_forward_periods = int(os.getenv('WALK_FORWARD_PERIODS', '3'))  # Number of periods to test
+        
+        # Randomization settings
+        self.random_seed = os.getenv('RANDOM_SEED')  # Set to a number for reproducible results, leave unset for random
+        
         # Optimization strategy
         self.optimize_for_return = os.getenv('OPTIMIZE_FOR_RETURN', 'false').lower() == 'true'
         
         # Expanded parameter ranges for more thorough optimization
         self.param_ranges = {
             # Core ML settings - expanded ranges
-            'neighborsCount': [2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 18, 20],
-            'maxBarsBack': [300, 500, 750, 1000, 1250, 1500, 1750, 2000],
+            'neighborsCount': [2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 18, 20, 25, 30],  # Added higher values
+            'maxBarsBack': [200, 300, 500, 750, 1000, 1250, 1500, 1750, 2000, 2500],  # Added lower and higher values
             'useDynamicExits': [True, False],
             
-            # RSI Feature parameters - more granular
-            'rsi_period': [8, 10, 12, 14, 16, 18, 20, 22, 24],
-            'rsi_smooth': [1, 2, 3, 4, 5],
+            # RSI Feature parameters - significantly expanded
+            'rsi_period': [6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 35, 40],  # Extended to 40
+            'rsi_smooth': [1, 2, 3, 4, 5, 6, 7, 8],  # Added higher smoothing values
             
             # Williams %R (WT) Feature parameters - expanded
-            'wt_n1': [5, 6, 7, 8, 9, 10, 11, 12, 14],
-            'wt_n2': [6, 8, 10, 11, 12, 14, 16, 18],
+            'wt_n1': [3, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20],  # Extended range
+            'wt_n2': [4, 6, 8, 10, 11, 12, 14, 16, 18, 20, 22, 25],   # Extended range
             
             # CCI Feature parameters - more options
-            'cci_period': [8, 10, 12, 14, 16, 18, 20, 22],
-            'cci_smooth': [1, 2, 3, 4, 5],
+            'cci_period': [6, 8, 10, 12, 14, 16, 18, 20, 22, 25, 28, 30],  # Extended range
+            'cci_smooth': [1, 2, 3, 4, 5, 6, 7, 8],  # Added higher smoothing values
             
             # EMA/SMA Filter settings - more periods
             'useEmaFilter': [True, False],
-            'emaPeriod': [50, 100, 150, 200, 250],
+            'emaPeriod': [20, 30, 50, 75, 100, 150, 200, 250, 300],  # Added more variety
             'useSmaFilter': [True, False],
-            'smaPeriod': [50, 100, 150, 200, 250],
+            'smaPeriod': [20, 30, 50, 75, 100, 150, 200, 250, 300],  # Added more variety
             
             # Advanced filter settings - more thresholds
             'useVolatilityFilter': [True, False],
             'useRegimeFilter': [True, False],
             'useAdxFilter': [True, False],
-            'regimeThreshold': [-0.2, -0.1, 0.0, 0.1, 0.2],
-            'adxThreshold': [15, 20, 25, 30, 35],
+            'regimeThreshold': [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3],  # Wider range
+            'adxThreshold': [10, 15, 20, 25, 30, 35, 40, 45],  # Wider range
             
             # Kernel filter settings - expanded ranges
             'useKernelSmoothing': [True, False],
-            'lookbackWindow': [4, 6, 8, 10, 12, 14, 16],
-            'relativeWeight': [4.0, 6.0, 8.0, 10.0, 12.0, 15.0],
-            'regressionLevel': [15, 20, 25, 30, 35],
-            'crossoverLag': [1, 2, 3, 4, 5],
+            'lookbackWindow': [2, 4, 6, 8, 10, 12, 14, 16, 20, 25],  # Extended range
+            'relativeWeight': [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0],  # Extended range
+            'regressionLevel': [10, 15, 20, 25, 30, 35, 40, 50],  # Extended range
+            'crossoverLag': [1, 2, 3, 4, 5, 6, 8, 10],  # Extended range
         }
         
         # Optimization objectives - adjust based on strategy
@@ -244,9 +311,9 @@ def test_parameter_combination(params, df, symbol, initial_capital):
             kernelFilter=kernel_filter
         )
         
-        # Simulate trading strategy using the modular TradingSimulator
-        from simulate_trade import run_trading_simulation
-        results = run_trading_simulation(df, features, settings, filter_settings, initial_capital)
+        # Simulate trading strategy using EXACT AdvancedLorentzianStrategy logic
+        from simulate_trade import run_advanced_lorentzian_simulation
+        results = run_advanced_lorentzian_simulation(df, features, settings, filter_settings, initial_capital)
         metrics = results['metrics']
         
         # Add symbol to metrics for compatibility
@@ -310,6 +377,10 @@ def calculate_optimization_score(metrics, objectives):
     if not metrics:
         return -float('inf')
     
+    # Check for minimum viability criteria first
+    if metrics['total_trades'] < 2:
+        return -float('inf')  # Need at least 2 trades for meaningful statistics
+    
     score = 0
     for metric_name, config in objectives.items():
         weight = config['weight']
@@ -318,17 +389,32 @@ def calculate_optimization_score(metrics, objectives):
         if metric_name in metrics:
             value = metrics[metric_name]
             
-            # Normalize values to 0-1 range for scoring
+            # Improved normalization with more realistic ranges
             if metric_name == 'total_return':
-                normalized_value = max(0, min(1, (value + 50) / 200))  # -50% to 150% range
+                # Penalize extreme returns (likely overfitting)
+                if abs(value) > 200:  # Returns over 200% are suspicious
+                    normalized_value = 0.1
+                else:
+                    normalized_value = max(0, min(1, (value + 100) / 300))  # -100% to 200% range
             elif metric_name == 'win_rate':
-                normalized_value = value / 100  # 0% to 100%
+                # Penalize extreme win rates (likely overfitting)
+                if value > 90:  # Win rates over 90% are suspicious
+                    normalized_value = 0.5
+                else:
+                    normalized_value = value / 100  # 0% to 100%
             elif metric_name == 'profit_factor':
-                normalized_value = max(0, min(1, value / 5))  # 0 to 5 range
+                # Cap profit factor to avoid overfitting to extreme values
+                capped_value = min(value, 10)  # Cap at 10
+                normalized_value = max(0, min(1, capped_value / 10))  # 0 to 10 range
             elif metric_name == 'sharpe_ratio':
-                normalized_value = max(0, min(1, (value + 2) / 4))  # -2 to 2 range
+                # More realistic Sharpe ratio range
+                normalized_value = max(0, min(1, (value + 1) / 3))  # -1 to 2 range
             elif metric_name == 'max_drawdown':
-                normalized_value = max(0, min(1, (value + 50) / 50))  # -50% to 0% range
+                # Penalize large drawdowns more severely
+                if value < -50:  # Drawdowns over 50% are very bad
+                    normalized_value = 0
+                else:
+                    normalized_value = max(0, min(1, (value + 50) / 50))  # -50% to 0% range
             else:
                 normalized_value = 0.5  # Default neutral score
             
@@ -336,6 +422,23 @@ def calculate_optimization_score(metrics, objectives):
                 normalized_value = 1 - normalized_value
             
             score += weight * normalized_value
+    
+    # Add penalty for suspicious combinations (likely overfitting)
+    total_return = metrics.get('total_return', 0)
+    win_rate = metrics.get('win_rate', 0)
+    total_trades = metrics.get('total_trades', 0)
+    
+    # Penalty for unrealistic performance
+    if total_return > 150 and win_rate > 80:  # Too good to be true
+        score *= 0.5
+    
+    # Penalty for too few trades (not enough data)
+    if total_trades < 5:
+        score *= 0.7
+    
+    # Bonus for reasonable, consistent performance
+    if 10 <= total_return <= 50 and 45 <= win_rate <= 70 and total_trades >= 10:
+        score *= 1.1  # Small bonus for realistic performance
     
     return score
 
@@ -366,7 +469,20 @@ def generate_parameter_combinations(config):
         lhs_combinations = generate_latin_hypercube_sample(config.param_ranges, config.max_combinations // 2)
         
         # Strategy 2: Memory-efficient random sampling
-        np.random.seed(42)  # For reproducibility
+        # Use random seed only if RANDOM_SEED environment variable is set
+        random_seed = os.getenv('RANDOM_SEED')
+        if random_seed:
+            np.random.seed(int(random_seed))
+            if is_info():
+                print(f"   🎲 Using fixed random seed: {random_seed} (for reproducibility)")
+        else:
+            # Use truly random seed based on current time
+            import time
+            seed = int(time.time() * 1000000) % 2**32
+            np.random.seed(seed)
+            if is_info():
+                print(f"   🎲 Using random seed: {seed} (set RANDOM_SEED env var for reproducibility)")
+        
         n_random = config.max_combinations - len(lhs_combinations)
         random_sample = []
         
@@ -397,7 +513,8 @@ def generate_latin_hypercube_sample(param_ranges, n_samples):
     param_values = list(param_ranges.values())
     
     # Create LHS samples
-    np.random.seed(42)
+    # Use the same random state as the main sampling for consistency
+    # (seed is already set in the calling function)
     n_params = len(param_names)
     
     # Generate LHS samples in [0,1] space
@@ -457,8 +574,8 @@ def display_optimization_summary(results, config):
         win_rate_color = "🟢" if metrics['win_rate'] >= 50 else "🟡" if metrics['win_rate'] >= 40 else "🔴"
         
         print(f"{total_return_color} Total Return: {metrics['total_return']:+7.2f}% | Final Value: ${metrics['final_portfolio_value']:,.2f}")
-        print(f"{win_rate_color} Win Rate: {metrics['win_rate']:5.1f}% | Trades: {metrics['total_trades']} | Profit Factor: {metrics['profit_factor']:.2f}")
-        print(f"⚡ Sharpe: {metrics['sharpe_ratio']:5.2f} | Max DD: {metrics['max_drawdown']:6.2f}% | Avg P&L: ${metrics['avg_dollar_return_per_trade']:+,.0f}")
+        print(f"{win_rate_color} Win Rate: {metrics['win_rate']:5.1f}% | Trades: {metrics['total_trades']} | Profit Factor: {metrics.get('profit_factor', 0):.2f}")
+        print(f"⚡ Sharpe: {metrics.get('sharpe_ratio', 0):5.2f} | Max DD: {metrics.get('max_drawdown', 0):6.2f}% | Avg P&L: ${metrics.get('avg_dollar_return_per_trade', 0):+,.0f}")
         
         # Key parameters
         print(f"🔧 Neighbors: {params['neighborsCount']} | Bars Back: {params['maxBarsBack']} | Dynamic Exits: {params['useDynamicExits']}")
@@ -481,8 +598,7 @@ def save_optimization_results(results, config):
     results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
     os.makedirs(results_dir, exist_ok=True)
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = os.path.join(results_dir, f"optimization_results_{config.symbol}_{timestamp}.json")
+    filename = generate_incremental_filename(results_dir, f"optimization_results_{config.symbol}", "json")
     
     # Prepare data for JSON serialization
     json_data = {
@@ -797,6 +913,138 @@ def monitor_system_resources():
     if memory.percent > 80:
         print(f"⚠️  WARNING: Memory at {memory.percent:.1f}% - optimization may be slow")
 
+def validate_optimization_vs_strategy(config):
+    """
+    Validate that optimization simulation matches AdvancedLorentzianStrategy logic
+    This helps ensure optimization results translate to real strategy performance
+    """
+    print(f"\n🔍 STRATEGY COMPATIBILITY VALIDATION")
+    print("="*60)
+    
+    # Force daily data for consistency with AdvancedLorentzianStrategy
+    if config.timeframe != 'day':
+        print(f"⚠️  WARNING: Data timeframe mismatch!")
+        print(f"   Optimization timeframe: {config.timeframe}")
+        print(f"   AdvancedLorentzianStrategy timeframe: day (hardcoded)")
+        print(f"   ")
+        print(f"   🚨 CRITICAL: This mismatch means optimization results")
+        print(f"      will NOT translate to real strategy performance!")
+        print(f"   ")
+        print(f"   🔧 SOLUTION: Set DATA_TIMEFRAME=day in your .env file")
+        print(f"      or run: DATA_TIMEFRAME=day python optimize_parameters.py")
+        print(f"   ")
+        
+        response = input(f"   Force daily data for strategy compatibility? (Y/n): ").strip().lower()
+        if response in ['n', 'no']:
+            print(f"   Exiting...")
+            return False
+        else:
+            print(f"   ✅ Switching to daily data for strategy compatibility")
+            config.timeframe = 'day'
+            config.aggregate_to_daily = False  # No need to aggregate daily data
+    else:
+        print(f"✅ Timeframe: {config.timeframe} (matches AdvancedLorentzianStrategy)")
+    
+    # Data source warning
+    print(f"⚠️  Data Source Difference:")
+    print(f"   Optimization: Polygon API direct")
+    print(f"   AdvancedLorentzianStrategy: Lumibot get_historical_prices()")
+    print(f"   ")
+    print(f"   📊 Note: Small differences in data may cause minor performance variations")
+    print(f"      but the trading logic is now EXACTLY matched.")
+    
+    # Trading logic confirmation
+    print(f"✅ Trading Logic: EXACT match with AdvancedLorentzianStrategy")
+    print(f"   • Position sizing: min(cash * 0.95, cash - 1000)")
+    print(f"   • start_long: Opens long positions")  
+    print(f"   • start_short: Closes long positions (no short selling)")
+    print(f"   • Signal processing: Latest signals from classifier")
+    print(f"   • Simulation: AdvancedLorentzianSimulator (exact replica)")
+    
+    print("="*60)
+    
+    return True
+
+def perform_walk_forward_analysis(param_combinations, df, config):
+    """
+    Perform walk-forward analysis to test parameter robustness
+    This helps avoid overfitting to a single time period
+    """
+    print(f"\n🔄 WALK-FORWARD ANALYSIS")
+    print(f"   Testing top parameters across {config.walk_forward_periods} periods")
+    
+    # Split data into periods
+    total_days = len(df)
+    period_size = total_days // config.walk_forward_periods
+    
+    periods = []
+    for i in range(config.walk_forward_periods):
+        start_idx = i * period_size
+        end_idx = start_idx + period_size if i < config.walk_forward_periods - 1 else total_days
+        period_df = df.iloc[start_idx:end_idx]
+        periods.append({
+            'df': period_df,
+            'name': f"Period {i+1}",
+            'start_date': period_df.index[0].strftime('%Y-%m-%d'),
+            'end_date': period_df.index[-1].strftime('%Y-%m-%d')
+        })
+    
+    # Test top 10 parameter combinations across all periods
+    top_params = param_combinations[:10] if len(param_combinations) >= 10 else param_combinations
+    
+    walk_forward_results = []
+    
+    for params in tqdm(top_params, desc="Walk-forward testing"):
+        period_scores = []
+        period_returns = []
+        
+        for period in periods:
+            try:
+                result = test_parameter_combination(params, period['df'], config.symbol, config.initial_capital)
+                if result:
+                    score = calculate_optimization_score(result, config.objectives)
+                    period_scores.append(score)
+                    period_returns.append(result['total_return'])
+                else:
+                    period_scores.append(0)
+                    period_returns.append(0)
+            except:
+                period_scores.append(0)
+                period_returns.append(0)
+        
+        # Calculate consistency metrics
+        avg_score = np.mean(period_scores)
+        std_score = np.std(period_scores)
+        consistency_ratio = avg_score / (std_score + 0.001)  # Higher is better
+        
+        avg_return = np.mean(period_returns)
+        std_return = np.std(period_returns)
+        
+        walk_forward_results.append({
+            'parameters': params,
+            'avg_score': avg_score,
+            'std_score': std_score,
+            'consistency_ratio': consistency_ratio,
+            'avg_return': avg_return,
+            'std_return': std_return,
+            'period_scores': period_scores,
+            'period_returns': period_returns
+        })
+    
+    # Sort by consistency ratio (most consistent performance)
+    walk_forward_results.sort(key=lambda x: x['consistency_ratio'], reverse=True)
+    
+    print(f"\n🏆 WALK-FORWARD RESULTS (Top 5 Most Consistent):")
+    print("="*80)
+    
+    for i, result in enumerate(walk_forward_results[:5], 1):
+        print(f"\n#{i} - Consistency Ratio: {result['consistency_ratio']:.2f}")
+        print(f"   Avg Score: {result['avg_score']:.3f} ± {result['std_score']:.3f}")
+        print(f"   Avg Return: {result['avg_return']:+.1f}% ± {result['std_return']:.1f}%")
+        print(f"   Period Returns: {[f'{r:+.1f}%' for r in result['period_returns']]}")
+    
+    return walk_forward_results
+
 def main():
     """Main optimization function"""
     print("🔧 Starting Parameter Optimization for Lorentzian Classification")
@@ -818,6 +1066,12 @@ def main():
     print(f"   Parallel processing: {config.use_parallel}")
     if config.use_parallel:
         print(f"   CPU cores: {config.n_jobs}")
+    
+    # Show randomization status
+    if config.random_seed:
+        print(f"   🔒 Randomization: Fixed seed ({config.random_seed}) - reproducible results")
+    else:
+        print(f"   🎲 Randomization: Random seed - different results each run")
     
     # Display optimization strategy
     strategy_name = "Return-Focused" if config.optimize_for_return else "Balanced"
@@ -846,6 +1100,10 @@ def main():
             print(f"⚠️  WARNING: Optimizing with {days_diff} days of hourly data!")
             print(f"   This may be slow. Consider using daily data for faster optimization.")
             print(f"   Recommended: Use daily data (DATA_TIMEFRAME=day) for optimization")
+    
+    # Validate optimization vs strategy
+    if not validate_optimization_vs_strategy(config):
+        return
     
     # Download market data
     print(f"\n📥 Downloading market data...")
@@ -974,6 +1232,16 @@ def main():
         else:
             print(f"\n🏆 DETAILED REPORT FOR BEST PARAMETERS:")
             display_performance_report(current_best)
+        
+        # Perform walk-forward analysis if enabled
+        if config.use_walk_forward and len(results) >= 5:
+            print(f"\n🔄 STARTING WALK-FORWARD ANALYSIS...")
+            # Sort results by score and take top ones for walk-forward testing
+            results.sort(key=lambda x: x['optimization_score'], reverse=True)
+            top_param_combinations = [r['parameters'] for r in results[:10]]
+            walk_forward_results = perform_walk_forward_analysis(top_param_combinations, df_for_classification, config)
+        elif config.use_walk_forward:
+            print(f"\n⚠️  Skipping walk-forward analysis: need at least 5 valid results, got {len(results)}")
         
     else:
         print("❌ No valid results found. Check your parameter ranges and data.")

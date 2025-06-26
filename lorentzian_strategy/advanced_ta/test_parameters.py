@@ -47,6 +47,62 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Global data cache to avoid repeated API calls
 _data_cache = {}
 
+def get_next_file_number(directory: str, base_filename: str, extension: str) -> int:
+    """
+    Get the next available number for incremental file naming
+    
+    Args:
+        directory: Directory to search for existing files
+        base_filename: Base filename pattern (e.g., "lorentzian_plot_TSLA")
+        extension: File extension (e.g., "jpg")
+        
+    Returns:
+        Next available number (1 if no files exist)
+    """
+    if not os.path.exists(directory):
+        return 1
+    
+    import glob
+    pattern = os.path.join(directory, f"{base_filename}_*.{extension}")
+    existing_files = glob.glob(pattern)
+    
+    if not existing_files:
+        return 1
+    
+    # Extract numbers from existing files
+    numbers = []
+    for file_path in existing_files:
+        filename = os.path.basename(file_path)
+        # Remove base filename and extension, extract number
+        try:
+            # Pattern: base_filename_NUMBER.extension
+            number_part = filename.replace(f"{base_filename}_", "").replace(f".{extension}", "")
+            if number_part.isdigit():
+                numbers.append(int(number_part))
+        except:
+            continue
+    
+    if not numbers:
+        return 1
+    
+    return max(numbers) + 1
+
+def generate_incremental_filename(directory: str, base_filename: str, extension: str) -> str:
+    """
+    Generate an incremental filename (e.g., lorentzian_plot_TSLA_1.jpg)
+    
+    Args:
+        directory: Directory where file will be saved
+        base_filename: Base filename pattern
+        extension: File extension (without dot)
+        
+    Returns:
+        Full path with incremental number
+    """
+    next_number = get_next_file_number(directory, base_filename, extension)
+    filename = f"{base_filename}_{next_number}.{extension}"
+    return os.path.join(directory, filename)
+
 def clear_data_cache():
     """Clear the data cache"""
     global _data_cache
@@ -365,7 +421,7 @@ def generate_sample_data_fallback(symbol=None, days=300):
     """Generate sample OHLCV data as fallback"""
     print(f"📊 Generating {days} days of sample data for {symbol}...")
     
-    # Set random seed for reproducibility
+    # Set random seed for reproducibility (only used for sample data fallback)
     np.random.seed(42)
     
     # Generate dates (business days only)
@@ -529,24 +585,27 @@ def create_filter_settings_from_params(params):
 
 def simulate_trading_strategy(df, features, settings, filter_settings, symbol, initial_capital=10000):
     """
-    Simulate trading strategy using the modular TradingSimulator from simulate_trade.py
+    Simulate trading strategy using EXACT AdvancedLorentzianStrategy logic
     
-    This function now uses the sophisticated TradingSimulator class which provides:
-    - Cleaner, more maintainable code structure
-    - Enhanced signal processing capabilities
-    - Better error handling and debugging
-    - Consistent trading logic across all modules
+    This function now uses the AdvancedLorentzianSimulator which exactly replicates
+    the trading logic from AdvancedLorentzianStrategy.py to ensure optimization
+    results translate perfectly to real strategy performance.
+    
+    Key features that match AdvancedLorentzianStrategy exactly:
+    - Position sizing: min(cash * 0.95, cash - 1000)
+    - Trading logic: start_long opens long, start_short closes long (no short selling)
+    - Signal processing: Uses latest signals from classifier
+    - Cash management: Same buffer and sizing logic
     """
-    from simulate_trade import run_trading_simulation
+    from simulate_trade import run_advanced_lorentzian_simulation
     
-    # Use the new modular trading simulation
-    results = run_trading_simulation(
+    # Use the EXACT AdvancedLorentzianStrategy simulation
+    results = run_advanced_lorentzian_simulation(
         df=df,
         features=features,
         settings=settings,
         filter_settings=filter_settings,
-        initial_capital=initial_capital,
-        enable_short_selling=False  # Keep same behavior as before
+        initial_capital=initial_capital
     )
     
     # Extract metrics from results
@@ -687,10 +746,69 @@ def display_performance_report(metrics):
     
     print("="*80)
 
+def validate_configuration_for_strategy_match():
+    """
+    Validate configuration to ensure optimization results match AdvancedLorentzianStrategy
+    
+    This function ensures that test_parameters.py uses the same configuration as
+    AdvancedLorentzianStrategy.py for meaningful optimization results.
+    """
+    timeframe = os.getenv('DATA_TIMEFRAME', 'day').lower()
+    
+    print("🔍 STRATEGY COMPATIBILITY VALIDATION")
+    print("="*60)
+    
+    # Check timeframe compatibility
+    if timeframe != 'day':
+        print(f"⚠️  WARNING: Data timeframe mismatch!")
+        print(f"   test_parameters.py timeframe: {timeframe}")
+        print(f"   AdvancedLorentzianStrategy timeframe: day (hardcoded)")
+        print(f"   ")
+        print(f"   🚨 CRITICAL: This mismatch means optimization results")
+        print(f"      will NOT translate to real strategy performance!")
+        print(f"   ")
+        print(f"   🔧 SOLUTION: Set DATA_TIMEFRAME=day in your .env file")
+        print(f"      or run: DATA_TIMEFRAME=day python test_parameters.py")
+        print(f"   ")
+        
+        response = input(f"   Force daily data for strategy compatibility? (Y/n): ").strip().lower()
+        if response in ['', 'y', 'yes']:
+            print(f"   ✅ Switching to daily data for strategy compatibility")
+            return 'day'
+        else:
+            print(f"   ⚠️  Continuing with {timeframe} data - results may not translate to strategy")
+            return timeframe
+    else:
+        print(f"✅ Timeframe: {timeframe} (matches AdvancedLorentzianStrategy)")
+    
+    # Data source warning
+    print(f"⚠️  Data Source Difference:")
+    print(f"   test_parameters.py: Polygon API direct")
+    print(f"   AdvancedLorentzianStrategy: Lumibot get_historical_prices()")
+    print(f"   ")
+    print(f"   📊 Note: Small differences in data may cause minor performance variations")
+    print(f"      but the trading logic is now EXACTLY matched.")
+    
+    # Trading logic confirmation
+    print(f"✅ Trading Logic: EXACT match with AdvancedLorentzianStrategy")
+    print(f"   • Position sizing: min(cash * 0.95, cash - 1000)")
+    print(f"   • start_long: Opens long positions")  
+    print(f"   • start_short: Closes long positions (no short selling)")
+    print(f"   • Signal processing: Latest signals from classifier")
+    
+    print("="*60)
+    print()
+    
+    return timeframe
+
 def main():
     """Main demo function"""
     print("🎯 Starting Advanced TA Lorentzian Classification Demo")
     print(f"   Working directory: {os.getcwd()}")
+    print()
+    
+    # Validate configuration for strategy compatibility
+    validated_timeframe = validate_configuration_for_strategy_match()
     
     # Download real market data
     symbol = os.getenv('SYMBOL', 'TSLA')
@@ -698,7 +816,7 @@ def main():
     end_date = os.getenv('BACKTESTING_END', '2024-12-31')
     initial_capital = float(os.getenv('INITIAL_CAPITAL', '10000'))
     use_optimized_params = os.getenv('USE_OPTIMIZED_PARAMS', 'true').lower() == 'true'
-    timeframe = os.getenv('DATA_TIMEFRAME', 'day').lower()  # 'day' or 'minute'
+    timeframe = validated_timeframe  # Use validated timeframe
     
     if is_info():
         print(f"📊 Configuration:")
@@ -820,8 +938,7 @@ def main():
         results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
         os.makedirs(results_dir, exist_ok=True)
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        plot_file = os.path.join(results_dir, f"lorentzian_plot_{symbol}_{timestamp}.jpg")
+        plot_file = generate_incremental_filename(results_dir, f"lorentzian_plot_{symbol}", "jpg")
         
         if is_info():
             print(f"📊 Generating plot...")

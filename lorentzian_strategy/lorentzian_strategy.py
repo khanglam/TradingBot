@@ -27,6 +27,61 @@ from lumibot.backtesting import PolygonDataBacktesting
 from advanced_ta.LorentzianClassification.Classifier import LorentzianClassification
 from advanced_ta.LorentzianClassification.Types import Feature, Settings, FilterSettings, KernelFilter, Direction
 
+def get_next_file_number(directory: str, base_filename: str, extension: str) -> int:
+    """
+    Get the next available number for incremental file naming
+    
+    Args:
+        directory: Directory to search for existing files
+        base_filename: Base filename pattern (e.g., "optimization_results")
+        extension: File extension (e.g., "json")
+        
+    Returns:
+        Next available number (1 if no files exist)
+    """
+    if not os.path.exists(directory):
+        return 1
+    
+    import glob
+    pattern = os.path.join(directory, f"{base_filename}_*.{extension}")
+    existing_files = glob.glob(pattern)
+    
+    if not existing_files:
+        return 1
+    
+    # Extract numbers from existing files
+    numbers = []
+    for file_path in existing_files:
+        filename = os.path.basename(file_path)
+        # Remove base filename and extension, extract number
+        try:
+            # Pattern: base_filename_NUMBER.extension
+            number_part = filename.replace(f"{base_filename}_", "").replace(f".{extension}", "")
+            if number_part.isdigit():
+                numbers.append(int(number_part))
+        except:
+            continue
+    
+    if not numbers:
+        return 1
+    
+    return max(numbers) + 1
+
+def generate_incremental_filename(directory: str, base_filename: str, extension: str) -> str:
+    """
+    Generate an incremental filename (e.g., optimization_results_1.json)
+    
+    Args:
+        directory: Directory where file will be saved
+        base_filename: Base filename pattern
+        extension: File extension (without dot)
+        
+    Returns:
+        Full path with incremental number
+    """
+    next_number = get_next_file_number(directory, base_filename, extension)
+    filename = f"{base_filename}_{next_number}.{extension}"
+    return os.path.join(directory, filename)
 
 class LorentzianStrategy(Strategy):
     """
@@ -494,8 +549,7 @@ def optimize_lorentzian_strategy():
     results.sort(key=lambda x: x.get('fitness', 0), reverse=True)
     
     # Save results to JSON
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_file = os.path.join(output_dir, f"optimization_results_{timestamp}.json")
+    result_file = generate_incremental_filename(output_dir, "optimization_results", "json")
     
     with open(result_file, 'w') as f:
         json.dump(results, f, indent=2)
