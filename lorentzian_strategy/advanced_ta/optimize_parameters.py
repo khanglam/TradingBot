@@ -6,6 +6,11 @@ This script optimizes the parameters of the Lorentzian Classification strategy
 to maximize returns, win rate, or other performance metrics.
 
 Usage: python optimize_parameters.py
+
+For different log levels, set LOG_LEVEL in your .env file or run:
+LOG_LEVEL=DEBUG python optimize_parameters.py  # Shows detailed logs and errors
+LOG_LEVEL=INFO python optimize_parameters.py   # Shows progress bars and summaries (default)
+LOG_LEVEL=WARN python optimize_parameters.py   # Shows only warnings and errors
 """
 
 import sys
@@ -24,13 +29,27 @@ import psutil  # For system monitoring
 # Load environment variables
 load_dotenv()
 
+# Logging level control
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+
+def is_debug():
+    """Returns True if DEBUG level logging is enabled"""
+    return LOG_LEVEL == 'DEBUG'
+
+def is_info():
+    """Returns True if INFO level logging is enabled (includes DEBUG)"""
+    return LOG_LEVEL in ['DEBUG', 'INFO']
+
+def is_warn():
+    """Returns True if WARN level logging is enabled (includes all levels)"""
+    return LOG_LEVEL in ['DEBUG', 'INFO', 'WARN']
+
 # Add the current directory to path so we can import our modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import our existing functions
-from run_advanced_ta import (
+from test_parameters import (
     download_real_data, 
-    calculate_performance_metrics, 
     display_performance_report,
     aggregate_minute_to_daily,
     aggregate_hour_to_daily,
@@ -46,7 +65,6 @@ try:
         KernelFilter,
         Direction
     )
-    print("✅ Successfully imported LorentzianClassification components")
 except ImportError as e:
     print(f"❌ Import error: {e}")
     print("Make sure you're running this from the advanced_ta directory")
@@ -153,9 +171,41 @@ def test_parameter_combination_wrapper(params, df, symbol, initial_capital, obje
         result['optimization_score'] = calculate_optimization_score(result, objectives)
     return result
 
+def validate_parameters(params):
+    """Validate parameter combination for obvious issues"""
+    # Check for reasonable ranges
+    if params['neighborsCount'] < 1 or params['neighborsCount'] > 50:
+        return False, "Invalid neighborsCount"
+    
+    if params['maxBarsBack'] < 50 or params['maxBarsBack'] > 5000:
+        return False, "Invalid maxBarsBack"
+    
+    # Check technical indicator parameters
+    if params['rsi_period'] < 2 or params['rsi_period'] > 50:
+        return False, "Invalid RSI period"
+    
+    if params['wt_n1'] < 2 or params['wt_n2'] < 2:
+        return False, "Invalid WT parameters"
+    
+    if params['cci_period'] < 2 or params['cci_period'] > 50:
+        return False, "Invalid CCI period"
+    
+    # Check filter parameters
+    if params['emaPeriod'] < 5 or params['emaPeriod'] > 500:
+        return False, "Invalid EMA period"
+    
+    if params['smaPeriod'] < 5 or params['smaPeriod'] > 500:
+        return False, "Invalid SMA period"
+    
+    return True, "Valid"
+
 def test_parameter_combination(params, df, symbol, initial_capital):
     """Test a single parameter combination and return performance metrics"""
     try:
+        # Validate parameters first
+        is_valid, reason = validate_parameters(params)
+        if not is_valid:
+            return None
         # Create features with optimized parameters
         features = [
             Feature("RSI", params['rsi_period'], params['rsi_smooth']),
@@ -194,12 +244,31 @@ def test_parameter_combination(params, df, symbol, initial_capital):
             kernelFilter=kernel_filter
         )
         
-        # Run classification
-        lc = LorentzianClassification(df, features, settings, filter_settings)
-        results = lc.data
+        # Simulate trading strategy using the modular TradingSimulator
+        from simulate_trade import run_trading_simulation
+        results = run_trading_simulation(df, features, settings, filter_settings, initial_capital)
+        metrics = results['metrics']
         
-        # Calculate performance metrics
-        metrics = calculate_performance_metrics(results, symbol, initial_capital)
+        # Add symbol to metrics for compatibility
+        metrics['symbol'] = symbol
+        
+        # Convert Trade dataclass objects to dictionaries for compatibility
+        if 'all_trades' in metrics:
+            trade_dicts = []
+            for trade in metrics['all_trades']:
+                trade_dicts.append({
+                    'entry_date': trade.entry_date,
+                    'exit_date': trade.exit_date,
+                    'entry_price': trade.entry_price,
+                    'exit_price': trade.exit_price,
+                    'quantity': trade.quantity,
+                    'side': trade.side,
+                    'return_pct': trade.return_pct,
+                    'return_dollars': trade.return_dollars,
+                    'days_held': trade.days_held,
+                    'reason': trade.reason
+                })
+            metrics['all_trades'] = trade_dicts
         
         if metrics is None:
             return None
@@ -210,17 +279,30 @@ def test_parameter_combination(params, df, symbol, initial_capital):
         return metrics
         
     except Exception as e:
-        # More detailed error reporting for debugging
-        import traceback
+        # Track error types for analysis
         error_details = str(e)
+        
+        # Count different error types (stored in global variable for multiprocessing)
+        if not hasattr(test_parameter_combination, 'error_counts'):
+            test_parameter_combination.error_counts = {}
+        
         if "division by zero" in error_details.lower():
-            print(f"❌ Division by zero error in parameter test: {error_details}")
-        elif "invalid value" in error_details.lower():
-            print(f"❌ Invalid value error in parameter test: {error_details}")
+            error_type = "division_by_zero"
+        elif "invalid value" in error_details.lower() or "nan" in error_details.lower():
+            error_type = "invalid_values"
+        elif "insufficient" in error_details.lower() or "not enough" in error_details.lower():
+            error_type = "insufficient_data"
+        elif "index" in error_details.lower() and "out of" in error_details.lower():
+            error_type = "index_error"
         else:
-            print(f"❌ Error testing parameters: {error_details}")
-        # Uncomment below for full traceback during debugging
-        # traceback.print_exc()
+            error_type = "other"
+        
+        test_parameter_combination.error_counts[error_type] = test_parameter_combination.error_counts.get(error_type, 0) + 1
+        
+        # Only print errors occasionally to avoid spam
+        if test_parameter_combination.error_counts[error_type] <= 3 and is_info():
+            print(f"❌ {error_type}: {error_details}")
+        
         return None
 
 def calculate_optimization_score(metrics, objectives):
@@ -267,15 +349,18 @@ def generate_parameter_combinations(config):
     for values in param_values:
         total_combinations *= len(values)
     
-    print(f"📊 Total possible combinations: {total_combinations:,}")
+    if is_info():
+        print(f"📊 Total possible combinations: {total_combinations:,}")
     
     if total_combinations <= config.max_combinations:
         # Use all combinations if feasible
-        print(f"✅ Using all {total_combinations:,} combinations")
+        if is_info():
+            print(f"✅ Using all {total_combinations:,} combinations")
         all_combinations = list(itertools.product(*param_values))
     else:
         # Use smart sampling strategies
-        print(f"🎯 Using smart sampling: {config.max_combinations:,} from {total_combinations:,} possible")
+        if is_info():
+            print(f"🎯 Using smart sampling: {config.max_combinations:,} from {total_combinations:,} possible")
         
         # Strategy 1: Latin Hypercube Sampling for better coverage
         lhs_combinations = generate_latin_hypercube_sample(config.param_ranges, config.max_combinations // 2)
@@ -294,8 +379,9 @@ def generate_parameter_combinations(config):
         # Combine both strategies
         all_combinations = lhs_combinations + random_sample
         
-        print(f"   📐 Latin Hypercube: {len(lhs_combinations):,} combinations")
-        print(f"   🎲 Random sampling: {len(random_sample):,} combinations")
+        if is_info():
+            print(f"   📐 Latin Hypercube: {len(lhs_combinations):,} combinations")
+            print(f"   🎲 Random sampling: {len(random_sample):,} combinations")
     
     # Convert to parameter dictionaries
     param_combinations = []
@@ -431,16 +517,99 @@ def save_optimization_results(results, config):
     print(f"💾 Optimization results saved to: {filename}")
     return filename
 
-def save_best_parameters(results, config):
+def load_existing_best_parameters(symbol):
+    """Load existing best parameters if available"""
+    script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
+    best_params_file = os.path.join(script_dir, f"best_parameters_{symbol}.json")
+    
+    if os.path.exists(best_params_file):
+        try:
+            with open(best_params_file, 'r') as f:
+                data = json.load(f)
+            
+            if 'optimization_info' in data and 'optimization_score' in data['optimization_info']:
+                print(f"📋 Found existing best parameters for {symbol}")
+                print(f"   Previous best score: {data['optimization_info']['optimization_score']:.3f}")
+                print(f"   Previous best return: {data['optimization_info']['total_return']:+.2f}%")
+                print(f"   Optimization date: {data['optimization_info']['optimization_date'][:10]}")
+                return data
+            else:
+                print(f"⚠️  Existing parameter file has old format, will be updated")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error loading existing parameters: {e}")
+            return None
+    else:
+        print(f"ℹ️  No existing best parameters found for {symbol}")
+        return None
+
+def save_best_parameters(results, config, existing_best=None):
     """Save the best parameters to a standardized file for easy loading"""
     if not results:
         return None
     
-    # Get the best result
-    best_result = max(results, key=lambda x: x['optimization_score'])
+    # Get the best result from current optimization
+    current_best = max(results, key=lambda x: x['optimization_score'])
+    
+    # Compare with existing best if available
+    if existing_best and 'optimization_info' in existing_best:
+        existing_score = existing_best['optimization_info']['optimization_score']
+        current_score = current_best['optimization_score']
+        
+        print(f"\n🏆 OPTIMIZATION COMPARISON:")
+        print(f"   Current best score:  {current_score:.3f} (return: {current_best['total_return']:+.2f}%)")
+        print(f"   Previous best score: {existing_score:.3f} (return: {existing_best['optimization_info']['total_return']:+.2f}%)")
+        
+        if current_score <= existing_score:
+            print(f"   📊 RESULT: Previous parameters remain the best!")
+            print(f"   🔒 No update needed - keeping existing best parameters")
+            
+            # Update the existing file with new optimization attempt info
+            existing_best['optimization_info']['last_optimization_attempt'] = datetime.now().isoformat()
+            existing_best['optimization_info']['attempts_count'] = existing_best['optimization_info'].get('attempts_count', 1) + 1
+            
+            # Save updated existing best
+            script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
+            best_params_file = os.path.join(script_dir, f"best_parameters_{config.symbol}.json")
+            
+            def convert_numpy_types(obj):
+                if isinstance(obj, (np.integer, np.int32, np.int64)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float32, np.float64)):
+                    return float(obj)
+                elif isinstance(obj, np.bool_):
+                    return bool(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {key: convert_numpy_types(value) for key, value in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                elif isinstance(obj, tuple):
+                    return tuple(convert_numpy_types(item) for item in obj)
+                else:
+                    return obj
+            
+            existing_best_converted = convert_numpy_types(existing_best)
+            
+            with open(best_params_file, 'w') as f:
+                json.dump(existing_best_converted, f, indent=2)
+            
+            print(f"   📝 Updated attempt count and timestamp")
+            return best_params_file
+        else:
+            print(f"   🎉 NEW RECORD! Current optimization found better parameters!")
+            print(f"   📈 Improvement: +{current_score - existing_score:.3f} score points")
+            # Continue with saving new best parameters
+    else:
+        print(f"\n🎯 FIRST OPTIMIZATION: Setting baseline best parameters")
+    
+    # Use current best result
+    best_result = current_best
     best_params = best_result['parameters']
     
-    # Create best parameters file with both run_advanced_ta.py and AdvancedLorentzianStrategy formats
+    # Create best parameters file with both test_parameters.py and AdvancedLorentzianStrategy formats
     best_params_data = {
         'optimization_info': {
             'symbol': config.symbol,
@@ -452,10 +621,15 @@ def save_best_parameters(results, config):
             'total_return': best_result['total_return'],
             'win_rate': best_result['win_rate'],
             'total_trades': best_result['total_trades'],
-            'final_portfolio_value': best_result['final_portfolio_value']
+            'final_portfolio_value': best_result['final_portfolio_value'],
+            # Tracking info for absolute best across all runs
+            'first_found_date': datetime.now().isoformat(),
+            'last_optimization_attempt': datetime.now().isoformat(),
+            'attempts_count': 1,
+            'is_new_record': True
         },
         
-        # Format for run_advanced_ta.py (LorentzianClassification)
+        # Format for test_parameters.py (LorentzianClassification)
         'best_parameters': {
             # Core settings
             'neighborsCount': best_params['neighborsCount'],
@@ -541,16 +715,20 @@ def save_best_parameters(results, config):
     
     # Convert numpy types to native Python types for JSON serialization
     def convert_numpy_types(obj):
-        if isinstance(obj, np.integer):
+        if isinstance(obj, (np.integer, np.int32, np.int64)):
             return int(obj)
-        elif isinstance(obj, np.floating):
+        elif isinstance(obj, (np.floating, np.float32, np.float64)):
             return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
         elif isinstance(obj, dict):
             return {key: convert_numpy_types(value) for key, value in obj.items()}
         elif isinstance(obj, list):
             return [convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(convert_numpy_types(item) for item in obj)
         else:
             return obj
     
@@ -560,7 +738,7 @@ def save_best_parameters(results, config):
         json.dump(best_params_data_converted, f, indent=2)
     
     print(f"🎯 Best parameters saved to: {best_params_file}")
-    print(f"   📋 Compatible with run_advanced_ta.py and AdvancedLorentzianStrategy")
+    print(f"   📋 Compatible with test_parameters.py and AdvancedLorentzianStrategy")
     return best_params_file
 
 def load_lumibot_parameters(symbol):
@@ -675,9 +853,11 @@ def main():
     
     # Handle intraday data aggregation for optimization
     if config.timeframe in ['minute', 'hour'] and config.aggregate_to_daily:
-        print(f"\n📊 Aggregating {config.timeframe} data to daily for optimization...")
+        if is_info():
+            print(f"\n📊 Aggregating {config.timeframe} data to daily for optimization...")
         df = aggregate_intraday_to_daily(df, config.timeframe)
-        print(f"✅ Using daily aggregated data for faster optimization")
+        if is_info():
+            print(f"✅ Using daily aggregated data for faster optimization")
     
     # Convert to lowercase columns for classification
     df_for_classification = df.copy()
@@ -694,7 +874,8 @@ def main():
     
     if config.use_parallel and len(param_combinations) > 10:
         # Parallel processing for large numbers of combinations
-        print(f"⚡ Using parallel processing with {config.n_jobs} cores...")
+        if is_info():
+            print(f"⚡ Using parallel processing with {config.n_jobs} cores...")
         
         # Create partial function with fixed arguments
         test_func = partial(
@@ -708,54 +889,91 @@ def main():
         # Use multiprocessing pool
         with mp.Pool(processes=config.n_jobs) as pool:
             # Use imap for progress tracking
-            with tqdm(total=len(param_combinations), desc="Testing combinations") as pbar:
+            desc = "Testing combinations" if is_info() else "Optimizing"
+            with tqdm(total=len(param_combinations), desc=desc, disable=not is_info()) as pbar:
                 for i, result in enumerate(pool.imap(test_func, param_combinations)):
                     if result:
                         results.append(result)
-                    pbar.update(1)
-                    pbar.set_postfix({
-                        'Valid Results': len(results),
-                        'CPU Cores': config.n_jobs,
-                        'Success Rate': f"{len(results)/(i+1)*100:.1f}%" if i > 0 else "0%"
-                    })
+                    if is_info():
+                        pbar.update(1)
+                        pbar.set_postfix({
+                            'Valid Results': len(results),
+                            'CPU Cores': config.n_jobs,
+                            'Success Rate': f"{len(results)/(i+1)*100:.1f}%" if i > 0 else "0%"
+                        })
                     
                     # Periodic system monitoring (every 100 combinations)
-                    if (i + 1) % 100 == 0:
+                    if (i + 1) % 100 == 0 and is_info():
                         cpu_now = psutil.cpu_percent(interval=0.1)
                         if cpu_now > 90:
                             print(f"\n⚠️  High CPU usage detected: {cpu_now:.1f}%")
                             print(f"   Consider stopping (Ctrl+C) and reducing N_JOBS")
     else:
         # Sequential processing for small numbers or when parallel is disabled
-        print(f"🔄 Using sequential processing...")
-        with tqdm(total=len(param_combinations), desc="Testing combinations") as pbar:
+        if is_info():
+            print(f"🔄 Using sequential processing...")
+        desc = "Testing combinations" if is_info() else "Optimizing"
+        with tqdm(total=len(param_combinations), desc=desc, disable=not is_info()) as pbar:
             for i, params in enumerate(param_combinations):
                 result = test_parameter_combination(params, df_for_classification, config.symbol, config.initial_capital)
                 if result:
                     result['optimization_score'] = calculate_optimization_score(result, config.objectives)
                     results.append(result)
-                pbar.update(1)
-                
-                # Show progress every 10 combinations
-                if (i + 1) % 10 == 0:
-                    pbar.set_postfix({'Valid Results': len(results)})
+                if is_info():
+                    pbar.update(1)
+                    
+                    # Show progress every 10 combinations
+                    if (i + 1) % 10 == 0:
+                        pbar.set_postfix({'Valid Results': len(results)})
     
-    print(f"\n✅ Optimization completed! Found {len(results)} valid results")
+    # Show completion summary
+    if is_info():
+        print(f"\n✅ Optimization completed! Found {len(results)} valid results")
+    else:
+        print(f"✅ Optimization completed: {len(results)} valid results from {len(param_combinations)} combinations")
+    
+    # Report error analysis
+    failed_combinations = len(param_combinations) - len(results)
+    if failed_combinations > 0 and is_info():
+        print(f"⚠️  Failed combinations: {failed_combinations} ({failed_combinations/len(param_combinations)*100:.1f}%)")
+        if hasattr(test_parameter_combination, 'error_counts'):
+            print(f"📊 Error breakdown:")
+            for error_type, count in test_parameter_combination.error_counts.items():
+                print(f"   • {error_type.replace('_', ' ').title()}: {count}")
     
     if results:
+        # Load existing best parameters for comparison
+        existing_best = load_existing_best_parameters(config.symbol)
+        
         # Display results
         display_optimization_summary(results, config)
         
         # Save results
         save_optimization_results(results, config)
         
-        # Save best parameters for easy loading
-        best_params_file = save_best_parameters(results, config)
+        # Save best parameters (with absolute best logic)
+        best_params_file = save_best_parameters(results, config, existing_best)
         
-        # Show detailed report for best result
-        best_result = max(results, key=lambda x: x['optimization_score'])
-        print(f"\n🏆 DETAILED REPORT FOR BEST PARAMETERS:")
-        display_performance_report(best_result)
+        # Show detailed report for the absolute best result (current or existing)
+        current_best = max(results, key=lambda x: x['optimization_score'])
+        
+        if existing_best and 'optimization_info' in existing_best:
+            existing_score = existing_best['optimization_info']['optimization_score']
+            current_score = current_best['optimization_score']
+            
+            if current_score > existing_score:
+                print(f"\n🏆 DETAILED REPORT FOR NEW BEST PARAMETERS:")
+                display_performance_report(current_best)
+            else:
+                print(f"\n🏆 DETAILED REPORT FOR ABSOLUTE BEST PARAMETERS (Previous Optimization):")
+                print(f"📊 Note: Current optimization did not beat the existing best")
+                print(f"   Existing best score: {existing_score:.3f} vs Current best: {current_score:.3f}")
+                print(f"   Existing best return: {existing_best['optimization_info']['total_return']:+.2f}%")
+                print(f"   Found on: {existing_best['optimization_info']['optimization_date'][:10]}")
+                print(f"   Total optimization attempts: {existing_best['optimization_info'].get('attempts_count', 1)}")
+        else:
+            print(f"\n🏆 DETAILED REPORT FOR BEST PARAMETERS:")
+            display_performance_report(current_best)
         
     else:
         print("❌ No valid results found. Check your parameter ranges and data.")

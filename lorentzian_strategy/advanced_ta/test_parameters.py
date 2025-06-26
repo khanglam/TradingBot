@@ -5,7 +5,12 @@ Advanced TA Demo Script
 This script demonstrates how to use the lorentzian_strategy/advanced_ta package
 for machine learning-based market classification.
 
-Run this script with: python run_advanced_ta_demo.py
+Run this script with: python test_parameters.py
+
+For different log levels, set LOG_LEVEL in your .env file or run:
+LOG_LEVEL=DEBUG python test_parameters.py  # Shows detailed logs including individual trades
+LOG_LEVEL=INFO python test_parameters.py   # Shows progress and summaries (default)
+LOG_LEVEL=WARN python test_parameters.py   # Shows only warnings and errors
 """
 
 import sys
@@ -20,6 +25,21 @@ from polygon import RESTClient
 
 # Load environment variables
 load_dotenv()
+
+# Logging level control
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+
+def is_debug():
+    """Returns True if DEBUG level logging is enabled"""
+    return LOG_LEVEL == 'DEBUG'
+
+def is_info():
+    """Returns True if INFO level logging is enabled (includes DEBUG)"""
+    return LOG_LEVEL in ['DEBUG', 'INFO']
+
+def is_warn():
+    """Returns True if WARN level logging is enabled (includes all levels)"""
+    return LOG_LEVEL in ['DEBUG', 'INFO', 'WARN']
 
 # Add the current directory to path so we can import our modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -52,7 +72,6 @@ try:
         KernelFilter,
         Direction
     )
-    print("✅ Successfully imported LorentzianClassification components")
 except ImportError as e:
     print(f"❌ Import error: {e}")
     print("Make sure you're running this from the advanced_ta directory")
@@ -97,12 +116,14 @@ def download_real_data(symbol=None, start_date=None, end_date=None, timeframe='d
                 # Initialize Polygon client
                 polygon_client = RESTClient(polygon_api_key)
                 
-                print(f"📊 Fetching {timeframe} data from {start_date} to {end_date} (attempt {attempt + 1}/{max_retries})")
+                if is_debug():
+                    print(f"📊 Fetching {timeframe} data from {start_date} to {end_date} (attempt {attempt + 1}/{max_retries})")
                 
                 # Add delay to avoid rate limiting
                 if attempt > 0:
                     delay = base_delay * (2 ** attempt)  # Exponential backoff
-                    print(f"⏱️  Waiting {delay} seconds before retry...")
+                    if is_debug():
+                        print(f"⏱️  Waiting {delay} seconds before retry...")
                     time.sleep(delay)
                 else:
                     time.sleep(1.0)  # Initial delay
@@ -112,18 +133,19 @@ def download_real_data(symbol=None, start_date=None, end_date=None, timeframe='d
                 
                 if timeframe == 'minute':
                     # For minute data, we need to handle potential large datasets
-                    print(f"⚠️  Warning: Minute data downloads can be very large and slow!")
-                    print(f"   Consider using shorter date ranges for minute data")
-                    
-                    # Calculate expected data points
-                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                    days_diff = (end_dt - start_dt).days
-                    estimated_points = days_diff * 390  # ~390 trading minutes per day
-                    
-                    print(f"   Estimated data points: {estimated_points:,}")
-                    if estimated_points > 50000:
-                        print(f"   🚨 This is a LOT of data! Consider shorter date range.")
+                    if is_debug():
+                        print(f"⚠️  Warning: Minute data downloads can be very large and slow!")
+                        print(f"   Consider using shorter date ranges for minute data")
+                        
+                        # Calculate expected data points
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                        days_diff = (end_dt - start_dt).days
+                        estimated_points = days_diff * 390  # ~390 trading minutes per day
+                        
+                        print(f"   Estimated data points: {estimated_points:,}")
+                        if estimated_points > 50000:
+                            print(f"   🚨 This is a LOT of data! Consider shorter date range.")
                     
                     for agg in polygon_client.get_aggs(
                         ticker=symbol,
@@ -137,17 +159,18 @@ def download_real_data(symbol=None, start_date=None, end_date=None, timeframe='d
                         
                 elif timeframe == 'hour':
                     # For hourly data
-                    print(f"📊 Downloading hourly data...")
-                    
-                    # Calculate expected data points
-                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                    days_diff = (end_dt - start_dt).days
-                    estimated_points = days_diff * 6.5  # ~6.5 trading hours per day
-                    
-                    print(f"   Estimated data points: {estimated_points:,}")
-                    if estimated_points > 10000:
-                        print(f"   ⚠️  Large dataset - may take some time to download.")
+                    if is_debug():
+                        print(f"📊 Downloading hourly data...")
+                        
+                        # Calculate expected data points
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                        days_diff = (end_dt - start_dt).days
+                        estimated_points = days_diff * 6.5  # ~6.5 trading hours per day
+                        
+                        print(f"   Estimated data points: {estimated_points:,}")
+                        if estimated_points > 10000:
+                            print(f"   ⚠️  Large dataset - may take some time to download.")
                     
                     for agg in polygon_client.get_aggs(
                         ticker=symbol,
@@ -217,7 +240,7 @@ def download_real_data(symbol=None, start_date=None, end_date=None, timeframe='d
         print(f"   Date range: {df.index[0]} to {df.index[-1]}")
         print(f"   Price range: ${df['low'].min():.2f} - ${df['high'].max():.2f}")
         
-        if timeframe in ['minute', 'hour']:
+        if timeframe in ['minute', 'hour'] and is_info():
             # Additional stats for intraday data
             unique_dates = pd.Series(df.index.date).unique()
             trading_days = len(unique_dates)
@@ -237,7 +260,8 @@ def download_real_data(symbol=None, start_date=None, end_date=None, timeframe='d
         
         # Cache the data to avoid repeated API calls
         _data_cache[cache_key] = df.copy()
-        print(f"💾 {timeframe.title()} data cached for future use")
+        if is_info():
+            print(f"💾 {timeframe.title()} data cached for future use")
         
         return df
         
@@ -265,7 +289,8 @@ def aggregate_minute_to_daily(df_minute):
     Returns:
         pd.DataFrame: Daily OHLCV data
     """
-    print(f"📊 Aggregating {len(df_minute)} minute bars to daily data...")
+    if is_info():
+        print(f"📊 Aggregating {len(df_minute)} minute bars to daily data...")
     
     # Group by date and aggregate
     daily_data = df_minute.groupby(df_minute.index.date).agg({
@@ -280,8 +305,9 @@ def aggregate_minute_to_daily(df_minute):
     daily_data.index = pd.to_datetime(daily_data.index)
     daily_data.index.name = 'date'
     
-    print(f"✅ Aggregated to {len(daily_data)} daily bars")
-    print(f"   Date range: {daily_data.index[0].date()} to {daily_data.index[-1].date()}")
+    if is_info():
+        print(f"✅ Aggregated to {len(daily_data)} daily bars")
+        print(f"   Date range: {daily_data.index[0].date()} to {daily_data.index[-1].date()}")
     
     return daily_data
 
@@ -295,7 +321,8 @@ def aggregate_hour_to_daily(df_hour):
     Returns:
         pd.DataFrame: Daily OHLCV data
     """
-    print(f"📊 Aggregating {len(df_hour)} hourly bars to daily data...")
+    if is_info():
+        print(f"📊 Aggregating {len(df_hour)} hourly bars to daily data...")
     
     # Group by date and aggregate
     daily_data = df_hour.groupby(df_hour.index.date).agg({
@@ -310,8 +337,9 @@ def aggregate_hour_to_daily(df_hour):
     daily_data.index = pd.to_datetime(daily_data.index)
     daily_data.index.name = 'date'
     
-    print(f"✅ Aggregated to {len(daily_data)} daily bars")
-    print(f"   Date range: {daily_data.index[0].date()} to {daily_data.index[-1].date()}")
+    if is_info():
+        print(f"✅ Aggregated to {len(daily_data)} daily bars")
+        print(f"   Date range: {daily_data.index[0].date()} to {daily_data.index[-1].date()}")
     
     return daily_data
 
@@ -499,140 +527,53 @@ def create_filter_settings_from_params(params):
         kernelFilter=kernel_filter
     )
 
-def calculate_performance_metrics(results_df, symbol, initial_capital=10000):
-    """Calculate comprehensive trading performance metrics"""
+def simulate_trading_strategy(df, features, settings, filter_settings, symbol, initial_capital=10000):
+    """
+    Simulate trading strategy using the modular TradingSimulator from simulate_trade.py
     
-    # Get signal data
-    long_entries = results_df['startLongTrade'].dropna()
-    short_entries = results_df['startShortTrade'].dropna()
-    long_exits = results_df['endLongTrade'].dropna()
-    short_exits = results_df['endShortTrade'].dropna()
+    This function now uses the sophisticated TradingSimulator class which provides:
+    - Cleaner, more maintainable code structure
+    - Enhanced signal processing capabilities
+    - Better error handling and debugging
+    - Consistent trading logic across all modules
+    """
+    from simulate_trade import run_trading_simulation
     
-    # Calculate individual trade returns
-    long_trades = []
-    short_trades = []
+    # Use the new modular trading simulation
+    results = run_trading_simulation(
+        df=df,
+        features=features,
+        settings=settings,
+        filter_settings=filter_settings,
+        initial_capital=initial_capital,
+        enable_short_selling=False  # Keep same behavior as before
+    )
     
-    # Match long entries with exits
-    for entry_date, entry_price in long_entries.items():
-        # Find the next exit after this entry
-        future_exits = long_exits[long_exits.index > entry_date]
-        if not future_exits.empty:
-            exit_date = future_exits.index[0]
-            exit_price = future_exits.iloc[0]
-            return_pct = ((exit_price - entry_price) / entry_price) * 100
-            days_held = (exit_date - entry_date).days
-            long_trades.append({
-                'entry_date': entry_date,
-                'exit_date': exit_date,
-                'entry_price': entry_price,
-                'exit_price': exit_price,
-                'return_pct': return_pct,
-                'days_held': days_held
+    # Extract metrics from results
+    metrics = results['metrics']
+    
+    # Add symbol to metrics (the new function doesn't include it)
+    metrics['symbol'] = symbol
+    
+    # Convert Trade dataclass objects to dictionaries for compatibility
+    if 'all_trades' in metrics:
+        trade_dicts = []
+        for trade in metrics['all_trades']:
+            trade_dicts.append({
+                'entry_date': trade.entry_date,
+                'exit_date': trade.exit_date,
+                'entry_price': trade.entry_price,
+                'exit_price': trade.exit_price,
+                'quantity': trade.quantity,
+                'side': trade.side,
+                'return_pct': trade.return_pct,
+                'return_dollars': trade.return_dollars,
+                'days_held': trade.days_held,
+                'reason': trade.reason
             })
+        metrics['all_trades'] = trade_dicts
     
-    # Match short entries with exits
-    for entry_date, entry_price in short_entries.items():
-        # Find the next exit after this entry
-        future_exits = short_exits[short_exits.index > entry_date]
-        if not future_exits.empty:
-            exit_date = future_exits.index[0]
-            exit_price = future_exits.iloc[0]
-            return_pct = ((entry_price - exit_price) / entry_price) * 100  # Inverted for short trades
-            days_held = (exit_date - entry_date).days
-            short_trades.append({
-                'entry_date': entry_date,
-                'exit_date': exit_date,
-                'entry_price': entry_price,
-                'exit_price': exit_price,
-                'return_pct': return_pct,
-                'days_held': days_held
-            })
-    
-    all_trades = long_trades + short_trades
-    
-    if not all_trades:
-        return None
-    
-    # Calculate metrics
-    returns = [trade['return_pct'] for trade in all_trades]
-    winning_trades = [r for r in returns if r > 0]
-    losing_trades = [r for r in returns if r < 0]
-    
-    total_return = sum(returns)
-    win_rate = len(winning_trades) / len(returns) * 100 if returns else 0
-    avg_win = np.mean(winning_trades) if winning_trades else 0
-    avg_loss = np.mean(losing_trades) if losing_trades else 0
-    avg_return = np.mean(returns)
-    
-    # Risk metrics
-    std_return = np.std(returns) if len(returns) > 1 else 0
-    sharpe_ratio = (avg_return / std_return) if std_return > 0 else 0
-    
-    # Max drawdown calculation
-    cumulative_returns = np.cumsum(returns)
-    running_max = np.maximum.accumulate(cumulative_returns)
-    drawdowns = cumulative_returns - running_max
-    max_drawdown = np.min(drawdowns) if len(drawdowns) > 0 else 0
-    
-    # Profit factor
-    total_wins = sum(winning_trades) if winning_trades else 0
-    total_losses = abs(sum(losing_trades)) if losing_trades else 0
-    profit_factor = total_wins / total_losses if total_losses > 0 else float('inf')
-    
-    # Trading frequency
-    start_date = results_df.index[0]
-    end_date = results_df.index[-1]
-    total_days = (end_date - start_date).days
-    # Fix division by zero: ensure both total_days > 0 and the denominator is not zero
-    trades_per_month = len(all_trades) / (total_days / 30.44) if total_days > 0 and (total_days / 30.44) > 0 else 0
-    
-    # Average holding period
-    avg_holding_days = np.mean([trade['days_held'] for trade in all_trades]) if all_trades else 0
-    
-    # Buy & Hold comparison
-    initial_price = results_df['close'].iloc[0]
-    final_price = results_df['close'].iloc[-1]
-    # Fix division by zero: ensure initial_price is not zero
-    buy_hold_return = ((final_price - initial_price) / initial_price) * 100 if initial_price != 0 else 0
-    
-    # Portfolio value calculations
-    final_portfolio_value = initial_capital * (1 + total_return / 100)
-    total_dollar_return = final_portfolio_value - initial_capital
-    buy_hold_final_value = initial_capital * (1 + buy_hold_return / 100)
-    buy_hold_dollar_return = buy_hold_final_value - initial_capital
-    
-    # Average dollar return per trade
-    avg_dollar_return_per_trade = total_dollar_return / len(all_trades) if all_trades else 0
-    
-    return {
-        'symbol': symbol,
-        'total_trades': len(all_trades),
-        'long_trades': len(long_trades),
-        'short_trades': len(short_trades),
-        'total_return': total_return,
-        'avg_return_per_trade': avg_return,
-        'win_rate': win_rate,
-        'avg_win': avg_win,
-        'avg_loss': avg_loss,
-        'profit_factor': profit_factor,
-        'sharpe_ratio': sharpe_ratio,
-        'max_drawdown': max_drawdown,
-        'std_return': std_return,
-        'trades_per_month': trades_per_month,
-        'avg_holding_days': avg_holding_days,
-        'buy_hold_return': buy_hold_return,
-        'start_date': start_date,
-        'end_date': end_date,
-        'total_days': total_days,
-        'all_trades': all_trades,
-        # Portfolio value metrics
-        'initial_capital': initial_capital,
-        'final_portfolio_value': final_portfolio_value,
-        'total_dollar_return': total_dollar_return,
-        'avg_dollar_return_per_trade': avg_dollar_return_per_trade,
-        'buy_hold_final_value': buy_hold_final_value,
-        'buy_hold_dollar_return': buy_hold_dollar_return
-    }
+    return metrics
 
 def display_performance_report(metrics):
     """Display a beautifully formatted performance report"""
@@ -759,12 +700,15 @@ def main():
     use_optimized_params = os.getenv('USE_OPTIMIZED_PARAMS', 'true').lower() == 'true'
     timeframe = os.getenv('DATA_TIMEFRAME', 'day').lower()  # 'day' or 'minute'
     
-    print(f"📊 Configuration:")
-    print(f"   Symbol: {symbol}")
-    print(f"   Date range: {start_date} to {end_date}")
-    print(f"   Data timeframe: {timeframe}")
-    print(f"   Initial capital: ${initial_capital:,.2f}")
-    print(f"   Use optimized parameters: {use_optimized_params}")
+    if is_info():
+        print(f"📊 Configuration:")
+        print(f"   Symbol: {symbol}")
+        print(f"   Date range: {start_date} to {end_date}")
+        print(f"   Data timeframe: {timeframe}")
+        print(f"   Initial capital: ${initial_capital:,.2f}")
+        print(f"   Use optimized parameters: {use_optimized_params}")
+    else:
+        print(f"Testing {symbol} ({start_date} to {end_date}) with ${initial_capital:,.0f} capital")
     
     # Validate timeframe
     if timeframe not in ['day', 'hour', 'minute']:
@@ -819,21 +763,29 @@ def main():
     # Load optimized parameters if available and requested
     optimized_params = None
     if use_optimized_params:
-        print(f"\n🔍 Checking for optimized parameters...")
+        if is_info():
+            print(f"\n🔍 Checking for optimized parameters...")
         optimized_params = load_optimized_parameters(symbol)
     
     # Create features (optimized or default)
     features = create_features_from_params(optimized_params)
     
-    print(f"\n📈 Features for classification:")
-    for i, feature in enumerate(features, 1):
-        print(f"   {i}. {feature.type}({feature.param1}, {feature.param2})")
-    
-    if optimized_params:
-        print(f"   🎯 Using optimized parameters!")
+    if is_info():
+        print(f"\n📈 Features for classification:")
+        for i, feature in enumerate(features, 1):
+            print(f"   {i}. {feature.type}({feature.param1}, {feature.param2})")
+        
+        if optimized_params:
+            print(f"   🎯 Using optimized parameters!")
+    else:
+        param_source = "optimized" if optimized_params else "default"
+        print(f"Using {param_source} parameters with {len(features)} features")
     
     # Run classification
-    print(f"\n🧠 Running Lorentzian Classification...")
+    if is_info():
+        print(f"\n🧠 Running Lorentzian Classification...")
+    else:
+        print(f"Running classification...")
     
     try:
         from classifier import LorentzianClassification, Settings, FilterSettings, KernelFilter
@@ -846,19 +798,23 @@ def main():
         settings = create_settings_from_params(optimized_params, df_for_classification['close'])
         filter_settings = create_filter_settings_from_params(optimized_params)
         
-        print(f"\n⚙️  Classification Settings:")
-        print(f"   Neighbors: {settings.neighborsCount}")
-        print(f"   Max bars back: {settings.maxBarsBack}")
-        print(f"   Dynamic exits: {settings.useDynamicExits}")
-        
-        if optimized_params:
-            print(f"   🎯 Using optimized filter settings")
-        else:
-            print(f"   Filters: All disabled for more signals")
+        if is_info():
+            print(f"\n⚙️  Classification Settings:")
+            print(f"   Neighbors: {settings.neighborsCount}")
+            print(f"   Max bars back: {settings.maxBarsBack}")
+            print(f"   Dynamic exits: {settings.useDynamicExits}")
+            
+            if optimized_params:
+                print(f"   🎯 Using optimized filter settings")
+            else:
+                print(f"   Filters: All disabled for more signals")
         
         lc = LorentzianClassification(df_for_classification, features, settings, filter_settings)
         
-        print(f"✅ Classification completed successfully!")
+        if is_info():
+            print(f"✅ Classification completed successfully!")
+        else:
+            print(f"Classification completed")
         
         # Create results directory and plot file path
         results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
@@ -867,30 +823,39 @@ def main():
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         plot_file = os.path.join(results_dir, f"lorentzian_plot_{symbol}_{timestamp}.jpg")
         
-        print(f"📊 Generating plot...")
+        if is_info():
+            print(f"📊 Generating plot...")
         try:
             lc.plot(plot_file)
-            print(f"✅ Demo completed successfully!")
-            print(f"   Plot saved to: {plot_file}")
+            if is_info():
+                print(f"✅ Plot saved to: {plot_file}")
         except ImportError as plot_error:
-            if "mplfinance" in str(plot_error):
+            if "mplfinance" in str(plot_error) and is_info():
                 print(f"⚠️  Plot generation skipped - missing dependency")
                 print(f"   Install with: pip install mplfinance")
-                print(f"✅ Demo completed (without plot)")
-            else:
+            elif is_info():
                 raise plot_error
+        except Exception as plot_error:
+            if is_info():
+                print(f"⚠️  Plot generation failed: {str(plot_error)}")
+                print(f"   Continuing with trading simulation...")
         
-        # Get results and calculate performance metrics
-        results = lc.data
-        long_signals = results['startLongTrade'].notna().sum()
-        short_signals = results['startShortTrade'].notna().sum()
-        print(f"   Long signals: {long_signals}")
-        print(f"   Short signals: {short_signals}")
+        # Simulate trading strategy (mimics AdvancedLorentzianStrategy logic)
+        if is_info():
+            print(f"\n📊 Simulating Trading Strategy...")
+        else:
+            print(f"Running trading simulation...")
+        metrics = simulate_trading_strategy(df_for_classification, features, settings, filter_settings, symbol, initial_capital)
         
-        # Calculate and display comprehensive performance metrics
-        print(f"\n📊 Calculating performance metrics...")
-        metrics = calculate_performance_metrics(results, symbol, initial_capital)
-        display_performance_report(metrics)
+        if metrics:
+            if is_info():
+                display_performance_report(metrics)
+            else:
+                # Simple summary for non-verbose mode
+                print(f"Results: {metrics['total_return']:+.1f}% return, {metrics['win_rate']:.0f}% win rate, {metrics['total_trades']} trades")
+                print(f"Final value: ${metrics['final_portfolio_value']:,.0f} (vs B&H: {metrics['buy_hold_return']:+.1f}%)")
+        else:
+            print("❌ No trades were generated - check strategy parameters")
         
     except Exception as e:
         print(f"❌ Classification failed: {str(e)}")

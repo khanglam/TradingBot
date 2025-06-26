@@ -551,7 +551,21 @@ class LorentzianClassification:
         # ============================
 
         # User Defined Filters: Used for adjusting the frequency of the ML Model's predictions
-        filter_all = self.filter.volatility & self.filter.regime & self.filter.adx
+        # Ensure all filter arrays have the same length and are boolean
+        vol_filter = np.array(self.filter.volatility, dtype=bool)
+        reg_filter = np.array(self.filter.regime, dtype=bool)
+        adx_filter = np.array(self.filter.adx, dtype=bool)
+        
+        # Ensure all arrays have the same length (pad with True if needed)
+        max_len = max(len(vol_filter), len(reg_filter), len(adx_filter))
+        if len(vol_filter) < max_len:
+            vol_filter = np.pad(vol_filter, (0, max_len - len(vol_filter)), constant_values=True)
+        if len(reg_filter) < max_len:
+            reg_filter = np.pad(reg_filter, (0, max_len - len(reg_filter)), constant_values=True)
+        if len(adx_filter) < max_len:
+            adx_filter = np.pad(adx_filter, (0, max_len - len(adx_filter)), constant_values=True)
+        
+        filter_all = vol_filter & reg_filter & adx_filter
 
         # Filtered Signal: The model's prediction of future price movement direction with user-defined filters applied
         signal = np.where(((prediction > 0) & filter_all), Direction.LONG, np.where(((prediction < 0) & filter_all), Direction.SHORT, None))

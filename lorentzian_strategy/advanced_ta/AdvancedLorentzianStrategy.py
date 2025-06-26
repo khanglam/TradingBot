@@ -768,10 +768,6 @@ if __name__ == "__main__":
     # Override parameters as needed
     strategy_params = AdvancedLorentzianStrategy.parameters.copy()
     
-    # Example: Use different symbols or disable optimization
-    # strategy_params['symbols'] = ['AAPL', 'MSFT', 'GOOGL']
-    # os.environ['USE_OPTIMIZED_PARAMS'] = 'false'  # To disable optimization
-    
     if IS_BACKTESTING:
         # Backtesting configuration
         trading_fee = TradingFee(percent_fee=0.001)  # 0.1% trading fee
