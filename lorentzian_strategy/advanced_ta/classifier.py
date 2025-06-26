@@ -193,7 +193,9 @@ def n_wt(src: pd.Series, n1=10, n2=11) -> np.array:
     """
     ema1 = EMA(src, n1)
     ema2 = EMA(abs(src - ema1), n1)
-    ci = (src - ema1) / (0.015 * ema2)
+    # Fix division by zero: ensure ema2 is not zero
+    ema2_safe = ema2.replace(0, 1e-10)  # Replace zeros with small value
+    ci = (src - ema1) / (0.015 * ema2_safe)
     wt1 = EMA(ci, n2)  # tci
     wt2 = SMA(wt1, 4)
     return normalize((wt1 - wt2).values)
@@ -305,7 +307,8 @@ def rationalQuadratic(src: pd.Series, lookback: int, relativeWeight: float, star
         w = (1 + (i ** 2 / (lookback ** 2 * 2 * relativeWeight))) ** -relativeWeight
         currentWeight += y.values * w
         cumulativeWeight += w
-    val = currentWeight / cumulativeWeight
+    # Fix division by zero: ensure cumulativeWeight is not zero
+    val = currentWeight / max(cumulativeWeight, 1e-10)
     val[:startAtBar + 1] = 0.0
 
     return val
@@ -323,10 +326,13 @@ def gaussian(src: pd.Series, lookback: int, startAtBar: int):
     cumulativeWeight = 0.0
     for i in range(startAtBar + 2):
         y = src.shift(i, fill_value=0.0)
-        w = math.exp(-(i ** 2) / (2 * lookback ** 2))
+        # Fix division by zero: ensure lookback is not zero
+        denominator = max(2 * lookback ** 2, 1e-10)
+        w = math.exp(-(i ** 2) / denominator)
         currentWeight += y.values * w
         cumulativeWeight += w
-    val = currentWeight / cumulativeWeight
+    # Fix division by zero: ensure cumulativeWeight is not zero
+    val = currentWeight / max(cumulativeWeight, 1e-10)
     val[:startAtBar + 1] = 0.0
 
     return val

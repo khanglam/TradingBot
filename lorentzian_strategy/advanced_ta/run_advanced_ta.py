@@ -13,6 +13,7 @@ import os
 import pandas as pd
 import numpy as np
 import json
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from polygon import RESTClient
@@ -23,8 +24,27 @@ load_dotenv()
 # Add the current directory to path so we can import our modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Global data cache to avoid repeated API calls
+_data_cache = {}
+
+def clear_data_cache():
+    """Clear the data cache"""
+    global _data_cache
+    _data_cache = {}
+    print("🗑️  Data cache cleared")
+
+def get_cache_info():
+    """Get information about cached data"""
+    if not _data_cache:
+        print("📋 No data cached")
+        return
+    
+    print(f"📋 Cached datasets: {len(_data_cache)}")
+    for key, df in _data_cache.items():
+        print(f"   • {key}: {len(df)} rows")
+
 try:
-    from lorentzian_classification import (
+    from classifier import (
         LorentzianClassification, 
         Feature, 
         Settings, 
@@ -38,38 +58,133 @@ except ImportError as e:
     print("Make sure you're running this from the advanced_ta directory")
     sys.exit(1)
 
-def download_real_data(symbol='SPY', start_date='2023-01-01', end_date='2024-12-31'):
-    """Download real market data from Polygon API"""
-    print(f"📥 Downloading real data for {symbol} from Polygon...")
+def download_real_data(symbol=None, start_date=None, end_date=None, timeframe='day'):
+    """
+    Download real market data from Polygon API with improved error handling and caching
+    
+    Args:
+        symbol (str): Stock symbol to download
+        start_date (str): Start date in YYYY-MM-DD format
+        end_date (str): End date in YYYY-MM-DD format
+        timeframe (str): 'day' for daily data, 'hour' for hourly data, 'minute' for minute data
+    
+    Returns:
+        pd.DataFrame: OHLCV data with DatetimeIndex
+    """
+    # Check cache first to avoid repeated API calls
+    cache_key = f"{symbol}_{start_date}_{end_date}_{timeframe}"
+    if cache_key in _data_cache:
+        print(f"📋 Using cached {timeframe} data for {symbol} ({start_date} to {end_date})")
+        return _data_cache[cache_key].copy()
+    
+    print(f"📥 Downloading real {timeframe} data for {symbol} from Polygon...")
     
     # Get API key from environment
     polygon_api_key = os.getenv('POLYGON_API_KEY')
     if not polygon_api_key:
         print("❌ POLYGON_API_KEY not found in environment variables")
         print("💡 Set your API key: export POLYGON_API_KEY='your_key_here'")
-        print("🔄 Falling back to sample data generation...")
-        return generate_sample_data_fallback(symbol)
+        raise ValueError("POLYGON_API_KEY is required for real data. Sample data is not useful for trading.")
     
     try:
-        # Initialize Polygon client
-        polygon_client = RESTClient(polygon_api_key)
-        
-        print(f"📊 Fetching data from {start_date} to {end_date}")
-        
-        # Get aggregates (daily bars) from Polygon
+        # Retry logic with exponential backoff
+        max_retries = 3
+        base_delay = 2.0
         aggs = []
-        for agg in polygon_client.get_aggs(
-            ticker=symbol,
-            multiplier=1,
-            timespan="day",
-            from_=start_date,
-            to=end_date,
-            limit=5000
-        ):
-            aggs.append(agg)
         
+        for attempt in range(max_retries):
+            try:
+                # Initialize Polygon client
+                polygon_client = RESTClient(polygon_api_key)
+                
+                print(f"📊 Fetching {timeframe} data from {start_date} to {end_date} (attempt {attempt + 1}/{max_retries})")
+                
+                # Add delay to avoid rate limiting
+                if attempt > 0:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    print(f"⏱️  Waiting {delay} seconds before retry...")
+                    time.sleep(delay)
+                else:
+                    time.sleep(1.0)  # Initial delay
+                
+                # Get aggregates from Polygon
+                aggs = []
+                
+                if timeframe == 'minute':
+                    # For minute data, we need to handle potential large datasets
+                    print(f"⚠️  Warning: Minute data downloads can be very large and slow!")
+                    print(f"   Consider using shorter date ranges for minute data")
+                    
+                    # Calculate expected data points
+                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                    days_diff = (end_dt - start_dt).days
+                    estimated_points = days_diff * 390  # ~390 trading minutes per day
+                    
+                    print(f"   Estimated data points: {estimated_points:,}")
+                    if estimated_points > 50000:
+                        print(f"   🚨 This is a LOT of data! Consider shorter date range.")
+                    
+                    for agg in polygon_client.get_aggs(
+                        ticker=symbol,
+                        multiplier=1,
+                        timespan="minute",
+                        from_=start_date,
+                        to=end_date,
+                        limit=50000  # Polygon limit
+                    ):
+                        aggs.append(agg)
+                        
+                elif timeframe == 'hour':
+                    # For hourly data
+                    print(f"📊 Downloading hourly data...")
+                    
+                    # Calculate expected data points
+                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                    days_diff = (end_dt - start_dt).days
+                    estimated_points = days_diff * 6.5  # ~6.5 trading hours per day
+                    
+                    print(f"   Estimated data points: {estimated_points:,}")
+                    if estimated_points > 10000:
+                        print(f"   ⚠️  Large dataset - may take some time to download.")
+                    
+                    for agg in polygon_client.get_aggs(
+                        ticker=symbol,
+                        multiplier=1,
+                        timespan="hour",
+                        from_=start_date,
+                        to=end_date,
+                        limit=50000  # Polygon limit
+                    ):
+                        aggs.append(agg)
+                        
+                else:
+                    # Daily data (original logic)
+                    for agg in polygon_client.get_aggs(
+                        ticker=symbol,
+                        multiplier=1,
+                        timespan="day",
+                        from_=start_date,
+                        to=end_date,
+                        limit=5000
+                    ):
+                        aggs.append(agg)
+                
+                # If we get here, the API call succeeded
+                break
+                
+            except Exception as e:
+                if "429" in str(e) and attempt < max_retries - 1:
+                    print(f"⚠️  Rate limited (attempt {attempt + 1}/{max_retries}), retrying...")
+                    continue
+                else:
+                    # Re-raise the exception if it's the last attempt or not a rate limit error
+                    raise e
+        
+        # Process the downloaded data
         if not aggs:
-            raise ValueError(f"No data found for {symbol} from Polygon")
+            raise ValueError(f"No {timeframe} data found for {symbol} from Polygon. Check symbol and date range.")
         
         # Convert to DataFrame
         data_list = []
@@ -90,18 +205,135 @@ def download_real_data(symbol='SPY', start_date='2023-01-01', end_date='2024-12-
         # Ensure index is DatetimeIndex (required for mplfinance)
         df.index = pd.to_datetime(df.index)
         
-        print(f"✅ Downloaded {len(df)} days of real data from Polygon")
+        # Display download results
+        if timeframe == 'minute':
+            data_type = "minutes"
+        elif timeframe == 'hour':
+            data_type = "hours"
+        else:
+            data_type = "days"
+            
+        print(f"✅ Downloaded {len(df)} {data_type} of real {timeframe} data from Polygon")
         print(f"   Date range: {df.index[0]} to {df.index[-1]}")
         print(f"   Price range: ${df['low'].min():.2f} - ${df['high'].max():.2f}")
+        
+        if timeframe in ['minute', 'hour']:
+            # Additional stats for intraday data
+            unique_dates = pd.Series(df.index.date).unique()
+            trading_days = len(unique_dates)
+            
+            if timeframe == 'minute':
+                avg_per_day = len(df) / trading_days if trading_days > 0 else 0
+                print(f"   Trading days: {trading_days}")
+                print(f"   Avg minutes per day: {avg_per_day:.1f}")
+            else:  # hour
+                avg_per_day = len(df) / trading_days if trading_days > 0 else 0
+                print(f"   Trading days: {trading_days}")
+                print(f"   Avg hours per day: {avg_per_day:.1f}")
+            
+            # Estimate file size
+            estimated_size_mb = len(df) * 6 * 8 / (1024 * 1024)  # 6 columns, 8 bytes each
+            print(f"   Estimated cache size: {estimated_size_mb:.1f} MB")
+        
+        # Cache the data to avoid repeated API calls
+        _data_cache[cache_key] = df.copy()
+        print(f"💾 {timeframe.title()} data cached for future use")
         
         return df
         
     except Exception as e:
-        print(f"❌ Failed to download data from Polygon: {e}")
-        print("🔄 Falling back to sample data generation...")
-        return generate_sample_data_fallback(symbol)
+        print(f"❌ Failed to download {timeframe} data from Polygon: {e}")
+        print(f"💡 Possible solutions:")
+        print(f"   1. Check your POLYGON_API_KEY is valid")
+        print(f"   2. Verify the symbol '{symbol}' exists")
+        print(f"   3. Check date range: {start_date} to {end_date}")
+        print(f"   4. Wait a few minutes if hitting rate limits")
+        print(f"   5. Consider upgrading your Polygon plan for higher rate limits")
+        if timeframe == 'minute':
+            print(f"   6. For minute data, try a shorter date range (e.g., 1-7 days)")
+        elif timeframe == 'hour':
+            print(f"   6. For hourly data, try a shorter date range (e.g., 1-30 days)")
+        raise Exception(f"Real {timeframe} data download failed: {e}. Sample data is not acceptable for trading.")
 
-def generate_sample_data_fallback(symbol='SPY', days=300):
+def aggregate_minute_to_daily(df_minute):
+    """
+    Aggregate minute data to daily OHLCV data
+    
+    Args:
+        df_minute (pd.DataFrame): Minute OHLCV data with DatetimeIndex
+    
+    Returns:
+        pd.DataFrame: Daily OHLCV data
+    """
+    print(f"📊 Aggregating {len(df_minute)} minute bars to daily data...")
+    
+    # Group by date and aggregate
+    daily_data = df_minute.groupby(df_minute.index.date).agg({
+        'open': 'first',    # First price of the day
+        'high': 'max',      # Highest price of the day
+        'low': 'min',       # Lowest price of the day
+        'close': 'last',    # Last price of the day
+        'volume': 'sum'     # Total volume for the day
+    })
+    
+    # Convert date index back to datetime
+    daily_data.index = pd.to_datetime(daily_data.index)
+    daily_data.index.name = 'date'
+    
+    print(f"✅ Aggregated to {len(daily_data)} daily bars")
+    print(f"   Date range: {daily_data.index[0].date()} to {daily_data.index[-1].date()}")
+    
+    return daily_data
+
+def aggregate_hour_to_daily(df_hour):
+    """
+    Aggregate hourly data to daily OHLCV data
+    
+    Args:
+        df_hour (pd.DataFrame): Hourly OHLCV data with DatetimeIndex
+    
+    Returns:
+        pd.DataFrame: Daily OHLCV data
+    """
+    print(f"📊 Aggregating {len(df_hour)} hourly bars to daily data...")
+    
+    # Group by date and aggregate
+    daily_data = df_hour.groupby(df_hour.index.date).agg({
+        'open': 'first',    # First price of the day
+        'high': 'max',      # Highest price of the day
+        'low': 'min',       # Lowest price of the day
+        'close': 'last',    # Last price of the day
+        'volume': 'sum'     # Total volume for the day
+    })
+    
+    # Convert date index back to datetime
+    daily_data.index = pd.to_datetime(daily_data.index)
+    daily_data.index.name = 'date'
+    
+    print(f"✅ Aggregated to {len(daily_data)} daily bars")
+    print(f"   Date range: {daily_data.index[0].date()} to {daily_data.index[-1].date()}")
+    
+    return daily_data
+
+def aggregate_intraday_to_daily(df_intraday, source_timeframe):
+    """
+    Generic function to aggregate intraday data (minute or hour) to daily OHLCV data
+    
+    Args:
+        df_intraday (pd.DataFrame): Intraday OHLCV data with DatetimeIndex
+        source_timeframe (str): 'minute' or 'hour'
+    
+    Returns:
+        pd.DataFrame: Daily OHLCV data
+    """
+    if source_timeframe == 'minute':
+        return aggregate_minute_to_daily(df_intraday)
+    elif source_timeframe == 'hour':
+        return aggregate_hour_to_daily(df_intraday)
+    else:
+        raise ValueError(f"Unsupported timeframe for aggregation: {source_timeframe}")
+
+def generate_sample_data_fallback(symbol=None, days=300):
     """Generate sample OHLCV data as fallback"""
     print(f"📊 Generating {days} days of sample data for {symbol}...")
     
@@ -157,7 +389,9 @@ def generate_sample_data_fallback(symbol='SPY', days=300):
 
 def load_optimized_parameters(symbol):
     """Load optimized parameters from JSON file if available"""
-    best_params_file = f"best_parameters_{symbol}.json"
+    # Look for the file in the same directory as this script
+    script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
+    best_params_file = os.path.join(script_dir, f"best_parameters_{symbol}.json")
     
     if os.path.exists(best_params_file):
         try:
@@ -220,10 +454,10 @@ def create_settings_from_params(params, df_source):
         neighborsCount=params['neighborsCount'],
         maxBarsBack=params['maxBarsBack'],
         useDynamicExits=params['useDynamicExits'],
-        useEmaFilter=False,  # Keep disabled for now
-        emaPeriod=200,
-        useSmaFilter=False,  # Keep disabled for now
-        smaPeriod=200
+        useEmaFilter=params['useEmaFilter'],
+        emaPeriod=params['emaPeriod'],
+        useSmaFilter=params['useSmaFilter'],
+        smaPeriod=params['smaPeriod']
     )
 
 def create_filter_settings_from_params(params):
@@ -349,15 +583,17 @@ def calculate_performance_metrics(results_df, symbol, initial_capital=10000):
     start_date = results_df.index[0]
     end_date = results_df.index[-1]
     total_days = (end_date - start_date).days
-    trades_per_month = len(all_trades) / (total_days / 30.44) if total_days > 0 else 0
+    # Fix division by zero: ensure both total_days > 0 and the denominator is not zero
+    trades_per_month = len(all_trades) / (total_days / 30.44) if total_days > 0 and (total_days / 30.44) > 0 else 0
     
     # Average holding period
-    avg_holding_days = np.mean([trade['days_held'] for trade in all_trades])
+    avg_holding_days = np.mean([trade['days_held'] for trade in all_trades]) if all_trades else 0
     
     # Buy & Hold comparison
     initial_price = results_df['close'].iloc[0]
     final_price = results_df['close'].iloc[-1]
-    buy_hold_return = ((final_price - initial_price) / initial_price) * 100
+    # Fix division by zero: ensure initial_price is not zero
+    buy_hold_return = ((final_price - initial_price) / initial_price) * 100 if initial_price != 0 else 0
     
     # Portfolio value calculations
     final_portfolio_value = initial_capital * (1 + total_return / 100)
@@ -466,7 +702,7 @@ def display_performance_report(metrics):
     print(f"🏆 Average Win:        {metrics['avg_win']:+7.2f}%")
     print(f"💸 Average Loss:       {metrics['avg_loss']:+7.2f}%")
     
-    # Win/Loss ratio
+    # Win/Loss ratio - fix division by zero
     win_loss_ratio = abs(metrics['avg_win'] / metrics['avg_loss']) if metrics['avg_loss'] != 0 else float('inf')
     ratio_color = "🟢" if win_loss_ratio > 1.5 else "🟡" if win_loss_ratio > 1.0 else "🔴"
     print(f"{ratio_color} Win/Loss Ratio:     {win_loss_ratio:7.2f}")
@@ -521,14 +757,64 @@ def main():
     end_date = os.getenv('BACKTESTING_END', '2024-12-31')
     initial_capital = float(os.getenv('INITIAL_CAPITAL', '10000'))
     use_optimized_params = os.getenv('USE_OPTIMIZED_PARAMS', 'true').lower() == 'true'
+    timeframe = os.getenv('DATA_TIMEFRAME', 'day').lower()  # 'day' or 'minute'
     
     print(f"📊 Configuration:")
     print(f"   Symbol: {symbol}")
     print(f"   Date range: {start_date} to {end_date}")
+    print(f"   Data timeframe: {timeframe}")
     print(f"   Initial capital: ${initial_capital:,.2f}")
     print(f"   Use optimized parameters: {use_optimized_params}")
     
-    df = download_real_data(symbol=symbol, start_date=start_date, end_date=end_date)
+    # Validate timeframe
+    if timeframe not in ['day', 'hour', 'minute']:
+        print(f"⚠️  Invalid timeframe '{timeframe}', defaulting to 'day'")
+        timeframe = 'day'
+    
+    # Warning for intraday data
+    if timeframe in ['minute', 'hour']:
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        days_diff = (end_dt - start_dt).days
+        
+        if timeframe == 'minute' and days_diff > 30:
+            print(f"⚠️  WARNING: Requesting {days_diff} days of minute data!")
+            print(f"   This could be {days_diff * 390:,} data points and take a very long time.")
+            print(f"   Consider using a shorter date range for minute data.")
+            response = input(f"   Continue? (y/N): ").strip().lower()
+            if response not in ['y', 'yes']:
+                print(f"   Exiting...")
+                return
+        elif timeframe == 'hour' and days_diff > 365:
+            print(f"⚠️  WARNING: Requesting {days_diff} days of hourly data!")
+            print(f"   This could be {days_diff * 6.5:,.0f} data points and take some time.")
+            print(f"   Consider using a shorter date range for better performance.")
+            response = input(f"   Continue? (y/N): ").strip().lower()
+            if response not in ['y', 'yes']:
+                print(f"   Exiting...")
+                return
+    
+    df = download_real_data(symbol=symbol, start_date=start_date, end_date=end_date, timeframe=timeframe)
+    
+    # Handle intraday data aggregation
+    if timeframe in ['minute', 'hour']:
+        print(f"\n📊 Note: Lorentzian Classification works best with daily data")
+        aggregate_choice = os.getenv('AGGREGATE_TO_DAILY', 'true').lower()
+        
+        if aggregate_choice == 'true':
+            print(f"🔄 Aggregating {timeframe} data to daily bars...")
+            df_daily = aggregate_intraday_to_daily(df, timeframe)
+            
+            # Keep both datasets available
+            df_intraday = df.copy()  # Original intraday data
+            df = df_daily            # Use daily for classification
+            
+            print(f"✅ Using daily aggregated data for classification")
+            print(f"   Original {timeframe} data: {len(df_intraday)} bars")
+            print(f"   Aggregated daily data: {len(df)} bars")
+        else:
+            print(f"⚠️  Using raw {timeframe} data for classification")
+            print(f"   This may produce many signals and slower performance")
     
     # Load optimized parameters if available and requested
     optimized_params = None
@@ -550,7 +836,7 @@ def main():
     print(f"\n🧠 Running Lorentzian Classification...")
     
     try:
-        from lorentzian_classification import LorentzianClassification, Settings, FilterSettings, KernelFilter
+        from classifier import LorentzianClassification, Settings, FilterSettings, KernelFilter
         
         # Convert to the format expected by advanced_ta (lowercase columns)
         df_for_classification = df.copy()
@@ -575,7 +861,7 @@ def main():
         print(f"✅ Classification completed successfully!")
         
         # Create results directory and plot file path
-        results_dir = "results_logs"
+        results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
         os.makedirs(results_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
