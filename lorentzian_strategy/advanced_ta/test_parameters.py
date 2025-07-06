@@ -23,8 +23,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from polygon import RESTClient
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (override system env vars)
+load_dotenv(override=True)
 
 # Logging level control
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -803,7 +803,7 @@ def validate_configuration_for_strategy_match():
 
 def main():
     """Main demo function"""
-    print("🎯 Starting Advanced TA Lorentzian Classification Demo")
+    print("Starting Advanced TA Lorentzian Classification Demo")
     print(f"   Working directory: {os.getcwd()}")
     print()
     
@@ -812,8 +812,8 @@ def main():
     
     # Download real market data
     symbol = os.getenv('SYMBOL', 'TSLA')
-    start_date = os.getenv('BACKTESTING_START', '2024-01-31')
-    end_date = os.getenv('BACKTESTING_END', '2024-12-31')
+    start_date = os.getenv('BACKTESTING_START', '2024-01-01')
+    end_date = os.getenv('BACKTESTING_END', '2024-12-01')
     initial_capital = float(os.getenv('INITIAL_CAPITAL', '10000'))
     use_optimized_params = os.getenv('USE_OPTIMIZED_PARAMS', 'true').lower() == 'true'
     timeframe = validated_timeframe  # Use validated timeframe

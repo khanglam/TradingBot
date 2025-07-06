@@ -245,9 +245,9 @@ class AdvancedLorentzianStrategy(Strategy):
         print("-" * 60)
         print(f"🧠 ML Settings:")
         if optimized_params:
-            print(f"   • Neighbors: {optimized_params['neighborsCount']}")
-            print(f"   • Max bars back: {optimized_params['maxBarsBack']}")
-            print(f"   • Dynamic exits: {optimized_params['useDynamicExits']}")
+            print(f"   • Neighbors: {optimized_params.get('neighborsCount', 8)}")
+            print(f"   • Max bars back: {optimized_params.get('maxBarsBack', 2000)}")
+            print(f"   • Dynamic exits: {optimized_params.get('useDynamicExits', False)}")
         else:
             print(f"   • Neighbors: 8 (default)")
             print(f"   • Max bars back: 2000 (default)")
