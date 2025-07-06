@@ -25,6 +25,13 @@ used as an alternative distance metric to Euclidean Distance.
 import pandas as pd
 import numpy as np
 import math
+
+# Configure matplotlib backend before importing plotting libraries
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+plt.ioff()  # Turn off interactive mode
+
 import mplfinance as mpf
 from enum import IntEnum
 from ta.momentum import rsi as RSI

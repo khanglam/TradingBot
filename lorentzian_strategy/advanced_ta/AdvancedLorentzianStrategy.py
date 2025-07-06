@@ -59,7 +59,6 @@ class AdvancedLorentzianStrategy(Strategy):
     parameters = {
         'symbols': [os.getenv('SYMBOL', 'TSLA')],  # Read from .env file
         'neighbors': 8,
-        'history_window': 2000,
         'max_bars_back': 500,
         'use_dynamic_exits': False,
         'use_ema_filter': False,
@@ -77,11 +76,11 @@ class AdvancedLorentzianStrategy(Strategy):
         'regression_level': 25,
         'crossover_lag': 2,
         'features': [
-            ('RSI', 14, 2),
-            ('WT', 10, 11),
-            ('CCI', 20, 2),
-            ('ADX', 20, 2),
-            ('RSI', 9, 2)
+            {'type': 'RSI', 'param1': 14, 'param2': 2},
+            {'type': 'WT', 'param1': 10, 'param2': 11},
+            {'type': 'CCI', 'param1': 20, 'param2': 2},
+            {'type': 'ADX', 'param1': 20, 'param2': 2},
+            {'type': 'RSI', 'param1': 9, 'param2': 2}
         ]
     }
     
@@ -278,10 +277,8 @@ class AdvancedLorentzianStrategy(Strategy):
                 # Get historical data - use same logic as AdvancedLorentzianStrategy
                 history_length = 2000  # Default from classifier.py Settings
                 if self.optimized_params:
-                    history_length = max(
-                        self.optimized_params.get('maxBarsBack', 2000),
-                        self.optimized_params.get('history_window', 2000)
-                    )
+                    # Use optimized maxBarsBack parameter (standardized parameter name)
+                    history_length = self.optimized_params.get('maxBarsBack', 2000)
                 
                 bars = self.get_historical_prices(asset, history_length, "day")
                 

@@ -12,3 +12,4 @@ optimization_results
 lorentzian_strategy/advanced_ta/results_logs
 results_logs
 best_parameters_TSLA.json
+.claude/settings.local.json

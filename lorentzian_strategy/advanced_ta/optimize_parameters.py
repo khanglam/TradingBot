@@ -17,8 +17,11 @@ python optimize_parameters.py                  # Random results each run (defaul
 RANDOM_SEED=42 python optimize_parameters.py   # Reproducible results (same each run)
 """
 
-import sys
+# Configure matplotlib backend FIRST before any other imports
 import os
+os.environ['MPLBACKEND'] = 'Agg'  # Set non-interactive backend via environment
+
+import sys
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -29,6 +32,20 @@ from tqdm import tqdm
 import multiprocessing as mp
 from functools import partial
 import psutil  # For system monitoring
+import pickle
+import hashlib
+from collections import deque
+
+# Configure matplotlib to use non-interactive backend
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+plt.ioff()  # Turn off interactive mode
+
+# Suppress GUI-related warnings
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+warnings.filterwarnings('ignore', message='.*backend.*')
 
 # Load environment variables (override system env vars)
 load_dotenv(override=True)
@@ -59,6 +76,283 @@ from test_parameters import (
     aggregate_hour_to_daily,
     aggregate_intraday_to_daily
 )
+
+class SmartOptimizer:
+    """
+    Smart optimization system that continues from where it left off
+    and uses intelligent search strategies
+    """
+    
+    def __init__(self, config):
+        self.config = config
+        self.symbol = config.symbol
+        self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs")
+        self.state_file = os.path.join(self.results_dir, f"optimization_state_{self.symbol}.pkl")
+        self.tested_combinations = set()
+        self.top_performers = deque(maxlen=100)  # Keep top 100 results
+        self.generation = 0
+        self.best_score = -float('inf')
+        self.best_params = None
+        self.stagnation_counter = 0
+        self.max_stagnation = 50  # Restart strategy after 50 generations without improvement
+        
+    def save_state(self):
+        """Save optimization state to resume later"""
+        if not self.config.save_optimization_state:
+            return
+            
+        os.makedirs(self.results_dir, exist_ok=True)
+        state = {
+            'tested_combinations': self.tested_combinations,
+            'top_performers': list(self.top_performers),
+            'generation': self.generation,
+            'best_score': self.best_score,
+            'best_params': self.best_params,
+            'stagnation_counter': self.stagnation_counter,
+            'param_ranges': self.config.param_ranges
+        }
+        
+        with open(self.state_file, 'wb') as f:
+            pickle.dump(state, f)
+    
+    def load_state(self):
+        """Load previous optimization state"""
+        if not self.config.continue_from_best or not os.path.exists(self.state_file):
+            return False
+            
+        try:
+            with open(self.state_file, 'rb') as f:
+                state = pickle.load(f)
+            
+            self.tested_combinations = state.get('tested_combinations', set())
+            self.top_performers = deque(state.get('top_performers', []), maxlen=100)
+            self.generation = state.get('generation', 0)
+            self.best_score = state.get('best_score', -float('inf'))
+            self.best_params = state.get('best_params', None)
+            self.stagnation_counter = state.get('stagnation_counter', 0)
+            
+            print(f"[✓] Loaded optimization state:")
+            print(f"  Generation: {self.generation}")
+            print(f"  Tested combinations: {len(self.tested_combinations):,}")
+            print(f"  Best score: {self.best_score:.3f}")
+            print(f"  Top performers: {len(self.top_performers)}")
+            return True
+            
+        except Exception as e:
+            print(f"[!] Failed to load optimization state: {e}")
+            return False
+    
+    def params_to_hash(self, params):
+        """Convert parameters to hashable string for tracking"""
+        # Sort parameters to ensure consistent hashing
+        sorted_params = sorted(params.items())
+        param_str = str(sorted_params)
+        return hashlib.md5(param_str.encode()).hexdigest()
+    
+    def is_combination_tested(self, params):
+        """Check if parameter combination was already tested"""
+        return self.params_to_hash(params) in self.tested_combinations
+    
+    def mark_combination_tested(self, params, result):
+        """Mark parameter combination as tested and store result"""
+        param_hash = self.params_to_hash(params)
+        self.tested_combinations.add(param_hash)
+        
+        if result and 'optimization_score' in result:
+            self.top_performers.append(result)
+            
+            # Update best if this is better
+            if result['optimization_score'] > self.best_score:
+                self.best_score = result['optimization_score']
+                self.best_params = params.copy()
+                self.stagnation_counter = 0
+                print(f"[NEW BEST] Generation {self.generation}: Score {self.best_score:.3f}, Return {result['total_return']:+.1f}%")
+            else:
+                self.stagnation_counter += 1
+    
+    def generate_smart_combinations(self, n_combinations):
+        """Generate smart parameter combinations using multiple strategies"""
+        combinations = []
+        self.generation += 1
+        
+        # Strategy allocation based on performance and exploration needs
+        if len(self.top_performers) < 10:
+            # Early stage: mostly random exploration
+            n_random = int(n_combinations * 0.8)
+            n_local = int(n_combinations * 0.2)
+            n_genetic = 0
+        elif self.stagnation_counter > 20:
+            # Stagnation: increase exploration
+            n_random = int(n_combinations * 0.6)
+            n_local = int(n_combinations * 0.2)
+            n_genetic = int(n_combinations * 0.2)
+        else:
+            # Normal operation: balanced approach
+            exploration_ratio = self.config.smart_exploration_ratio
+            n_random = int(n_combinations * exploration_ratio * 0.5)
+            n_local = int(n_combinations * (1 - exploration_ratio))
+            n_genetic = int(n_combinations * exploration_ratio * 0.5)
+        
+        print(f"[Generation {self.generation}] Strategy: {n_random} random, {n_local} local search, {n_genetic} genetic")
+        
+        # 1. Random exploration (for diversity)
+        combinations.extend(self._generate_random_combinations(n_random))
+        
+        # 2. Local search around best performers
+        if self.top_performers:
+            combinations.extend(self._generate_local_search_combinations(n_local))
+        
+        # 3. Genetic algorithm combinations
+        if len(self.top_performers) >= 2:
+            combinations.extend(self._generate_genetic_combinations(n_genetic))
+        
+        # Fill remaining with random if needed
+        remaining = n_combinations - len(combinations)
+        if remaining > 0:
+            combinations.extend(self._generate_random_combinations(remaining))
+        
+        return combinations[:n_combinations]
+    
+    def _generate_random_combinations(self, n):
+        """Generate random parameter combinations"""
+        combinations = []
+        param_names = list(self.config.param_ranges.keys())
+        param_values = list(self.config.param_ranges.values())
+        
+        max_attempts = n * 10  # Prevent infinite loops
+        attempts = 0
+        
+        while len(combinations) < n and attempts < max_attempts:
+            params = {}
+            for name, values in zip(param_names, param_values):
+                params[name] = np.random.choice(values)
+            
+            if not self.is_combination_tested(params):
+                combinations.append(params)
+            
+            attempts += 1
+        
+        return combinations
+    
+    def _generate_local_search_combinations(self, n):
+        """Generate combinations around best performers using local search"""
+        combinations = []
+        if not self.top_performers:
+            return combinations
+        
+        # Sort top performers by score
+        top_performers = sorted(self.top_performers, key=lambda x: x['optimization_score'], reverse=True)
+        
+        # Focus on top 10% of performers
+        focus_performers = top_performers[:max(1, len(top_performers) // 10)]
+        
+        max_attempts = n * 10
+        attempts = 0
+        
+        while len(combinations) < n and attempts < max_attempts:
+            # Select a top performer as base
+            base_result = np.random.choice(focus_performers)
+            base_params = base_result['parameters']
+            
+            # Create variation
+            new_params = self._create_parameter_variation(base_params)
+            
+            if not self.is_combination_tested(new_params):
+                combinations.append(new_params)
+            
+            attempts += 1
+        
+        return combinations
+    
+    def _generate_genetic_combinations(self, n):
+        """Generate combinations using genetic algorithm principles"""
+        combinations = []
+        if len(self.top_performers) < 2:
+            return combinations
+        
+        # Sort top performers
+        top_performers = sorted(self.top_performers, key=lambda x: x['optimization_score'], reverse=True)
+        
+        # Select top 20% as breeding pool
+        breeding_pool = top_performers[:max(2, len(top_performers) // 5)]
+        
+        max_attempts = n * 10
+        attempts = 0
+        
+        while len(combinations) < n and attempts < max_attempts:
+            # Select two parents
+            parent1 = np.random.choice(breeding_pool)
+            parent2 = np.random.choice(breeding_pool)
+            
+            # Create offspring through crossover and mutation
+            child_params = self._crossover_parameters(
+                parent1['parameters'], 
+                parent2['parameters']
+            )
+            
+            # Apply mutation
+            if np.random.random() < 0.3:  # 30% mutation rate
+                child_params = self._mutate_parameters(child_params)
+            
+            if not self.is_combination_tested(child_params):
+                combinations.append(child_params)
+            
+            attempts += 1
+        
+        return combinations
+    
+    def _create_parameter_variation(self, base_params):
+        """Create a variation of parameters within search radius"""
+        new_params = base_params.copy()
+        
+        # Vary 1-3 parameters
+        n_variations = np.random.randint(1, min(4, len(base_params) + 1))
+        params_to_vary = np.random.choice(list(base_params.keys()), n_variations, replace=False)
+        
+        for param_name in params_to_vary:
+            if param_name in self.config.param_ranges:
+                values = self.config.param_ranges[param_name]
+                current_idx = values.index(base_params[param_name])
+                
+                # Calculate search radius
+                radius = max(1, int(len(values) * self.config.adaptive_search_radius))
+                
+                # Create range around current value
+                min_idx = max(0, current_idx - radius)
+                max_idx = min(len(values), current_idx + radius + 1)
+                
+                # Select new value from neighborhood
+                neighborhood = values[min_idx:max_idx]
+                new_params[param_name] = np.random.choice(neighborhood)
+        
+        return new_params
+    
+    def _crossover_parameters(self, parent1, parent2):
+        """Create offspring by combining parameters from two parents"""
+        child = {}
+        
+        for param_name in parent1.keys():
+            if np.random.random() < 0.5:
+                child[param_name] = parent1[param_name]
+            else:
+                child[param_name] = parent2[param_name]
+        
+        return child
+    
+    def _mutate_parameters(self, params):
+        """Apply random mutation to parameters"""
+        mutated = params.copy()
+        
+        # Mutate 1-2 parameters
+        n_mutations = np.random.randint(1, min(3, len(params) + 1))
+        params_to_mutate = np.random.choice(list(params.keys()), n_mutations, replace=False)
+        
+        for param_name in params_to_mutate:
+            if param_name in self.config.param_ranges:
+                values = self.config.param_ranges[param_name]
+                mutated[param_name] = np.random.choice(values)
+        
+        return mutated
 
 try:
     from classifier import (
@@ -177,8 +471,19 @@ class OptimizationConfig:
         # Randomization settings
         self.random_seed = os.getenv('RANDOM_SEED')  # Set to a number for reproducible results, leave unset for random
         
+        # Smart optimization settings
+        self.use_smart_optimization = os.getenv('USE_SMART_OPTIMIZATION', 'true').lower() == 'true'
+        self.smart_exploration_ratio = float(os.getenv('SMART_EXPLORATION_RATIO', '0.3'))  # 30% exploration, 70% exploitation
+        self.adaptive_search_radius = float(os.getenv('ADAPTIVE_SEARCH_RADIUS', '0.2'))  # Search radius around best parameters
+        self.continue_from_best = os.getenv('CONTINUE_FROM_BEST', 'true').lower() == 'true'
+        self.save_optimization_state = os.getenv('SAVE_OPTIMIZATION_STATE', 'true').lower() == 'true'
+        
         # Optimization strategy
         self.optimize_for_return = os.getenv('OPTIMIZE_FOR_RETURN', 'false').lower() == 'true'
+        
+        # Advanced optimization methods
+        self.use_bayesian_optimization = os.getenv('USE_BAYESIAN_OPTIMIZATION', 'false').lower() == 'true'
+        self.use_genetic_algorithm = os.getenv('USE_GENETIC_ALGORITHM', 'false').lower() == 'true'
         
         # Expanded parameter ranges for more thorough optimization
         self.param_ranges = {
@@ -828,8 +1133,7 @@ def save_best_parameters(results, config, existing_best=None, optimize_for_real_
         'lumibot_parameters': {
             'symbols': [config.symbol],
             'neighbors': best_params['neighborsCount'],
-            'history_window': best_params['maxBarsBack'],  # Use optimized value
-            'max_bars_back': best_params['maxBarsBack'],   # Use optimized value
+            'max_bars_back': best_params['maxBarsBack'],   # Use optimized value (standardized parameter name)
             'use_dynamic_exits': best_params['useDynamicExits'],
             'use_ema_filter': best_params['useEmaFilter'],
             'ema_period': best_params['emaPeriod'],
@@ -1589,11 +1893,6 @@ def main():
     df_for_classification = df.copy()
     df_for_classification.columns = df_for_classification.columns.str.lower()
     
-    # Generate parameter combinations
-    print(f"\n[✓] Generating parameter combinations...")
-    param_combinations = generate_parameter_combinations(config)
-    print(f"  Testing {len(param_combinations):,} combinations")
-    
     # Load existing best parameters for comparison
     existing_best = load_existing_best_parameters(config.symbol)
     existing_best_score = 0
@@ -1602,6 +1901,24 @@ def main():
         print(f"[✓] Existing best score to beat: {existing_best_score:.3f} (Return: {existing_best['optimization_info']['total_return']:+.1f}%)")
     else:
         print(f"[✓] No existing best found - any result will be new record")
+    
+    # Initialize smart optimizer
+    smart_optimizer = None
+    if config.use_smart_optimization:
+        smart_optimizer = SmartOptimizer(config)
+        if smart_optimizer.load_state():
+            print(f"[✓] Continuing from previous optimization session")
+        else:
+            print(f"[✓] Starting new smart optimization session")
+    
+    # Generate parameter combinations
+    print(f"\n[✓] Generating parameter combinations...")
+    if config.use_smart_optimization and smart_optimizer:
+        param_combinations = smart_optimizer.generate_smart_combinations(config.max_combinations)
+        print(f"  Smart generation: {len(param_combinations):,} combinations")
+    else:
+        param_combinations = generate_parameter_combinations(config)
+        print(f"  Traditional generation: {len(param_combinations):,} combinations")
     
     # Run optimization
     print(f"\n[✓] Running optimization...")
@@ -1630,6 +1947,10 @@ def main():
                 for i, result in enumerate(pool.imap(test_func, param_combinations)):
                     if result:
                         results.append(result)
+                        
+                        # Track with smart optimizer
+                        if smart_optimizer:
+                            smart_optimizer.mark_combination_tested(param_combinations[i], result)
                     if is_info():
                         pbar.update(1)
                         # Calculate current best for display
@@ -1686,6 +2007,10 @@ def main():
                 if result:
                     result['optimization_score'] = calculate_optimization_score(result, config.objectives)
                     results.append(result)
+                    
+                    # Track with smart optimizer
+                    if smart_optimizer:
+                        smart_optimizer.mark_combination_tested(params, result)
                 if is_info():
                     pbar.update(1)
                     
@@ -1784,6 +2109,11 @@ def main():
         
     else:
         print("[!] No valid results found. Check parameter ranges and data.")
+    
+    # Save optimization state for next run
+    if smart_optimizer:
+        smart_optimizer.save_state()
+        print(f"[✓] Saved optimization state for future runs")
 
 if __name__ == "__main__":
     main() 
