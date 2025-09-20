@@ -312,7 +312,14 @@ class SmartOptimizer:
         for param_name in params_to_vary:
             if param_name in self.config.param_ranges:
                 values = self.config.param_ranges[param_name]
-                current_idx = values.index(base_params[param_name])
+                
+                # Safety check: if base param value is not in current ranges, find closest value
+                if base_params[param_name] not in values:
+                    # Find the closest value in the current parameter ranges
+                    closest_value = min(values, key=lambda x: abs(x - base_params[param_name]))
+                    current_idx = values.index(closest_value)
+                else:
+                    current_idx = values.index(base_params[param_name])
                 
                 # Calculate search radius
                 radius = max(1, int(len(values) * self.config.adaptive_search_radius))
@@ -1881,6 +1888,22 @@ def main():
     print(f"  [✓] Smart maxBarsBack options: {max_bars_back_options}")
     print(f"  Based on {available_training_bars} training bars (25%, 50%, 75%, 100%)")
     
+    # Ensure historical best parameters are included in ranges if they exist
+    try:
+        best_params_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results_logs", f"best_parameters_{config.symbol}.json")
+        if os.path.exists(best_params_file):
+            with open(best_params_file, 'r') as f:
+                existing_best = json.load(f)
+                if 'best_parameters' in existing_best and 'maxBarsBack' in existing_best['best_parameters']:
+                    historical_max_bars = existing_best['best_parameters']['maxBarsBack']
+                    if historical_max_bars not in config.param_ranges['maxBarsBack']:
+                        # Add the historical value to the parameter ranges
+                        config.param_ranges['maxBarsBack'].append(historical_max_bars)
+                        config.param_ranges['maxBarsBack'] = sorted(config.param_ranges['maxBarsBack'])
+                        print(f"  [+] Added historical maxBarsBack value: {historical_max_bars}")
+    except Exception as e:
+        print(f"  [!] Could not load historical parameters: {e}")
+    
     # Handle intraday data aggregation for optimization
     if config.timeframe in ['minute', 'hour'] and config.aggregate_to_daily:
         if is_info():
@@ -1943,7 +1966,8 @@ def main():
         with mp.Pool(processes=config.n_jobs) as pool:
             # Use imap for progress tracking
             desc = "Testing combinations" if is_info() else "Optimizing"
-            with tqdm(total=len(param_combinations), desc=desc, disable=not is_info()) as pbar:
+            with tqdm(total=len(param_combinations), desc=desc, disable=not is_info(), 
+                      mininterval=0.5, maxinterval=2.0, miniters=1) as pbar:
                 for i, result in enumerate(pool.imap(test_func, param_combinations)):
                     if result:
                         results.append(result)
@@ -1953,8 +1977,8 @@ def main():
                             smart_optimizer.mark_combination_tested(param_combinations[i], result)
                     if is_info():
                         pbar.update(1)
-                        # Calculate current best for display
-                        if results:
+                        # Calculate current best for display (update less frequently to avoid line spam)
+                        if results and (i + 1) % 10 == 0:  # Update display every 10 iterations
                             current_best_result = max(results, key=lambda x: x['optimization_score'])
                             current_best_score = current_best_result['optimization_score']
                             current_best_return = current_best_result['total_return']
@@ -1964,24 +1988,17 @@ def main():
                                 postfix = {
                                     'Valid': len(results),
                                     'Success': f"{len(results)/(i+1)*100:.0f}%" if i > 0 else "0%",
-                                    'NEW BEST': f"{current_best_score:.2f}",
-                                    'Return': f"{current_best_return:+.1f}%"
+                                    'NEW BEST': f"{current_best_score:.4f}",
+                                    'Return': f"{current_best_return:+.2f}%"
                                 }
                             else:
                                 postfix = {
                                     'Valid': len(results),
                                     'Success': f"{len(results)/(i+1)*100:.0f}%" if i > 0 else "0%",
-                                    'Best': f"{current_best_score:.2f}",
-                                    'To Beat': f"{existing_best_score:.2f}"
+                                    'Best': f"{current_best_score:.3f}",
+                                    'To Beat': f"{existing_best_score:.3f}"
                                 }
-                        else:
-                            postfix = {
-                                'Valid': 0,
-                                'Success': "0%",
-                                'To Beat': f"{existing_best_score:.2f}"
-                            }
-                        
-                        pbar.set_postfix(postfix)
+                            pbar.set_postfix(postfix)
                     
                     # Periodic system monitoring (every 500 combinations)
                     if (i + 1) % 500 == 0 and is_info():
@@ -2001,7 +2018,8 @@ def main():
         if is_info():
             print(f"[✓] Using sequential processing...")
         desc = "Testing combinations" if is_info() else "Optimizing"
-        with tqdm(total=len(param_combinations), desc=desc, disable=not is_info()) as pbar:
+        with tqdm(total=len(param_combinations), desc=desc, disable=not is_info(), 
+                  mininterval=0.5, maxinterval=2.0, miniters=1) as pbar:
             for i, params in enumerate(param_combinations):
                 result = test_parameter_combination(params, df_for_classification, config.symbol, config.initial_capital, config.max_bars_back)
                 if result:
@@ -2026,19 +2044,19 @@ def main():
                             if current_best_score > existing_best_score:
                                 postfix = {
                                     'Valid': len(results),
-                                    'NEW BEST': f"{current_best_score:.2f}",
+                                    'NEW BEST': f"{current_best_score:.3f}",
                                     'Return': f"{current_best_return:+.1f}%"
                                 }
                             else:
                                 postfix = {
                                     'Valid': len(results),
-                                    'Best': f"{current_best_score:.2f}",
-                                    'To Beat': f"{existing_best_score:.2f}"
+                                    'Best': f"{current_best_score:.3f}",
+                                    'To Beat': f"{existing_best_score:.3f}"
                                 }
                         else:
                             postfix = {
                                 'Valid': 0,
-                                'To Beat': f"{existing_best_score:.2f}"
+                                'To Beat': f"{existing_best_score:.3f}"
                             }
                         
                         pbar.set_postfix(postfix)
