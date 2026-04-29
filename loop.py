@@ -22,7 +22,9 @@ Requires:
 Environment knobs (all optional):
     OPTIMIZE_METRIC        val_sharpe (default) | calmar | dsr
     DSR_GATE_THRESHOLD     reject if dsr below this; 0 disables (default)
-    BASKET_SYMBOLS         comma-sep list → backtest.py runs each, aggregates
+    SYMBOLS                comma-sep parquet stems under data/ (e.g.
+                           "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d").
+                           N=1 → single mode; N≥2 → basket mode with overfit penalty.
     CLAUDE_MODEL           override the default Haiku model
     OPENAI_*  / similar    not used; this loop only calls Anthropic
 
@@ -301,7 +303,7 @@ def _parse_summary(out: str) -> dict:
 
 def run_backtest() -> dict:
     """Run backtest.py in a subprocess, parse summary block, return metrics.
-    Inherits DSR_BENCHMARK and BASKET_* env vars set by the caller."""
+    Inherits DSR_BENCHMARK, SYMBOLS, and BASKET_PENALTY env vars from the caller."""
     proc = subprocess.run(
         [PYTHON, "backtest.py"],
         cwd=ROOT,

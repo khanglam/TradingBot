@@ -5,25 +5,25 @@ the configured OPTIMIZE_METRIC to decide keep-vs-discard. Changing this file
 mid-experiment makes runs incomparable. Treat as immutable.
 
 Usage:
-    python backtest.py                          # default: configured asset, val window
-    python backtest.py --data data/crypto/BTC_USDT_4h.parquet
-    python backtest.py --window train           # eval on training window
-    python backtest.py --window lockbox         # held-out 2025+ window (manual only)
+    python backtest.py                              # default: crypto/BTC_USDT_4h, val window
+    python backtest.py --symbols crypto/BTC_USDT_4h
+    python backtest.py --symbols stocks/TSLA_1d,stocks/NVDA_1d,stocks/AAPL_1d
+    python backtest.py --window train               # eval on training window
+    python backtest.py --window lockbox             # held-out 2025+ window (manual only)
 
 Environment variables (read at runtime, override file defaults):
-    BACKTEST_DATA       path to parquet (overrides DEFAULT_DATA / --data)
-    BASKET_SYMBOLS      comma-separated list (e.g. "TSLA,NVDA,AAPL"). When
-                        set, scores the strategy on each symbol independently
-                        and aggregates into a single summary block.
-                        Resolves to data/stocks/{SYMBOL}_{tf}.parquet
-                        (timeframe from BASKET_TIMEFRAME, default "1d").
-    BASKET_TIMEFRAME    timeframe suffix for basket lookup (default "1d")
-    BASKET_ASSET_CLASS  "stocks" (default) or "crypto" — directory under data/
-    BASKET_PENALTY      stdev penalty in basket scoring (default 0.5).
-                        score = mean(sharpe) - penalty * std(sharpe).
-    DSR_BENCHMARK       per-bar Sharpe benchmark for DSR (default 0; loop sets
-                        this from prior-trial variance to correct for multiple
-                        testing — see loop.py:compute_dsr_benchmark).
+    SYMBOLS         comma-separated parquet stems under data/ (without .parquet
+                    suffix). Examples:
+                      crypto/BTC_USDT_4h                       (single)
+                      stocks/TSLA_1d,stocks/NVDA_1d,stocks/AAPL_1d  (basket)
+                    N=1 → single mode (MIN_TRADES=20). N≥2 → basket mode
+                    (MIN_BASKET_TRADES=5, scored with the overfit penalty).
+                    Empty/unset → DEFAULT_SYMBOLS.
+    BASKET_PENALTY  stdev penalty in basket scoring (default 0.5).
+                    score = mean(sharpe) - penalty * std(sharpe).
+    DSR_BENCHMARK   per-bar Sharpe benchmark for DSR (default 0; loop sets
+                    this from prior-trial variance to correct for multiple
+                    testing — see loop.py:compute_dsr_benchmark).
 
 Windows:
   train   : 2019-01-01 → 2022-12-31  (agent reasons about it; not the metric)
@@ -47,7 +47,7 @@ Output (printed to stdout, parsed by loop.py):
     total_return_pct:  45.67
     ---
 
-In basket mode (BASKET_SYMBOLS set):
+In basket mode (N≥2 symbols):
   - val_sharpe = mean(sharpes) - BASKET_PENALTY * std(sharpes)  ← penalize
     inconsistency across the basket so single-symbol overfit doesn't win.
   - sortino, sharpe_ann_4h, calmar, psr, dsr, skew, kurtosis, win_rate,
@@ -82,7 +82,8 @@ ROOT = Path(__file__).parent
 # ───────────────────────── Fixed configuration ──────────────────────────
 # Changing any of these makes past results incomparable. Treat as constants.
 
-DEFAULT_DATA = "data/crypto/BTC_USDT_4h.parquet"
+DEFAULT_SYMBOLS = "crypto/BTC_USDT_4h"
+DEFAULT_DATA = f"data/{DEFAULT_SYMBOLS}.parquet"  # legacy alias for app.py
 # backtesting.py floors share counts to integers, so we use a large nominal
 # cash so fractional-equity sizing produces >= 1 BTC unit. Sharpe and
 # percentage returns are scale-invariant — this changes nothing about
@@ -280,19 +281,23 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
     }
 
 
-# ─────────────────────────── basket aggregation ─────────────────────────
+# ───────────────────────── symbol resolution ────────────────────────────
 
-def _basket_paths(symbols: list[str], asset_class: str, timeframe: str) -> list[tuple[str, Path]]:
-    """Resolve symbol list to (symbol, parquet path) tuples."""
-    sub = "stocks" if asset_class == "stocks" else "crypto"
+def _resolve_symbols(symbols_str: str) -> list[tuple[str, Path]]:
+    """Parse 'crypto/BTC_USDT_4h,stocks/TSLA_1d' into (label, path) pairs.
+
+    Each entry is a parquet stem under data/. Extensions are added if missing,
+    and bare 'data/...' prefixes are tolerated.
+    """
     out: list[tuple[str, Path]] = []
-    for sym in symbols:
-        sym = sym.strip()
-        if not sym:
+    for raw in symbols_str.split(","):
+        s = raw.strip()
+        if not s:
             continue
-        # Crypto pairs may contain "/" — replace with underscore for filenames
-        fname = sym.replace("/", "_")
-        out.append((sym, ROOT / "data" / sub / f"{fname}_{timeframe}.parquet"))
+        rel = s[len("data/"):] if s.startswith("data/") else s
+        if rel.endswith(".parquet"):
+            rel = rel[: -len(".parquet")]
+        out.append((rel, ROOT / "data" / f"{rel}.parquet"))
     return out
 
 
@@ -329,16 +334,15 @@ def _aggregate_basket(per_symbol: list[tuple[str, dict]], penalty: float) -> dic
     }
 
 
-def _run_basket(symbols: list[str], asset_class: str, timeframe: str, window: str, penalty: float) -> dict:
+def _run_basket(resolved: list[tuple[str, Path]], window: str, penalty: float) -> dict:
     """Run the strategy on each symbol in the basket and aggregate.
 
     Symbols whose data is missing or whose backtests crash are skipped with a
     warning; if at least one survives, the basket result is the aggregate of
     those that did. If none survive, returns zero metrics."""
-    paths = _basket_paths(symbols, asset_class, timeframe)
-    print(f"# basket mode: {len(paths)} symbols, asset={asset_class}, tf={timeframe}", file=sys.stderr)
+    print(f"# basket mode: {len(resolved)} symbols", file=sys.stderr)
     per_symbol: list[tuple[str, dict]] = []
-    for sym, path in paths:
+    for sym, path in resolved:
         if not path.exists():
             print(f"# basket: missing data for {sym} ({path}), skipping", file=sys.stderr)
             continue
@@ -360,24 +364,28 @@ def _run_basket(symbols: list[str], asset_class: str, timeframe: str, window: st
 
 # ─────────────────────────── public run() ───────────────────────────────
 
-def run(data_path: str | Path = DEFAULT_DATA, window: str = "val") -> dict:
-    """Single entrypoint. Routes to basket mode when BASKET_SYMBOLS is set;
-    otherwise runs a standard single-symbol backtest."""
-    basket_env = (os.environ.get("BASKET_SYMBOLS") or "").strip()
+def run(symbols: str | None = None, window: str = "val") -> dict:
+    """Single entrypoint. N=1 → single mode; N≥2 → basket mode with overfit penalty.
 
-    if basket_env:
-        symbols = [s for s in basket_env.split(",") if s.strip()]
-        timeframe = (os.environ.get("BASKET_TIMEFRAME") or "1d").strip() or "1d"
-        asset_class = (os.environ.get("BASKET_ASSET_CLASS") or "stocks").strip() or "stocks"
+    `symbols` is a comma-separated string of parquet stems under data/
+    (e.g. "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d"). When None,
+    falls back to $SYMBOLS then DEFAULT_SYMBOLS.
+    """
+    spec = symbols if symbols is not None else (os.environ.get("SYMBOLS") or DEFAULT_SYMBOLS)
+    resolved = _resolve_symbols(spec)
+
+    if len(resolved) == 0:
+        metrics = dict(ZERO_METRICS)
+    elif len(resolved) == 1:
+        metrics = _run_single(resolved[0][1], window, min_trades=MIN_TRADES)
+        if metrics is None:
+            metrics = dict(ZERO_METRICS)
+    else:
         try:
             penalty = float(os.environ.get("BASKET_PENALTY", "0.5") or 0.5)
         except ValueError:
             penalty = 0.5
-        metrics = _run_basket(symbols, asset_class, timeframe, window, penalty)
-    else:
-        metrics = _run_single(data_path, window, min_trades=MIN_TRADES)
-        if metrics is None:
-            metrics = dict(ZERO_METRICS)
+        metrics = _run_basket(resolved, window, penalty)
 
     _print_summary(metrics)
     return metrics
@@ -403,7 +411,9 @@ def _print_summary(m: dict) -> None:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--data", default=os.environ.get("BACKTEST_DATA") or DEFAULT_DATA)
+    p.add_argument("--symbols", default=None,
+                   help="comma-sep parquet stems under data/ (e.g. crypto/BTC_USDT_4h). "
+                        "Defaults to $SYMBOLS or DEFAULT_SYMBOLS.")
     p.add_argument("--window", choices=["train", "val", "lockbox"], default="val")
     args = p.parse_args()
-    run(args.data, args.window)
+    run(args.symbols, args.window)

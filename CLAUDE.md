@@ -86,7 +86,7 @@ TradingBot/
 
 | Parameter | Default | Notes |
 |---|---|---|
-| Asset | BTC/USDT 4h | Switchable via BACKTEST_DATA env or BASKET_SYMBOLS |
+| Asset | BTC/USDT 4h | Switchable via SYMBOLS env (single or basket) |
 | Source | KuCoin via CCXT | Binance returns 451 to US IPs |
 | Train window | 2019-01-01 → 2022-12-31 | Agent reasons; not the metric |
 | Validation window | 2023-01-01 → 2024-12-31 | What the loop optimizes |
@@ -142,19 +142,24 @@ extend `LEGACY_SCHEMAS` so old files migrate cleanly.
 The active metric is the keep/discard scalar; all metrics are logged
 regardless. `OPTIMIZE_METRIC=...` env var.
 
-## Basket mode (anti-overfit for stocks)
+## SYMBOLS — single or basket, one knob
 
-Single-symbol optimization overfits hard. Basket mode evaluates the
-strategy on a list of symbols and scores `mean(sharpe) - 0.5·std(sharpe)`,
-penalizing strategies that win on one symbol but lose on others.
+`SYMBOLS` is a comma-separated list of parquet stems under `data/`:
 
 ```bash
-BASKET_SYMBOLS=TSLA,NVDA,AAPL,MSFT BASKET_TIMEFRAME=1d \
+# Single (MIN_TRADES=20, raw Sharpe)
+SYMBOLS=crypto/BTC_USDT_4h .venv/Scripts/python.exe loop.py --iters 20
+SYMBOLS=stocks/TSLA_1d     .venv/Scripts/python.exe loop.py --iters 20
+
+# Basket (N≥2; MIN_BASKET_TRADES=5; scored mean(sharpe) - 0.5·std(sharpe))
+SYMBOLS=stocks/TSLA_1d,stocks/NVDA_1d,stocks/AAPL_1d,stocks/MSFT_1d \
   .venv/Scripts/python.exe loop.py --iters 20
 ```
 
-Symbols are looked up under `data/{stocks|crypto}/{SYMBOL}_{tf}.parquet`.
-Fetch them with `data_fetch.py` first.
+Resolves to `data/{SYMBOLS[i]}.parquet`. Fetch with `data_fetch.py` first.
+Mode is auto-selected by count — no separate basket flag. Empty/unset →
+`crypto/BTC_USDT_4h`. Tune the basket overfit penalty via `BASKET_PENALTY`
+(default 0.5).
 
 ## Scheduled execution (GitHub Actions)
 

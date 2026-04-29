@@ -482,9 +482,19 @@
           } catch (e) { console.warn('SSE connect failed:', e); }
         },
 
+        observeChart(canvas, chart) {
+          // Chart.js v4 with responsive:true reads parent size at creation. If
+          // Tailwind CDN hasn't applied yet, parent is 0px and the chart never
+          // grows. Watch the parent and resize when it gets real dimensions.
+          if (!canvas?.parentElement || !window.ResizeObserver) return;
+          const ro = new ResizeObserver(() => { try { chart.resize(); } catch {} });
+          ro.observe(canvas.parentElement);
+          chart._sizeObserver = ro;
+        },
+
         renderEquity() {
           const ctx = document.getElementById('chart-equity'); if (!ctx) return;
-          if (this.charts.equity) this.charts.equity.destroy();
+          if (this.charts.equity) { this.charts.equity._sizeObserver?.disconnect?.(); this.charts.equity.destroy(); }
           const labels = this.equity.timestamps || [];
           this.charts.equity = new Chart(ctx, {
             type: 'line',
@@ -505,11 +515,12 @@
               plugins: { legend: { display: true, position: 'bottom' } },
             },
           });
+          this.observeChart(ctx, this.charts.equity);
         },
 
         renderDrawdown() {
           const ctx = document.getElementById('chart-drawdown'); if (!ctx) return;
-          if (this.charts.drawdown) this.charts.drawdown.destroy();
+          if (this.charts.drawdown) { this.charts.drawdown._sizeObserver?.disconnect?.(); this.charts.drawdown.destroy(); }
           this.charts.drawdown = new Chart(ctx, {
             type: 'line',
             data: {
@@ -525,6 +536,7 @@
               },
             },
           });
+          this.observeChart(ctx, this.charts.drawdown);
         },
 
         renderProgression() {
@@ -532,7 +544,7 @@
           const keeps = this.results.filter(r => r.status === 'keep');
           let best = 0;
           const data = keeps.map((r, i) => { best = Math.max(best, r.val_sharpe || 0); return { x: i + 1, sharpe: r.val_sharpe, best }; });
-          if (this.charts.progression) this.charts.progression.destroy();
+          if (this.charts.progression) { this.charts.progression._sizeObserver?.disconnect?.(); this.charts.progression.destroy(); }
           this.charts.progression = new Chart(ctx, {
             type: 'line',
             data: {
@@ -549,6 +561,7 @@
               plugins: { legend: { display: true, position: 'bottom' } },
             },
           });
+          this.observeChart(ctx, this.charts.progression);
         },
 
         highlightStrategy() {

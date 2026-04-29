@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import signal
@@ -69,6 +70,19 @@ def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return df.where(pd.notnull(df), None).to_dict(orient="records")
 
 
+def _safe_float(x: Any) -> float | None:
+    """NaN/Inf are not valid JSON. Return None so starlette can encode."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _safe_floats(values: Any) -> list[float | None]:
+    return [_safe_float(v) for v in values]
+
+
 def _active_model() -> str:
     """Read CLAUDE_MODEL env override; else regex DEFAULT_MODEL out of loop.py.
     Avoids importing loop (which has init-time side effects)."""
@@ -89,19 +103,26 @@ def _active_model() -> str:
 class LoopProc:
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
-        self.buffer: deque[str] = deque(maxlen=2000)
+        # Each entry is (monotonic_id, text). IDs only ever increase, so SSE
+        # clients can resume from "last id seen" — robust against buffer.clear().
+        self.buffer: deque[tuple[int, str]] = deque(maxlen=2000)
+        self.next_id: int = 0
         self.lock = threading.Lock()
         self.reader: threading.Thread | None = None
 
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
+    def _append(self, line: str) -> None:
+        self.buffer.append((self.next_id, line))
+        self.next_id += 1
+
     def start(self, iters: int) -> None:
         with self.lock:
             if self.is_running():
                 raise RuntimeError("Loop already running.")
             self.buffer.clear()
-            self.buffer.append(f"[ui] starting loop.py --iters {iters}")
+            self._append(f"[ui] starting loop.py --iters {iters}")
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
@@ -118,9 +139,9 @@ class LoopProc:
     def _drain(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
         for line in iter(self.proc.stdout.readline, ""):
-            self.buffer.append(line.rstrip("\n"))
+            self._append(line.rstrip("\n"))
         rc = self.proc.wait()
-        self.buffer.append(f"[ui] loop exited with code {rc}")
+        self._append(f"[ui] loop exited with code {rc}")
 
     def stop(self) -> bool:
         with self.lock:
@@ -138,7 +159,7 @@ class LoopProc:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
-            self.buffer.append("[ui] loop stopped by user")
+            self._append("[ui] loop stopped by user")
             return True
 
 
@@ -236,7 +257,13 @@ def equity_curve():
         from backtesting import Backtest
         from strategy import Strategy as UserStrategy
 
-        df = pd.read_parquet(ROOT / bt_module.DEFAULT_DATA)
+        # Equity curve is single-asset by definition: pick the first symbol
+        # the harness would resolve from $SYMBOLS (or DEFAULT_SYMBOLS).
+        spec = os.environ.get("SYMBOLS") or bt_module.DEFAULT_SYMBOLS
+        resolved = bt_module._resolve_symbols(spec)
+        if not resolved:
+            raise HTTPException(400, "no symbols resolved from $SYMBOLS")
+        df = pd.read_parquet(resolved[0][1])
         df = df.loc[bt_module.VAL_START:bt_module.VAL_END]
         if len(df) < 100:
             raise HTTPException(400, "validation window has too few candles")
@@ -250,19 +277,22 @@ def equity_curve():
         )
         stats = bt.run()
         eq = stats._equity_curve
+        bh_series = df["Close"] / df["Close"].iloc[0] * float(eq["Equity"].iloc[0])
+        max_dd = _safe_float(stats.get("Max. Drawdown [%]"))
+        win_rate = _safe_float(stats.get("Win Rate [%]"))
         return {
             "timestamps": [t.isoformat() for t in eq.index],
-            "equity": eq["Equity"].astype(float).tolist(),
-            "buy_and_hold": (df["Close"] / df["Close"].iloc[0] * float(eq["Equity"].iloc[0])).astype(float).tolist(),
-            "drawdown": (-eq["DrawdownPct"].astype(float) * 100).tolist(),
+            "equity": _safe_floats(eq["Equity"].astype(float).tolist()),
+            "buy_and_hold": _safe_floats(bh_series.astype(float).tolist()),
+            "drawdown": _safe_floats((-eq["DrawdownPct"].astype(float) * 100).tolist()),
             "metrics": {
-                "sharpe": float(stats.get("Sharpe Ratio", 0.0) or 0.0),
-                "sortino": float(stats.get("Sortino Ratio", 0.0) or 0.0),
-                "max_drawdown": abs(float(stats.get("Max. Drawdown [%]", 0.0) or 0.0)),
-                "win_rate": float(stats.get("Win Rate [%]", 0.0) or 0.0) / 100.0,
+                "sharpe": _safe_float(stats.get("Sharpe Ratio")),
+                "sortino": _safe_float(stats.get("Sortino Ratio")),
+                "max_drawdown": abs(max_dd) if max_dd is not None else None,
+                "win_rate": (win_rate / 100.0) if win_rate is not None else None,
                 "total_trades": int(stats.get("# Trades", 0) or 0),
-                "total_return": float(stats.get("Return [%]", 0.0) or 0.0),
-                "buy_and_hold_return": float(stats.get("Buy & Hold Return [%]", 0.0) or 0.0),
+                "total_return": _safe_float(stats.get("Return [%]")),
+                "buy_and_hold_return": _safe_float(stats.get("Buy & Hold Return [%]")),
             },
         }
     except HTTPException:
@@ -366,19 +396,19 @@ def loop_status() -> dict:
 @app.get("/api/loop/stream")
 async def loop_stream():
     async def event_gen():
-        # Only stream lines emitted AFTER the client connects.
-        # Avoids replaying buffered history on every reconnect (which
-        # otherwise produces duplicate console output).
-        last = len(loop_proc.buffer)
+        # Track the highest line-id we've already sent. Monotonic IDs survive
+        # buffer.clear() between runs, so an SSE reconnect can never re-emit
+        # lines that were already pushed to the client (no duplicate console).
+        last_id = loop_proc.next_id - 1
         while True:
-            buf = list(loop_proc.buffer)
-            if len(buf) > last:
-                for line in buf[last:]:
+            new_lines = [(lid, txt) for lid, txt in list(loop_proc.buffer) if lid > last_id]
+            if new_lines:
+                for lid, line in new_lines:
                     yield {"event": "line", "data": json.dumps({"line": line})}
-                last = len(buf)
+                last_id = new_lines[-1][0]
             yield {"event": "status", "data": json.dumps({
                 "running": loop_proc.is_running(),
-                "lines": len(buf),
+                "lines": loop_proc.next_id,
             })}
             await asyncio.sleep(0.5)
 

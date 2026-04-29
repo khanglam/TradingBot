@@ -30,8 +30,8 @@ on:
           - val_sharpe
           - calmar
           - dsr
-      basket_symbols:
-        description: 'Optional comma-separated stock basket (e.g. TSLA,NVDA,AAPL). Empty = use the default crypto BTC parquet.'
+      symbols:
+        description: 'Comma-sep parquet stems under data/ (e.g. crypto/BTC_USDT_4h or stocks/TSLA_1d,stocks/NVDA_1d). Empty = default crypto/BTC_USDT_4h.'
         required: false
         default: ''
         type: string
@@ -53,7 +53,7 @@ jobs:
     env:
       ITERS: ${{ github.event.inputs.iters || '15' }}
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
-      BASKET_SYMBOLS: ${{ github.event.inputs.basket_symbols || '' }}
+      SYMBOLS: ${{ github.event.inputs.symbols || '' }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-4-5' }}
       PYTHONUTF8: '1'
@@ -85,24 +85,33 @@ jobs:
           key: ohlcv-${{ runner.os }}-v1
           restore-keys: ohlcv-${{ runner.os }}-
 
-      - name: Fetch BTC data (only if cache miss / single-symbol mode)
-        if: env.BASKET_SYMBOLS == ''
+      - name: Fetch OHLCV data for each entry in SYMBOLS
+        env:
+          EFFECTIVE_SYMBOLS: ${{ env.SYMBOLS != '' && env.SYMBOLS || 'crypto/BTC_USDT_4h' }}
         run: |
-          mkdir -p data/crypto
-          if [ ! -f data/crypto/BTC_USDT_4h.parquet ]; then
-            python data_fetch.py --asset crypto --symbol BTC/USDT --timeframe 4h --start 2019-01-01
-          fi
-
-      - name: Fetch stock basket data (only when basket mode)
-        if: env.BASKET_SYMBOLS != ''
-        run: |
-          mkdir -p data/stocks
-          IFS=',' read -ra SYMS <<< "$BASKET_SYMBOLS"
-          for sym in "${SYMS[@]}"; do
-            sym=$(echo "$sym" | xargs)
-            if [ -n "$sym" ] && [ ! -f "data/stocks/${sym}_1d.parquet" ]; then
-              python data_fetch.py --asset stocks --symbol "$sym" --timeframe 1d --start 2015-01-01
+          # Each entry is "{asset}/{NAME}_{tf}" — e.g. crypto/BTC_USDT_4h, stocks/TSLA_1d.
+          # Resolve to data_fetch.py args; for crypto, restore "/" inside the pair name.
+          echo "$EFFECTIVE_SYMBOLS" | tr ',' '\n' | while read -r entry; do
+            entry=$(echo "$entry" | xargs)
+            [ -z "$entry" ] && continue
+            parquet="data/${entry}.parquet"
+            if [ -f "$parquet" ]; then
+              echo "have $parquet, skipping"
+              continue
             fi
+            asset="${entry%%/*}"
+            rest="${entry#*/}"
+            tf="${rest##*_}"
+            name="${rest%_*}"
+            if [ "$asset" = "crypto" ]; then
+              name="${name//_//}"
+              start="2019-01-01"
+            else
+              start="2015-01-01"
+            fi
+            mkdir -p "data/${asset}"
+            echo "fetch: asset=$asset symbol=$name tf=$tf start=$start"
+            python data_fetch.py --asset "$asset" --symbol "$name" --timeframe "$tf" --start "$start"
           done
 
       - name: Configure git for commits the loop makes

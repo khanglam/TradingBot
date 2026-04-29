@@ -77,21 +77,23 @@ OPTIMIZE_METRIC=dsr .venv/Scripts/python.exe loop.py --iters 10
 The loop stops automatically after the requested iterations or three
 consecutive regressions. Use the dashboard for a richer view.
 
-### Optimize across a basket of stocks instead of single-symbol BTC
+### Pick what the loop optimizes on (`SYMBOLS`)
 
-Single-symbol optimization overfits the strategy to one name's idiosyncrasies.
-The basket mode evaluates the strategy on multiple symbols and uses
-`mean(sharpe) - 0.5·std(sharpe)` so strategies that win on one symbol but
-lose on others get penalized:
+`SYMBOLS` is one knob: a comma-separated list of parquet stems under `data/`.
+Mode is chosen by count — N=1 is single, N≥2 is basket (overfit-penalized).
+Empty/unset defaults to `crypto/BTC_USDT_4h`.
 
 ```bash
-# 1. Fetch each symbol's data
+# Single asset — strict 20-trade minimum, raw Sharpe
+SYMBOLS=stocks/TSLA_1d .venv/Scripts/python.exe loop.py --iters 20
+
+# Basket of stocks — penalizes strategies that win on one name and lose on others
+# Score: mean(sharpe) - BASKET_PENALTY * std(sharpe)   (BASKET_PENALTY default 0.5)
 for sym in TSLA NVDA AAPL MSFT GOOG; do
   .venv/Scripts/python.exe data_fetch.py --asset stocks --symbol $sym --timeframe 1d --start 2015-01-01
 done
-
-# 2. Set the basket env var and run the loop
-BASKET_SYMBOLS="TSLA,NVDA,AAPL,MSFT,GOOG" .venv/Scripts/python.exe loop.py --iters 20
+SYMBOLS="stocks/TSLA_1d,stocks/NVDA_1d,stocks/AAPL_1d,stocks/MSFT_1d,stocks/GOOG_1d" \
+  .venv/Scripts/python.exe loop.py --iters 20
 ```
 
 ## Three time windows
