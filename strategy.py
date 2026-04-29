@@ -1,7 +1,7 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: RSI(14) < 30 (oversold) to lock in gains on strong trends without EMA whipsaws.
+Exit: RSI(14) < 28 (oversold) to lock in gains on strong trends without EMA whipsaws.
 
 Constraints (also enforced by program.md):
     - Class must be named `Strategy` and importable as `from strategy import Strategy`
@@ -65,29 +65,13 @@ def _rsi(series: pd.Series, n: int = 14) -> np.ndarray:
     return rsi.fillna(50).to_numpy()
 
 
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
-    """Compute Average True Range."""
-    high = pd.Series(high)
-    low = pd.Series(low)
-    close = pd.Series(close)
-    
-    tr1 = high - low
-    tr2 = np.abs(high - close.shift(1))
-    tr3 = np.abs(low - close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(n).mean()
-    return atr.fillna(0).to_numpy()
-
-
 class Strategy(_BTStrategy):
     fast = 15
     slow = 45
     adx_period = 14
     adx_threshold = 25
     rsi_period = 14
-    rsi_oversold = 30
-    atr_period = 14
-    vol_scale = 0.02  # volatility scaling constant
+    rsi_oversold = 28
 
     def init(self) -> None:
         close = self.data.Close
@@ -98,7 +82,6 @@ class Strategy(_BTStrategy):
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.rsi = self.I(_rsi, close, self.rsi_period)
-        self.atr = self.I(_atr, high, low, close, self.atr_period)
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -107,14 +90,7 @@ class Strategy(_BTStrategy):
         crossed_up = self.ema_fast[-2] <= self.ema_slow[-2] and self.ema_fast[-1] > self.ema_slow[-1]
 
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold:
-            # Volatility-targeted sizing: scale position inversely to ATR
-            atr_val = self.atr[-1]
-            if atr_val > 0:
-                volatility_adjusted_size = min(0.95, self.vol_scale / (atr_val / self.data.Close[-1]))
-                volatility_adjusted_size = max(0.1, volatility_adjusted_size)
-            else:
-                volatility_adjusted_size = 0.95
-            self.buy(size=volatility_adjusted_size)
+            self.buy(size=0.95)
         elif self.position:
             if self.rsi[-1] < self.rsi_oversold:
                 self.position.close()
