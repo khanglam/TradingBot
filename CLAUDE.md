@@ -2,272 +2,163 @@
 
 ## What This Project Is
 
-This is a **karpathy-autoresearch-style autonomous trading strategy optimizer**. The idea: an AI agent modifies a trading strategy file, runs a backtest, measures a performance metric, keeps improvements, discards regressions, and loops forever — exactly like autoresearch does for LLM training.
+A **karpathy-autoresearch-style autonomous trading strategy optimizer**. An LLM
+agent modifies a strategy file, runs a backtest, measures Sharpe, keeps
+improvements, discards regressions, and loops — exactly like autoresearch does
+for LLM training.
 
-Reference: `karpathy-auto-research/` in this repo is the original. Read its `program.md` to understand the loop pattern we're replicating.
+Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 
-The framework we build on is **Jesse** (`jesse/`), chosen because:
-- Its `backtest()` is a pure Python function — callable without CLI, no subprocess spawning
-- Strategy API is minimal: extend `Strategy`, implement `should_long()` / `should_exit_long()` / `go_long()` / `go_short()`
-- Built-in Optuna hyperparameter optimization and Monte Carlo robustness checks
-- No look-ahead bias by design
-- Rust performance layer for fast backtesting iteration
+## The Stack (chosen 2026-04-28 after `/research`)
 
----
+| Layer | Choice | Why |
+|---|---|---|
+| Backtest engine | `backtesting.py` | Pure function call, returns metrics dict, no CLI, fast |
+| Live/paper exec | `lumibot` + Alpaca | One config flag flips paper ↔ live, supports stocks + crypto |
+| Crypto data | `ccxt` (Binance public) | Free, 8+ years OHLCV, no API key |
+| Stock data | `yfinance` | Free, daily back to 1990 |
+| Storage | Parquet (pyarrow) | 40× faster reads than CSV for backtest loops |
+| LLM agent | Claude Sonnet 4.6 via `anthropic` SDK | Drives the mutation prompts |
 
-## The Autoresearch Loop (Design Target)
+Jesse was evaluated and archived to `archive/` — too heavy for the tight loop.
+
+## The Autoresearch Loop
 
 ```
-program.md          ← agent instructions (written by human, not AI)
-      ↓
 LOOP FOREVER:
-  1. Read current strategy.py and results.tsv
-  2. Modify strategy.py with an experimental idea
-  3. git commit
-  4. Run backtest → run.log
-  5. Read val_sharpe from run.log
-  6. If improved: keep commit (advance branch)
-     If worse: git reset to last good commit
-  7. Log to results.tsv
-  8. Repeat
+  1. Read current strategy.py + last 10 rows of results.tsv + program.md
+  2. Ask Claude for ONE mutation (description + new strategy.py contents)
+  3. Write strategy.py, git commit
+  4. Run backtest.py → parses summary block from stdout
+  5. Apply keep/discard rules:
+       - val_sharpe > best_so_far AND constraints pass → keep
+       - else                                          → git reset --hard HEAD~1
+  6. Append row to results.tsv
+  7. Stop after --iters or 3 consecutive regressions
 ```
 
-This maps directly to autoresearch:
-
-| karpathy-autoresearch | This project |
+| autoresearch | this project |
 |---|---|
 | `prepare.py` (fixed) | `backtest.py` — immutable harness |
-| `train.py` (mutable) | `strategy.py` — only file agent edits |
-| `val_bpb` (lower = better) | `val_sharpe` (higher = better) |
-| Fixed 5-min time budget | Fixed backtest date window |
-| `results.tsv` | `results.tsv` (same format) |
-| `program.md` | `program.md` (to be written) |
-
----
+| `train.py` (mutable) | `strategy.py` — only file the agent edits |
+| `val_bpb` (lower=better) | `val_sharpe` (higher=better) |
+| `program.md` | `program.md` (constraints + output format) |
+| `results.tsv` | `results.tsv` |
 
 ## Repository Layout
 
 ```
 TradingBot/
-├── CLAUDE.md                    ← this file
-├── jesse/                       ← Jesse framework (cloned, do not modify internals)
-│   ├── jesse/
-│   │   ├── modes/
-│   │   │   └── backtest_mode.py ← backtest engine entry point
-│   │   ├── strategies/
-│   │   │   └── Strategy.py      ← base class all strategies inherit
-│   │   └── indicators/          ← technical indicators (ta, numpy-based)
-│   └── tests/
-├── karpathy-auto-research/      ← reference implementation, read-only
-│
-│   ── FILES WE BUILD ──
-│
-├── backtest.py                  ← FIXED harness (like prepare.py) — do not modify once stable
-├── strategy.py                  ← MUTABLE file the agent edits (like train.py)
-├── program.md                   ← agent instructions for the loop
-├── results.tsv                  ← experiment log (untracked by git)
-└── run.log                      ← latest backtest output (untracked by git)
+├── CLAUDE.md                  this file
+├── program.md                 agent constraints + required output format
+├── backtest.py                FIXED — evaluation harness, never edit after stable
+├── strategy.py                MUTABLE — only file the loop edits
+├── loop.py                    autoresearch orchestrator
+├── live_trade.py              paper / live execution via LumiBot
+├── data_fetch.py              CCXT + yfinance → Parquet
+├── data/                      cached OHLCV (gitignored)
+├── results.tsv                experiment log (gitignored)
+├── run.log                    latest backtest stdout (gitignored)
+├── archive/                   old Jesse-based code
+└── karpathy-auto-research/    reference, read-only
 ```
 
----
-
-## The Two Sacred Files
-
-### `backtest.py` — Fixed Harness (DO NOT MODIFY once stable)
-This is the evaluation oracle. It:
-- Loads historical candle data for a fixed asset and date range
-- Instantiates and runs the strategy from `strategy.py`
-- Computes the evaluation metric
-- Prints a summary block the agent can parse
-
-The agent **never touches this file**. Changing it would make experiments incomparable — same as modifying `prepare.py` in autoresearch.
-
-### `strategy.py` — Mutable Strategy (Agent edits this)
-This is the only file the agent modifies. It extends Jesse's `Strategy` base class and implements signal logic. Everything is fair game: entry/exit conditions, indicators used, position sizing, stop-loss logic, hyperparameters.
-
----
-
-## Evaluation Metric
-
-Primary metric: **`val_sharpe`** (annualized Sharpe ratio on the validation window, higher is better).
-
-Secondary constraints (soft limits, not primary objectives):
-- `max_drawdown` < 30% (hard stop — a strategy that blows up is not acceptable regardless of Sharpe)
-- `win_rate` > 30% (sanity check — pure luck strategies filtered out)
-- `total_trades` > 20 (minimum sample size for the metric to be meaningful)
-
-The backtest window is split:
-- **Train window**: used implicitly via the optimization loop
-- **Validation window**: fixed, out-of-sample — `val_sharpe` is always reported on this
-
----
-
-## Backtest Configuration (to be finalized)
+## Backtest Configuration (FIXED — changing breaks comparability)
 
 | Parameter | Value |
-|-----------|-------|
-| Asset | BTC-USDT (start with single asset) |
-| Exchange | Binance Futures (simulated) |
+|---|---|
+| Asset | BTC/USDT |
+| Source | KuCoin via CCXT (Binance returns 451 to US IPs) |
 | Timeframe | 4h |
 | Train window | 2019-01-01 → 2022-12-31 |
 | Validation window | 2023-01-01 → 2024-12-31 |
-| Starting capital | $10,000 |
-| Leverage | 1x (no leverage initially) |
+| Nominal cash | $1,000,000 (large to avoid backtesting.py integer-share rounding; metrics are scale-invariant) |
+| Commission | 0.06% (KuCoin taker) |
+| Leverage | 1x |
+| Min trades | 20 (below → val_sharpe forced to 0) |
+| Baseline (EMA 20/50) | Sharpe 0.96 · MaxDD 28.7% · Trades 37 · Return 125% (validation) |
 
----
+## Output Format the Loop Parses
 
-## Output Format
-
-`backtest.py` must print a summary block that the agent can parse with grep:
+`backtest.py` prints:
 
 ```
 ---
-val_sharpe:        1.234567
-max_drawdown:      12.34
-win_rate:          0.456
-total_trades:      87
-total_return_pct:  45.67
+val_sharpe:       1.234567
+sortino:          1.890123
+max_drawdown:     12.34
+win_rate:         0.456
+total_trades:     87
+total_return_pct: 45.67
+---
 ```
 
-The agent reads metrics with:
+Crashes / insufficient trades → all zeros, status `crash`.
+
+## results.tsv Schema
+
+Tab-separated, gitignored, append-only:
+
+```
+commit  val_sharpe  max_drawdown  win_rate  total_trades  status  description
+a1b2c3d 1.234567    12.30         0.480     87            keep    baseline EMA 20/50
+b2c3d4e 1.456789    10.10         0.512     94            keep    added RSI<30 filter
+c3d4e5f 0.987654    18.20         0.401     61            discard tried Bollinger exits
+d4e5f6g 0.000000    0.00          0.000     0             crash   syntax error in init
+```
+
+## Setup
+
 ```bash
-grep "^val_sharpe:" run.log
-grep "^max_drawdown:" run.log
+# 1. install deps (first time)
+.venv/Scripts/python.exe -m pip install backtesting lumibot ccxt yfinance anthropic pyarrow
+
+# 2. download data
+.venv/Scripts/python.exe data_fetch.py --asset crypto --symbol BTC/USDT --timeframe 4h --start 2019-01-01
+
+# 3. set keys in .env
+#    ANTHROPIC_API_KEY=...
+#    ALPACA_API_KEY=...           (only needed for live_trade.py)
+#    ALPACA_API_SECRET=...
+#    ALPACA_PAPER=True
+
+# 4. baseline backtest
+.venv/Scripts/python.exe backtest.py
+
+# 5. start the loop
+.venv/Scripts/python.exe loop.py --iters 50
+
+# 6. paper trade the current strategy.py
+.venv/Scripts/python.exe live_trade.py --symbol SPY --asset stock
 ```
 
-If the run crashes or produces insufficient trades, val_sharpe is reported as 0.0.
+## Hard Rules for the Agent
 
----
+These are mirrored in `program.md` and enforced by `loop.py`:
 
-## Results Log (`results.tsv`)
+- **CAN edit**: `strategy.py` only
+- **CANNOT edit**: `backtest.py`, `loop.py`, `data_fetch.py`, `live_trade.py`,
+  the windows, jesse internals, lumibot internals
+- **One change per experiment** (no bundled mutations)
+- **No look-ahead** (only bars `[0..current]`)
+- **Class signature fixed**: `class Strategy(backtesting.Strategy)` with
+  `init` and `next` methods
+- **Simpler is better** — equal Sharpe with less code wins
 
-Tab-separated, NOT comma-separated. Never committed to git.
-
-```
-commit	val_sharpe	max_drawdown	status	description
-a1b2c3d	1.234567	12.3	keep	baseline — simple EMA crossover
-b2c3d4e	1.456789	10.1	keep	added RSI filter
-c3d4e5f	0.987654	18.2	discard	tried Bollinger Band exits
-d4e5f6g	0.000000	0.0	crash	look-ahead bias error, reverted
-```
-
-Columns:
-1. `commit` — 7-char git hash
-2. `val_sharpe` — validation Sharpe (0.000000 for crashes)
-3. `max_drawdown` — peak drawdown % (0.0 for crashes)
-4. `status` — `keep`, `discard`, or `crash`
-5. `description` — short plain-English summary of what was tried
-
----
-
-## Jesse Strategy API (Quick Reference)
-
-The agent needs to know how to write valid Jesse strategies:
-
-```python
-from jesse.strategies import Strategy
-import jesse.indicators as ta
-
-class MyStrategy(Strategy):
-
-    # Hyperparameters (optimizable)
-    @property
-    def hp(self):
-        return [
-            {'name': 'ema_period', 'type': int, 'min': 10, 'max': 200, 'default': 50},
-        ]
-
-    # Required: define entry conditions
-    def should_long(self) -> bool:
-        return ta.ema(self.candles, self.hp['ema_period']) > ...
-
-    def should_short(self) -> bool:
-        return False  # disable shorts initially
-
-    def should_cancel_entry(self) -> bool:
-        return False
-
-    # Required: define entry orders
-    def go_long(self):
-        self.buy = self.available_margin, self.price  # market order
-
-    def go_short(self):
-        pass
-
-    # Required: define exit conditions
-    def update_position(self):
-        if ...:  # exit condition
-            self.liquidate()
-```
-
-Key properties available inside strategy:
-- `self.candles` — OHLCV numpy array (shape: [n, 6])
-- `self.price` / `self.close` — current close price
-- `self.open`, `self.high`, `self.low`, `self.volume`
-- `self.position` — current open position
-- `self.available_margin` — available capital
-- `self.hp` — hyperparameter dict
-
-Key indicators in `jesse.indicators` (aliased as `ta`):
-- `ta.ema(candles, period)`, `ta.sma(candles, period)`
-- `ta.rsi(candles, period)`, `ta.macd(candles)`
-- `ta.bollinger_bands(candles, period)`, `ta.atr(candles, period)`
-- `ta.stoch(candles)`, `ta.adx(candles, period)`
-
----
-
-## Simplicity Criterion
-
-Identical to autoresearch: all else equal, simpler is better.
-
-- A 0.01 Sharpe improvement that adds 50 lines of complex logic? Not worth it.
-- A 0.01 Sharpe improvement from deleting code? Keep it.
-- Removing an indicator and getting equal performance? That's a win.
-
-The agent should prefer strategies that are readable, robust, and minimal.
-
----
-
-## What the Agent Can and Cannot Do
-
-**CAN modify:**
-- `strategy.py` — anything: entry/exit logic, indicators, position sizing, stop-loss, hyperparameters
-
-**CANNOT modify:**
-- `backtest.py` — the fixed evaluation harness
-- Jesse internals (`jesse/`) — treat as a read-only dependency
-- The validation date window — changing it makes results incomparable
-- `results.tsv` — append only, never edit past rows
-
----
-
-## Skills Available in This Project
-
-Three global skills are installed for research and decision-making:
+## Skills Available
 
 - `/research <topic>` — fan-out parallel research (5 agents, different angles)
-- `/debate <claim>` — stochastic multi-agent consensus (3 agents, adversarial roles)
-- `/scout <topic>` — full research → debate pipeline in one command
+- `/debate <claim>` — stochastic multi-agent consensus (3 agents, adversarial)
+- `/scout <topic>` — research → debate pipeline in one command
 
-Use `/scout` before adopting any new framework, library, or major architectural decision.
+Use `/scout` before adopting any new framework or major architectural change.
 
----
+## Status (2026-04-28)
 
-## Current Status
-
-- [x] Jesse cloned to `jesse/`
-- [x] karpathy-auto-research in `karpathy-auto-research/` for reference
-- [ ] `backtest.py` — not yet written
-- [ ] `strategy.py` — not yet written (baseline)
-- [ ] `program.md` — not yet written
-- [ ] `results.tsv` — not yet initialized
-- [ ] Jesse installed and data downloaded
-
-## Next Steps
-
-1. Install Jesse and verify backtest runs
-2. Write `backtest.py` (fixed harness) — callable from Python, prints the summary block
-3. Write `strategy.py` (baseline — simple EMA crossover to establish baseline metric)
-4. Run baseline backtest, record in `results.tsv`
-5. Write `program.md` (agent instructions for the loop)
-6. Launch the autonomous loop
+- [x] Stack chosen via `/research`
+- [x] `backtest.py`, `strategy.py`, `loop.py`, `live_trade.py`, `data_fetch.py`, `program.md` written
+- [x] Old Jesse code archived to `archive/`
+- [ ] Dependencies installed (in progress)
+- [ ] Initial data download
+- [ ] Baseline backtest executed
+- [ ] First loop iteration verified

@@ -5,7 +5,9 @@
       "Bash(pip3 list:*)",
       "Bash(grep:*)",
       "Bash(git clone *)",
-      "Bash(where claude *)"
+      "Bash(where claude *)",
+      "Bash(pip --version)",
+      "Bash(docker exec *)"
     ],
     "deny": []
   }

@@ -12,3 +12,10 @@ __pycache__/
 
 # Virtual environment
 .venv/
+
+# Autoresearch loop artifacts (per-machine, never committed)
+data/
+results.tsv
+run.log
+trades.log
+logs/
