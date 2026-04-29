@@ -56,9 +56,13 @@ TradingBot/
 ├── loop.py                    autoresearch orchestrator
 ├── live_trade.py              paper / live execution via LumiBot
 ├── data_fetch.py              CCXT + yfinance -> Parquet
-├── dashboard.py               Streamlit UI (viewer + launcher)
-├── run_dashboard.bat          Windows one-click launcher
-├── run_dashboard.sh           Mac/Linux launcher
+├── ui/
+│   ├── server.py              FastAPI backend + SSE for live loop output
+│   └── static/
+│       ├── index.html         single-page dashboard (Tailwind + Alpine)
+│       ├── app.js             Alpine + Chart.js front-end logic
+│       └── styles.css         small custom layer over Tailwind
+├── run_ui.bat / run_ui.sh     one-click launcher (uvicorn on :8000)
 ├── data/                      cached OHLCV (gitignored)
 ├── results.tsv                experiment log (gitignored)
 ├── run.log                    latest backtest stdout (gitignored)
@@ -135,27 +139,32 @@ d4e5f6g 0.000000    0.00          0.000     0             crash   syntax error i
 .venv/Scripts/python.exe live_trade.py --symbol SPY --asset stock
 ```
 
-## Dashboard (Streamlit UI)
+## Dashboard UI
 
-Single-file dashboard at `dashboard.py`. Run any of:
+Custom FastAPI + HTML/Tailwind/Alpine/Chart.js dashboard. No build step,
+no npm — Tailwind + Alpine + Chart.js + Prism are loaded from CDNs.
 
 ```bash
-# Windows: double-click run_dashboard.bat
-.venv/Scripts/python.exe -m streamlit run dashboard.py
+# Windows: double-click run_ui.bat
+.venv/Scripts/python.exe -m uvicorn ui.server:app --host 127.0.0.1 --port 8000
 ```
 
-Then open http://localhost:8501. Five tabs:
+Then open http://localhost:8000. Single-page layout:
 
-| Tab | What it shows |
-|---|---|
-| **Dashboard** | KPI strip · best-Sharpe progression · status mix · live equity curve + drawdown for the current `strategy.py` |
-| **Experiments** | Filterable, color-coded `results.tsv` |
-| **Strategy** | `strategy.py` source · git history · `program.md` viewer |
-| **Run** | Buttons to run a single backtest or launch the loop with live streaming output |
-| **Setup** | Environment check, data file inventory, quick reference |
+- **Header bar** — best Sharpe · loop status pill · launch/stop button
+- **KPI cards** — best sharpe, total experiments, keep rate, current status
+- **Equity curve + drawdown** — Chart.js, strategy vs Buy & Hold on validation window
+- **Sharpe progression** — best-so-far line across kept experiments
+- **Experiments table** — sortable, filterable, color-coded by status
+- **Strategy panel** — `strategy.py` syntax-highlighted (Prism) + git history sidebar
+- **Setup section** — env check, data file inventory
+- **Live console** — SSE stream of loop stdout, slides up from the bottom when the loop runs
 
-The dashboard is read-only against `results.tsv` and shells out to `backtest.py` /
-`loop.py` for actions — it does not implement the loop itself.
+API endpoints (under `/api/*`): `summary`, `results`, `strategy`, `program`,
+`equity`, `git-log`, `setup`, `backtest`, `loop/start`, `loop/stop`,
+`loop/status`, `loop/stream`. Loop runs as a managed subprocess inside
+the FastAPI process — start it from the UI and watch live, or stop it at
+any time.
 
 ## Hard Rules for the Agent
 

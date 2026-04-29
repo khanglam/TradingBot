@@ -1,0 +1,42 @@
+/* TradingBot — small layer of custom CSS on top of Tailwind utilities. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+html, body { height: 100%; }
+
+/* Smoother scrollbars (Webkit + Firefox) */
+.custom-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f4a transparent;
+}
+.custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.custom-scroll::-webkit-scrollbar-track { background: transparent; }
+.custom-scroll::-webkit-scrollbar-thumb { background: #3f3f4a; border-radius: 4px; }
+.custom-scroll::-webkit-scrollbar-thumb:hover { background: #52525b; }
+
+/* Prism color overrides to match our dark palette */
+pre[class*="language-"], code[class*="language-"] {
+  background: transparent !important;
+  text-shadow: none !important;
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace !important;
+  font-size: 12.5px !important;
+}
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6b7280 !important; font-style: italic; }
+.token.punctuation { color: #a1a1aa !important; }
+.token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted { color: #f59e0b !important; }
+.token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted { color: #10b981 !important; }
+.token.operator, .token.entity, .token.url, .language-css .token.string, .style .token.string { color: #d4d4d8 !important; }
+.token.atrule, .token.attr-value, .token.keyword { color: #3b82f6 !important; }
+.token.function, .token.class-name { color: #818cf8 !important; }
+.token.regex, .token.important, .token.variable { color: #ef4444 !important; }
+.token.decorator, .token.annotation { color: #f472b6 !important; }
+
+/* Subtle row hover for clickable headers */
+th { user-select: none; }
+th:hover { color: #f4f4f5; }
+
+/* Make Chart.js tooltips feel native */
+.chartjs-tooltip { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+/* Console line preserves whitespace */
+pre[x-ref="console"] { white-space: pre; }

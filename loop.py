@@ -38,7 +38,7 @@ PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PYTHON).exists():
     PYTHON = sys.executable
 
-MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 8000
 
 KEEP_THRESHOLD = 0.0  # require strictly > best so far
@@ -198,8 +198,9 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
         f"Propose ONE change. Reply with the two required sections only."
     )
 
+    model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
     resp = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=MAX_OUTPUT_TOKENS,
         system=program_src,
         messages=[{"role": "user", "content": user_msg}],

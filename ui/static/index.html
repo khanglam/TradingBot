@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TradingBot · Autoresearch</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%88%3C/text%3E%3C/svg%3E" />
+
+  <!-- Tailwind via CDN (no build step) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+            sans: ['Inter', 'ui-sans-serif', 'system-ui'],
+          },
+          colors: {
+            ink: { 950: '#0a0a0b', 900: '#111114', 800: '#18181c', 700: '#23232a', 600: '#2e2e38', 500: '#3f3f4a', 300: '#a1a1aa', 200: '#d4d4d8', 100: '#f4f4f5' },
+            accent: { keep: '#10b981', discard: '#ef4444', crash: '#f59e0b', run: '#3b82f6' },
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Alpine.js, Chart.js, Prism for syntax highlight -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+
+<body class="bg-ink-950 text-ink-100 font-sans antialiased min-h-screen">
+  <div x-data="app()" x-init="init()">
+
+    <!-- ─── HEADER ─────────────────────────────────────────────── -->
+    <header class="sticky top-0 z-30 border-b border-ink-800 bg-ink-950/80 backdrop-blur-sm">
+      <div class="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-md bg-gradient-to-br from-emerald-500 to-blue-500 flex items-center justify-center font-mono font-bold text-ink-950">A</div>
+          <div>
+            <div class="font-semibold tracking-tight">TradingBot</div>
+            <div class="text-xs text-ink-300 font-mono">autoresearch · BTC/USDT 4h</div>
+          </div>
+        </div>
+
+        <div class="ml-auto flex items-center gap-6">
+          <div class="text-sm text-ink-300">
+            best&nbsp;<span class="font-mono font-semibold text-ink-100" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></span>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <span class="relative flex h-2 w-2">
+              <span class="absolute inline-flex h-full w-full rounded-full opacity-75"
+                    :class="loop.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2"
+                    :class="loop.running ? 'bg-accent-run' : 'bg-ink-500'"></span>
+            </span>
+            <span class="text-ink-300" x-text="loop.running ? 'loop running' : 'idle'"></span>
+          </div>
+
+          <button @click="loop.running ? stopLoop() : (showLaunch = true)"
+                  class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors"
+                  :class="loop.running ? 'bg-accent-discard/20 text-accent-discard hover:bg-accent-discard/30 border border-accent-discard/40' : 'bg-emerald-500/20 text-accent-keep hover:bg-emerald-500/30 border border-emerald-500/40'">
+            <span x-show="!loop.running">▶ Launch loop</span>
+            <span x-show="loop.running">■ Stop</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+
+      <!-- ─── KPI CARDS ────────────────────────────────────────── -->
+      <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <template x-for="card in kpiCards" :key="card.label">
+          <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono" x-text="card.label"></div>
+            <div class="text-2xl font-semibold mt-2" :class="card.color || 'text-ink-100'" x-text="card.value"></div>
+            <div class="text-xs text-ink-300 mt-1" x-text="card.sub || ''"></div>
+          </div>
+        </template>
+      </section>
+
+      <!-- ─── LATEST EXPERIMENT BANNER ─────────────────────────── -->
+      <section x-show="summary.latest" class="bg-ink-900 border border-ink-800 rounded-lg p-4 flex items-center gap-4">
+        <div class="w-1 h-10 rounded-full"
+             :class="{
+               'bg-accent-keep': summary.latest?.status === 'keep',
+               'bg-accent-discard': summary.latest?.status === 'discard',
+               'bg-accent-crash': summary.latest?.status === 'crash',
+             }"></div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-3 text-sm">
+            <span class="font-mono text-ink-300" x-text="summary.latest?.commit"></span>
+            <span class="font-mono font-semibold" x-text="(summary.latest?.val_sharpe ?? 0).toFixed(4)"></span>
+            <span class="text-xs px-2 py-0.5 rounded font-mono uppercase"
+                  :class="{
+                    'bg-emerald-500/20 text-accent-keep': summary.latest?.status === 'keep',
+                    'bg-red-500/20 text-accent-discard': summary.latest?.status === 'discard',
+                    'bg-amber-500/20 text-accent-crash': summary.latest?.status === 'crash',
+                  }"
+                  x-text="summary.latest?.status"></span>
+          </div>
+          <div class="text-sm text-ink-200 mt-1 truncate" x-text="summary.latest?.description"></div>
+        </div>
+      </section>
+
+      <!-- ─── CHARTS ───────────────────────────────────────────── -->
+      <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Equity Curve</div>
+              <div class="text-sm text-ink-200">Strategy vs Buy &amp; Hold · 2023–2024</div>
+            </div>
+            <button @click="reloadEquity()"
+                    class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+          </div>
+          <div class="h-72 relative">
+            <canvas id="chart-equity"></canvas>
+            <div x-show="equityLoading" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm">running backtest…</div>
+          </div>
+          <div class="grid grid-cols-3 gap-3 mt-4 text-sm">
+            <div><div class="text-xs text-ink-300 font-mono">SHARPE</div><div class="font-mono" x-text="(equity.metrics?.sharpe ?? 0).toFixed(3)"></div></div>
+            <div><div class="text-xs text-ink-300 font-mono">SORTINO</div><div class="font-mono" x-text="(equity.metrics?.sortino ?? 0).toFixed(3)"></div></div>
+            <div><div class="text-xs text-ink-300 font-mono">MAX DD</div><div class="font-mono" x-text="(equity.metrics?.max_drawdown ?? 0).toFixed(2) + '%'"></div></div>
+            <div><div class="text-xs text-ink-300 font-mono">TRADES</div><div class="font-mono" x-text="equity.metrics?.total_trades ?? 0"></div></div>
+            <div><div class="text-xs text-ink-300 font-mono">RETURN</div><div class="font-mono" x-text="(equity.metrics?.total_return ?? 0).toFixed(1) + '%'"></div></div>
+            <div><div class="text-xs text-ink-300 font-mono">B&amp;H</div><div class="font-mono" x-text="(equity.metrics?.buy_and_hold_return ?? 0).toFixed(1) + '%'"></div></div>
+          </div>
+        </div>
+
+        <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Sharpe Progression</div>
+              <div class="text-sm text-ink-200">Best-so-far across kept experiments</div>
+            </div>
+          </div>
+          <div class="h-72 relative">
+            <canvas id="chart-progression"></canvas>
+            <div x-show="!keepCount" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm">no keeps yet</div>
+          </div>
+          <div class="h-24 mt-3">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-2">Drawdown</div>
+            <canvas id="chart-drawdown"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─── EXPERIMENTS TABLE ────────────────────────────────── -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+        <div class="flex items-center gap-4 px-5 py-3 border-b border-ink-800">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Experiments</div>
+          <div class="ml-auto flex items-center gap-2 text-xs">
+            <template x-for="s in ['keep','discard','crash']" :key="s">
+              <button @click="toggleFilter(s)"
+                      class="px-2 py-1 rounded font-mono uppercase border transition-colors"
+                      :class="filter.includes(s)
+                        ? (s === 'keep' ? 'bg-emerald-500/20 text-accent-keep border-emerald-500/40'
+                           : s === 'discard' ? 'bg-red-500/20 text-accent-discard border-red-500/40'
+                           : 'bg-amber-500/20 text-accent-crash border-amber-500/40')
+                        : 'border-ink-700 text-ink-300 hover:border-ink-500'"
+                      x-text="s"></button>
+            </template>
+          </div>
+        </div>
+        <div class="overflow-x-auto max-h-[480px] overflow-y-auto custom-scroll">
+          <table class="w-full text-sm">
+            <thead class="bg-ink-900 sticky top-0 z-10">
+              <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider border-b border-ink-800">
+                <th class="px-5 py-2 cursor-pointer" @click="sortBy('commit')">Commit</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('val_sharpe')">Sharpe</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('max_drawdown')">Max DD</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('win_rate')">Win Rate</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('total_trades')">Trades</th>
+                <th class="px-5 py-2 cursor-pointer" @click="sortBy('status')">Status</th>
+                <th class="px-5 py-2">Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="row in filteredResults" :key="row.commit + row.description">
+                <tr class="border-b border-ink-800/60 hover:bg-ink-800/40 transition-colors">
+                  <td class="px-5 py-2 font-mono text-ink-200" x-text="row.commit"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="(row.val_sharpe ?? 0).toFixed(4)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="(row.max_drawdown ?? 0).toFixed(2)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="(row.win_rate ?? 0).toFixed(3)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="row.total_trades"></td>
+                  <td class="px-5 py-2">
+                    <span class="px-2 py-0.5 rounded text-xs font-mono uppercase"
+                          :class="{
+                            'bg-emerald-500/20 text-accent-keep': row.status === 'keep',
+                            'bg-red-500/20 text-accent-discard': row.status === 'discard',
+                            'bg-amber-500/20 text-accent-crash': row.status === 'crash',
+                          }"
+                          x-text="row.status"></span>
+                  </td>
+                  <td class="px-5 py-2 text-ink-200 max-w-md truncate" :title="row.description" x-text="row.description"></td>
+                </tr>
+              </template>
+              <tr x-show="!filteredResults.length">
+                <td colspan="7" class="text-center text-ink-300 py-8">No experiments yet — launch the loop above.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ─── STRATEGY + GIT ───────────────────────────────────── -->
+      <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+          <div class="px-5 py-3 border-b border-ink-800 flex items-center">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">strategy.py</div>
+            <button @click="runBacktest()"
+                    class="ml-auto text-xs px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 border border-ink-700 font-mono">
+              ▶ run backtest
+            </button>
+          </div>
+          <pre class="p-5 max-h-[500px] overflow-auto custom-scroll text-xs leading-relaxed"><code class="language-python" x-text="strategySource"></code></pre>
+        </div>
+
+        <div class="bg-ink-900 border border-ink-800 rounded-lg">
+          <div class="px-5 py-3 border-b border-ink-800 text-xs uppercase tracking-wider text-ink-300 font-mono">
+            Git history
+          </div>
+          <ul class="p-3 space-y-1 max-h-[500px] overflow-y-auto custom-scroll">
+            <template x-for="c in gitLog" :key="c.hash + c.subject">
+              <li class="px-2 py-1.5 rounded hover:bg-ink-800/50">
+                <div class="flex items-baseline gap-2">
+                  <code class="text-xs text-emerald-400 font-mono" x-text="c.hash"></code>
+                  <span class="text-xs text-ink-300" x-text="c.when"></span>
+                </div>
+                <div class="text-sm text-ink-200 mt-0.5" x-text="c.subject"></div>
+              </li>
+            </template>
+            <li x-show="!gitLog.length" class="text-center text-ink-300 py-8 text-sm">no commits touching strategy.py yet</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ─── SETUP CHECK ──────────────────────────────────────── -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg p-5">
+        <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-4">Environment</div>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <template x-for="[k, v] in Object.entries(setup.checks || {})" :key="k">
+            <div class="flex items-center gap-2 text-sm">
+              <span class="w-2 h-2 rounded-full"
+                    :class="v ? 'bg-accent-keep' : 'bg-accent-discard'"></span>
+              <span class="font-mono text-xs text-ink-200" x-text="k"></span>
+            </div>
+          </template>
+        </div>
+        <div x-show="setup.data_files?.length" class="mt-4">
+          <div class="text-xs text-ink-300 font-mono mb-2">DATA</div>
+          <ul class="text-sm space-y-1">
+            <template x-for="f in setup.data_files" :key="f.path">
+              <li class="flex items-baseline gap-3 font-mono text-xs">
+                <span class="text-ink-200 flex-1" x-text="f.path"></span>
+                <span class="text-ink-300" x-text="f.rows.toLocaleString() + ' rows'"></span>
+                <span class="text-ink-300" x-text="f.size_kb + ' kb'"></span>
+              </li>
+            </template>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <!-- ─── LAUNCH MODAL ───────────────────────────────────────── -->
+    <div x-show="showLaunch" x-transition.opacity
+         class="fixed inset-0 z-40 bg-ink-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+         @keydown.escape.window="showLaunch = false">
+      <div @click.outside="showLaunch = false" class="bg-ink-900 border border-ink-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
+        <div class="text-lg font-semibold">Launch autoresearch loop</div>
+        <p class="text-sm text-ink-300 mt-1">Asks Claude for one mutation per iteration, runs the backtest, keeps wins, reverts losses.</p>
+
+        <label class="block mt-5 text-xs uppercase tracking-wider text-ink-300 font-mono">Iterations</label>
+        <input type="number" x-model.number="launchIters" min="1" max="500"
+               class="mt-1 w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-emerald-500" />
+
+        <div class="mt-6 flex gap-3 justify-end">
+          <button @click="showLaunch = false" class="px-4 py-2 rounded-md text-sm text-ink-200 hover:bg-ink-800">Cancel</button>
+          <button @click="startLoop(); showLaunch = false"
+                  class="px-4 py-2 rounded-md text-sm font-medium bg-emerald-500/20 text-accent-keep border border-emerald-500/40 hover:bg-emerald-500/30">
+            ▶ Start
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── LIVE CONSOLE (slide-up panel) ──────────────────────── -->
+    <div x-show="loop.running || consoleLines.length"
+         x-transition
+         class="fixed bottom-0 left-0 right-0 z-30 bg-ink-900 border-t border-ink-800">
+      <div class="max-w-7xl mx-auto px-6 py-2 flex items-center gap-3">
+        <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Console</div>
+        <span class="text-xs font-mono"
+              :class="loop.running ? 'text-accent-run' : 'text-ink-300'"
+              x-text="loop.running ? 'live' : 'idle'"></span>
+        <button @click="consoleOpen = !consoleOpen" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">
+          <span x-show="!consoleOpen">↑ expand</span>
+          <span x-show="consoleOpen">↓ collapse</span>
+        </button>
+        <button @click="consoleLines = []" class="text-xs text-ink-300 hover:text-ink-100 font-mono">clear</button>
+      </div>
+      <div x-show="consoleOpen"
+           class="max-w-7xl mx-auto px-6 pb-3">
+        <pre class="bg-ink-950 border border-ink-800 rounded-md p-3 font-mono text-xs leading-relaxed h-64 overflow-y-auto custom-scroll" x-ref="console"
+        ><template x-for="line in consoleLines" :key="line.id"><span :class="lineClass(line.text)" x-text="line.text + '\n'"></span></template></pre>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
