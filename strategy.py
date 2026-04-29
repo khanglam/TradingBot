@@ -1,7 +1,7 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: ATR-based trailing stop to reduce premature exits and whipsaws.
+Exit: RSI(14) < 30 (oversold) to lock in gains on strong trends without EMA whipsaws.
 
 Constraints (also enforced by program.md):
     - Class must be named `Strategy` and importable as `from strategy import Strategy`
@@ -64,6 +64,21 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.n
     return adx.fillna(0).to_numpy()
 
 
+def _rsi(series: pd.Series, n: int = 14) -> np.ndarray:
+    """Compute Relative Strength Index."""
+    series = pd.Series(series)
+    delta = series.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    
+    avg_gain = pd.Series(gain).rolling(n).mean()
+    avg_loss = pd.Series(loss).rolling(n).mean()
+    
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50).to_numpy()
+
+
 class Strategy(_BTStrategy):
     fast = 15
     slow = 45
@@ -71,6 +86,8 @@ class Strategy(_BTStrategy):
     adx_threshold = 25
     atr_period = 14
     atr_mult = 2.0
+    rsi_period = 14
+    rsi_oversold = 30
 
     def init(self) -> None:
         close = self.data.Close
@@ -81,6 +98,7 @@ class Strategy(_BTStrategy):
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
+        self.rsi = self.I(_rsi, close, self.rsi_period)
         
         self.entry_price = None
         self.trailing_stop = None
@@ -90,7 +108,6 @@ class Strategy(_BTStrategy):
             return
 
         crossed_up = self.ema_fast[-2] <= self.ema_slow[-2] and self.ema_fast[-1] > self.ema_slow[-1]
-        crossed_dn = self.ema_fast[-2] >= self.ema_slow[-2] and self.ema_fast[-1] < self.ema_slow[-1]
 
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold:
             self.buy(size=0.95)
@@ -102,8 +119,8 @@ class Strategy(_BTStrategy):
             if new_stop > self.trailing_stop:
                 self.trailing_stop = new_stop
             
-            # Exit on EMA crossdown OR trailing stop hit
-            if crossed_dn or self.data.Close[-1] <= self.trailing_stop:
+            # Exit on RSI oversold OR trailing stop hit
+            if self.rsi[-1] < self.rsi_oversold or self.data.Close[-1] <= self.trailing_stop:
                 self.position.close()
                 self.entry_price = None
                 self.trailing_stop = None
