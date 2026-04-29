@@ -56,13 +56,9 @@ TradingBot/
 ├── loop.py                    autoresearch orchestrator
 ├── live_trade.py              paper / live execution via LumiBot
 ├── data_fetch.py              CCXT + yfinance -> Parquet
-├── ui/
-│   ├── server.py              FastAPI backend + SSE for live loop output
-│   └── static/
-│       ├── index.html         single-page dashboard (Tailwind + Alpine)
-│       ├── app.js             Alpine + Chart.js front-end logic
-│       └── styles.css         small custom layer over Tailwind
-├── run_ui.bat / run_ui.sh     one-click launcher (uvicorn on :8000)
+├── app.py                     dashboard server (FastAPI + SSE)
+├── index.html                 dashboard UI (single file, Tailwind+Alpine+Chart.js)
+├── README.md                  user-facing docs
 ├── data/                      cached OHLCV (gitignored)
 ├── results.tsv                experiment log (gitignored)
 ├── run.log                    latest backtest stdout (gitignored)
@@ -141,15 +137,15 @@ d4e5f6g 0.000000    0.00          0.000     0             crash   syntax error i
 
 ## Dashboard UI
 
-Custom FastAPI + HTML/Tailwind/Alpine/Chart.js dashboard. No build step,
-no npm — Tailwind + Alpine + Chart.js + Prism are loaded from CDNs.
+Two files: `app.py` (FastAPI server + SSE for live loop output) and
+`index.html` (the entire UI — Tailwind + Alpine + Chart.js + Prism, all
+loaded from CDNs at runtime). No build step, no npm.
 
 ```bash
-# Windows: double-click run_ui.bat
-.venv/Scripts/python.exe -m uvicorn ui.server:app --host 127.0.0.1 --port 8000
+.venv/Scripts/python.exe app.py
 ```
 
-Then open http://localhost:8000. Single-page layout:
+Then open http://127.0.0.1:8000. Single-page layout:
 
 - **Header bar** — best Sharpe · loop status pill · launch/stop button
 - **KPI cards** — best sharpe, total experiments, keep rate, current status

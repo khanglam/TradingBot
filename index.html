@@ -6,7 +6,7 @@
   <title>TradingBot · Autoresearch</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%88%3C/text%3E%3C/svg%3E" />
 
-  <!-- Tailwind via CDN (no build step) -->
+  <!-- All deps from CDNs — no build step -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -25,21 +25,43 @@
       },
     };
   </script>
-
-  <!-- Alpine.js, Chart.js, Prism for syntax highlight -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
 
-  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    html, body { height: 100%; }
+    .custom-scroll { scrollbar-width: thin; scrollbar-color: #3f3f4a transparent; }
+    .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #3f3f4a; border-radius: 4px; }
+    .custom-scroll::-webkit-scrollbar-thumb:hover { background: #52525b; }
+    pre[class*="language-"], code[class*="language-"] {
+      background: transparent !important; text-shadow: none !important;
+      font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace !important; font-size: 12.5px !important;
+    }
+    .token.comment, .token.prolog, .token.doctype, .token.cdata { color: #6b7280 !important; font-style: italic; }
+    .token.punctuation { color: #a1a1aa !important; }
+    .token.property, .token.tag, .token.boolean, .token.number, .token.constant, .token.symbol, .token.deleted { color: #f59e0b !important; }
+    .token.selector, .token.attr-name, .token.string, .token.char, .token.builtin, .token.inserted { color: #10b981 !important; }
+    .token.operator, .token.entity, .token.url { color: #d4d4d8 !important; }
+    .token.atrule, .token.attr-value, .token.keyword { color: #3b82f6 !important; }
+    .token.function, .token.class-name { color: #818cf8 !important; }
+    .token.regex, .token.important, .token.variable { color: #ef4444 !important; }
+    .token.decorator, .token.annotation { color: #f472b6 !important; }
+    th { user-select: none; }
+    th:hover { color: #f4f4f5; }
+    pre[x-ref="console"] { white-space: pre; }
+  </style>
 </head>
 
 <body class="bg-ink-950 text-ink-100 font-sans antialiased min-h-screen">
   <div x-data="app()" x-init="init()">
 
-    <!-- ─── HEADER ─────────────────────────────────────────────── -->
+    <!-- HEADER -->
     <header class="sticky top-0 z-30 border-b border-ink-800 bg-ink-950/80 backdrop-blur-sm">
       <div class="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
         <div class="flex items-center gap-3">
@@ -49,21 +71,15 @@
             <div class="text-xs text-ink-300 font-mono">autoresearch · BTC/USDT 4h</div>
           </div>
         </div>
-
         <div class="ml-auto flex items-center gap-6">
-          <div class="text-sm text-ink-300">
-            best&nbsp;<span class="font-mono font-semibold text-ink-100" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></span>
-          </div>
+          <div class="text-sm text-ink-300">best&nbsp;<span class="font-mono font-semibold text-ink-100" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></span></div>
           <div class="flex items-center gap-2 text-sm">
             <span class="relative flex h-2 w-2">
-              <span class="absolute inline-flex h-full w-full rounded-full opacity-75"
-                    :class="loop.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
-              <span class="relative inline-flex rounded-full h-2 w-2"
-                    :class="loop.running ? 'bg-accent-run' : 'bg-ink-500'"></span>
+              <span class="absolute inline-flex h-full w-full rounded-full opacity-75" :class="loop.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2" :class="loop.running ? 'bg-accent-run' : 'bg-ink-500'"></span>
             </span>
             <span class="text-ink-300" x-text="loop.running ? 'loop running' : 'idle'"></span>
           </div>
-
           <button @click="loop.running ? stopLoop() : (showLaunch = true)"
                   class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors"
                   :class="loop.running ? 'bg-accent-discard/20 text-accent-discard hover:bg-accent-discard/30 border border-accent-discard/40' : 'bg-emerald-500/20 text-accent-keep hover:bg-emerald-500/30 border border-emerald-500/40'">
@@ -76,7 +92,7 @@
 
     <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
 
-      <!-- ─── KPI CARDS ────────────────────────────────────────── -->
+      <!-- KPI cards -->
       <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <template x-for="card in kpiCards" :key="card.label">
           <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
@@ -87,7 +103,7 @@
         </template>
       </section>
 
-      <!-- ─── LATEST EXPERIMENT BANNER ─────────────────────────── -->
+      <!-- Latest experiment banner -->
       <section x-show="summary.latest" class="bg-ink-900 border border-ink-800 rounded-lg p-4 flex items-center gap-4">
         <div class="w-1 h-10 rounded-full"
              :class="{
@@ -104,14 +120,13 @@
                     'bg-emerald-500/20 text-accent-keep': summary.latest?.status === 'keep',
                     'bg-red-500/20 text-accent-discard': summary.latest?.status === 'discard',
                     'bg-amber-500/20 text-accent-crash': summary.latest?.status === 'crash',
-                  }"
-                  x-text="summary.latest?.status"></span>
+                  }" x-text="summary.latest?.status"></span>
           </div>
           <div class="text-sm text-ink-200 mt-1 truncate" x-text="summary.latest?.description"></div>
         </div>
       </section>
 
-      <!-- ─── CHARTS ───────────────────────────────────────────── -->
+      <!-- Charts -->
       <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
           <div class="flex items-center justify-between mb-4">
@@ -119,8 +134,7 @@
               <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Equity Curve</div>
               <div class="text-sm text-ink-200">Strategy vs Buy &amp; Hold · 2023–2024</div>
             </div>
-            <button @click="reloadEquity()"
-                    class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+            <button @click="reloadEquity()" class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
           </div>
           <div class="h-72 relative">
             <canvas id="chart-equity"></canvas>
@@ -154,7 +168,7 @@
         </div>
       </section>
 
-      <!-- ─── EXPERIMENTS TABLE ────────────────────────────────── -->
+      <!-- Experiments table -->
       <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
         <div class="flex items-center gap-4 px-5 py-3 border-b border-ink-800">
           <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Experiments</div>
@@ -198,8 +212,7 @@
                             'bg-emerald-500/20 text-accent-keep': row.status === 'keep',
                             'bg-red-500/20 text-accent-discard': row.status === 'discard',
                             'bg-amber-500/20 text-accent-crash': row.status === 'crash',
-                          }"
-                          x-text="row.status"></span>
+                          }" x-text="row.status"></span>
                   </td>
                   <td class="px-5 py-2 text-ink-200 max-w-md truncate" :title="row.description" x-text="row.description"></td>
                 </tr>
@@ -212,23 +225,17 @@
         </div>
       </section>
 
-      <!-- ─── STRATEGY + GIT ───────────────────────────────────── -->
+      <!-- Strategy + Git -->
       <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
           <div class="px-5 py-3 border-b border-ink-800 flex items-center">
             <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">strategy.py</div>
-            <button @click="runBacktest()"
-                    class="ml-auto text-xs px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 border border-ink-700 font-mono">
-              ▶ run backtest
-            </button>
+            <button @click="runBacktest()" class="ml-auto text-xs px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 border border-ink-700 font-mono">▶ run backtest</button>
           </div>
           <pre class="p-5 max-h-[500px] overflow-auto custom-scroll text-xs leading-relaxed"><code class="language-python" x-text="strategySource"></code></pre>
         </div>
-
         <div class="bg-ink-900 border border-ink-800 rounded-lg">
-          <div class="px-5 py-3 border-b border-ink-800 text-xs uppercase tracking-wider text-ink-300 font-mono">
-            Git history
-          </div>
+          <div class="px-5 py-3 border-b border-ink-800 text-xs uppercase tracking-wider text-ink-300 font-mono">Git history</div>
           <ul class="p-3 space-y-1 max-h-[500px] overflow-y-auto custom-scroll">
             <template x-for="c in gitLog" :key="c.hash + c.subject">
               <li class="px-2 py-1.5 rounded hover:bg-ink-800/50">
@@ -244,14 +251,13 @@
         </div>
       </section>
 
-      <!-- ─── SETUP CHECK ──────────────────────────────────────── -->
+      <!-- Setup -->
       <section class="bg-ink-900 border border-ink-800 rounded-lg p-5">
         <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-4">Environment</div>
         <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
           <template x-for="[k, v] in Object.entries(setup.checks || {})" :key="k">
             <div class="flex items-center gap-2 text-sm">
-              <span class="w-2 h-2 rounded-full"
-                    :class="v ? 'bg-accent-keep' : 'bg-accent-discard'"></span>
+              <span class="w-2 h-2 rounded-full" :class="v ? 'bg-accent-keep' : 'bg-accent-discard'"></span>
               <span class="font-mono text-xs text-ink-200" x-text="k"></span>
             </div>
           </template>
@@ -271,45 +277,36 @@
       </section>
     </main>
 
-    <!-- ─── LAUNCH MODAL ───────────────────────────────────────── -->
+    <!-- Launch modal -->
     <div x-show="showLaunch" x-transition.opacity
          class="fixed inset-0 z-40 bg-ink-950/70 backdrop-blur-sm flex items-center justify-center p-4"
          @keydown.escape.window="showLaunch = false">
       <div @click.outside="showLaunch = false" class="bg-ink-900 border border-ink-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
         <div class="text-lg font-semibold">Launch autoresearch loop</div>
         <p class="text-sm text-ink-300 mt-1">Asks Claude for one mutation per iteration, runs the backtest, keeps wins, reverts losses.</p>
-
         <label class="block mt-5 text-xs uppercase tracking-wider text-ink-300 font-mono">Iterations</label>
         <input type="number" x-model.number="launchIters" min="1" max="500"
                class="mt-1 w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-emerald-500" />
-
         <div class="mt-6 flex gap-3 justify-end">
           <button @click="showLaunch = false" class="px-4 py-2 rounded-md text-sm text-ink-200 hover:bg-ink-800">Cancel</button>
           <button @click="startLoop(); showLaunch = false"
-                  class="px-4 py-2 rounded-md text-sm font-medium bg-emerald-500/20 text-accent-keep border border-emerald-500/40 hover:bg-emerald-500/30">
-            ▶ Start
-          </button>
+                  class="px-4 py-2 rounded-md text-sm font-medium bg-emerald-500/20 text-accent-keep border border-emerald-500/40 hover:bg-emerald-500/30">▶ Start</button>
         </div>
       </div>
     </div>
 
-    <!-- ─── LIVE CONSOLE (slide-up panel) ──────────────────────── -->
-    <div x-show="loop.running || consoleLines.length"
-         x-transition
-         class="fixed bottom-0 left-0 right-0 z-30 bg-ink-900 border-t border-ink-800">
+    <!-- Live console -->
+    <div x-show="loop.running || consoleLines.length" x-transition class="fixed bottom-0 left-0 right-0 z-30 bg-ink-900 border-t border-ink-800">
       <div class="max-w-7xl mx-auto px-6 py-2 flex items-center gap-3">
         <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Console</div>
-        <span class="text-xs font-mono"
-              :class="loop.running ? 'text-accent-run' : 'text-ink-300'"
-              x-text="loop.running ? 'live' : 'idle'"></span>
+        <span class="text-xs font-mono" :class="loop.running ? 'text-accent-run' : 'text-ink-300'" x-text="loop.running ? 'live' : 'idle'"></span>
         <button @click="consoleOpen = !consoleOpen" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">
           <span x-show="!consoleOpen">↑ expand</span>
           <span x-show="consoleOpen">↓ collapse</span>
         </button>
         <button @click="consoleLines = []" class="text-xs text-ink-300 hover:text-ink-100 font-mono">clear</button>
       </div>
-      <div x-show="consoleOpen"
-           class="max-w-7xl mx-auto px-6 pb-3">
+      <div x-show="consoleOpen" class="max-w-7xl mx-auto px-6 pb-3">
         <pre class="bg-ink-950 border border-ink-800 rounded-md p-3 font-mono text-xs leading-relaxed h-64 overflow-y-auto custom-scroll" x-ref="console"
         ><template x-for="line in consoleLines" :key="line.id"><span :class="lineClass(line.text)" x-text="line.text + '\n'"></span></template></pre>
       </div>
@@ -317,6 +314,238 @@
 
   </div>
 
-  <script src="/static/app.js"></script>
+  <script>
+    // Chart.js global defaults to match the dark theme
+    Chart.defaults.color = '#a1a1aa';
+    Chart.defaults.borderColor = 'rgba(63,63,74,0.4)';
+    Chart.defaults.font.family = "'JetBrains Mono', ui-monospace, Menlo, monospace";
+    Chart.defaults.font.size = 11;
+    Chart.defaults.plugins.legend.labels.usePointStyle = true;
+    Chart.defaults.plugins.tooltip.backgroundColor = '#18181c';
+    Chart.defaults.plugins.tooltip.borderColor = '#3f3f4a';
+    Chart.defaults.plugins.tooltip.borderWidth = 1;
+
+    function app() {
+      return {
+        summary: { best_sharpe: 0, total: 0, keeps: 0, discards: 0, crashes: 0, keep_rate: 0, latest: null },
+        results: [],
+        setup: { checks: {}, data_files: [] },
+        strategySource: '',
+        gitLog: [],
+        equity: { metrics: {}, timestamps: [], equity: [], buy_and_hold: [], drawdown: [] },
+        equityLoading: false,
+        loop: { running: false, lines: 0 },
+        consoleLines: [], consoleOpen: true, consoleId: 0, sse: null,
+        showLaunch: false, launchIters: 5,
+        sortKey: '', sortDir: 'desc', filter: ['keep', 'discard', 'crash'],
+        charts: { equity: null, progression: null, drawdown: null },
+
+        get kpiCards() {
+          const total = this.summary.total || 0;
+          const keeps = this.summary.keeps || 0;
+          const rate = total ? (keeps / total * 100).toFixed(0) : '—';
+          return [
+            { label: 'Best Sharpe', value: (this.summary.best_sharpe ?? 0).toFixed(4), color: 'text-emerald-400' },
+            { label: 'Experiments', value: total, sub: `${keeps} kept · ${this.summary.discards} discarded · ${this.summary.crashes} crashed` },
+            { label: 'Keep rate', value: total ? `${rate}%` : '—' },
+            { label: 'Status', value: this.loop.running ? 'running' : 'idle', color: this.loop.running ? 'text-accent-run' : 'text-ink-100' },
+          ];
+        },
+
+        get keepCount() { return this.results.filter(r => r.status === 'keep').length; },
+
+        get filteredResults() {
+          let rows = this.results.filter(r => this.filter.includes(r.status));
+          if (this.sortKey) {
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            rows = [...rows].sort((a, b) => {
+              const av = a[this.sortKey], bv = b[this.sortKey];
+              if (av == null) return 1; if (bv == null) return -1;
+              return (av > bv ? 1 : av < bv ? -1 : 0) * dir;
+            });
+          } else { rows = [...rows].reverse(); }
+          return rows;
+        },
+
+        async init() {
+          await Promise.all([this.fetchSummary(), this.fetchResults(), this.fetchSetup(), this.fetchStrategy(), this.fetchGitLog()]);
+          this.reloadEquity();
+          this.connectSSE();
+          setInterval(() => { this.fetchSummary(); this.fetchResults(); }, 4000);
+          setInterval(() => { this.fetchSetup(); }, 15000);
+          this.$watch('strategySource', () => this.highlightStrategy());
+          this.$watch('results', () => this.renderProgression());
+        },
+
+        async fetchSummary()  { try { this.summary  = await fetch('/api/summary').then(r => r.json()); } catch {} },
+        async fetchResults()  { try { this.results  = await fetch('/api/results').then(r => r.json()); } catch {} },
+        async fetchSetup()    { try { this.setup    = await fetch('/api/setup').then(r => r.json()); } catch {} },
+        async fetchStrategy() { try { const r = await fetch('/api/strategy').then(r => r.json()); this.strategySource = r.source || ''; } catch {} },
+        async fetchGitLog()   { try { const r = await fetch('/api/git-log?n=30').then(r => r.json()); this.gitLog = r.commits || []; } catch {} },
+
+        async reloadEquity() {
+          this.equityLoading = true;
+          try {
+            const r = await fetch('/api/equity').then(r => r.json());
+            if (r.error) throw new Error(r.error);
+            this.equity = r;
+            this.renderEquity(); this.renderDrawdown();
+          } catch (e) { console.warn('equity fetch failed:', e); }
+          finally { this.equityLoading = false; }
+        },
+
+        sortBy(key) {
+          if (this.sortKey === key) this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+          else { this.sortKey = key; this.sortDir = 'desc'; }
+        },
+        toggleFilter(s) {
+          this.filter = this.filter.includes(s) ? this.filter.filter(x => x !== s) : [...this.filter, s];
+        },
+
+        async runBacktest() {
+          this.pushConsole('[ui] running backtest…');
+          try {
+            const r = await fetch('/api/backtest', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ window: 'val' }),
+            }).then(r => r.json());
+            for (const line of (r.stdout || '').split('\n')) if (line.trim()) this.pushConsole(line);
+            await this.reloadEquity();
+          } catch (e) { this.pushConsole('[ui] backtest failed: ' + e); }
+        },
+
+        async startLoop() {
+          try {
+            await fetch('/api/loop/start', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ iters: this.launchIters }),
+            }).then(r => { if (!r.ok) throw new Error('failed to start'); });
+            this.consoleOpen = true;
+          } catch (e) { this.pushConsole('[ui] start failed: ' + e); }
+        },
+
+        async stopLoop() {
+          try { await fetch('/api/loop/stop', { method: 'POST' }); }
+          catch (e) { this.pushConsole('[ui] stop failed: ' + e); }
+        },
+
+        pushConsole(text) {
+          this.consoleLines.push({ id: this.consoleId++, text });
+          if (this.consoleLines.length > 1000) this.consoleLines = this.consoleLines.slice(-800);
+          this.$nextTick(() => { const el = this.$refs.console; if (el) el.scrollTop = el.scrollHeight; });
+        },
+
+        lineClass(text) {
+          if (!text) return '';
+          if (text.includes('KEEP')) return 'text-accent-keep';
+          if (text.includes('discard') || text.includes('regression')) return 'text-accent-discard';
+          if (text.includes('crash') || text.includes('ERROR') || text.includes('Traceback')) return 'text-accent-crash';
+          if (text.startsWith('[loop]')) return 'text-ink-200';
+          if (text.startsWith('[ui]')) return 'text-accent-run';
+          return 'text-ink-300';
+        },
+
+        connectSSE() {
+          try {
+            this.sse = new EventSource('/api/loop/stream');
+            this.sse.addEventListener('line', e => {
+              const { line } = JSON.parse(e.data);
+              this.pushConsole(line);
+              if (line.startsWith('[loop] KEEP')) {
+                this.fetchSummary(); this.fetchResults(); this.fetchStrategy(); this.fetchGitLog();
+                this.reloadEquity();
+              }
+            });
+            this.sse.addEventListener('status', e => {
+              const s = JSON.parse(e.data);
+              if (this.loop.running !== s.running) {
+                this.loop = s;
+                if (!s.running) {
+                  this.fetchSummary(); this.fetchResults(); this.fetchStrategy(); this.fetchGitLog();
+                  this.reloadEquity();
+                }
+              } else { this.loop = s; }
+            });
+          } catch (e) { console.warn('SSE connect failed:', e); }
+        },
+
+        renderEquity() {
+          const ctx = document.getElementById('chart-equity'); if (!ctx) return;
+          if (this.charts.equity) this.charts.equity.destroy();
+          const labels = this.equity.timestamps || [];
+          this.charts.equity = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [
+                { label: 'Strategy', data: this.equity.equity || [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.05 },
+                { label: 'Buy & Hold', data: this.equity.buy_and_hold || [], borderColor: '#71717a', borderWidth: 1.5, borderDash: [4, 4], pointRadius: 0, fill: false, tension: 0.05 },
+              ],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              scales: {
+                x: { ticks: { maxTicksLimit: 8, callback: (v, i) => labels[i]?.slice(0, 10) || '' }, grid: { display: false } },
+                y: { ticks: { callback: v => '$' + (v / 1e6).toFixed(2) + 'M' } },
+              },
+              plugins: { legend: { display: true, position: 'bottom' } },
+            },
+          });
+        },
+
+        renderDrawdown() {
+          const ctx = document.getElementById('chart-drawdown'); if (!ctx) return;
+          if (this.charts.drawdown) this.charts.drawdown.destroy();
+          this.charts.drawdown = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: this.equity.timestamps || [],
+              datasets: [{ label: 'Drawdown %', data: this.equity.drawdown || [], borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)', borderWidth: 1, pointRadius: 0, fill: true, tension: 0.05 }],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { display: false },
+                y: { ticks: { callback: v => v.toFixed(0) + '%' }, suggestedMin: -40, suggestedMax: 0, grid: { color: 'rgba(63,63,74,0.3)' } },
+              },
+            },
+          });
+        },
+
+        renderProgression() {
+          const ctx = document.getElementById('chart-progression'); if (!ctx) return;
+          const keeps = this.results.filter(r => r.status === 'keep');
+          let best = 0;
+          const data = keeps.map((r, i) => { best = Math.max(best, r.val_sharpe || 0); return { x: i + 1, sharpe: r.val_sharpe, best }; });
+          if (this.charts.progression) this.charts.progression.destroy();
+          this.charts.progression = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: data.map(d => '#' + d.x),
+              datasets: [
+                { label: 'Sharpe', data: data.map(d => d.sharpe), borderColor: '#3b82f6', backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 3, pointBackgroundColor: '#3b82f6', tension: 0 },
+                { label: 'Best so far', data: data.map(d => d.best), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.06)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0, stepped: true },
+              ],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => v.toFixed(2) } } },
+              plugins: { legend: { display: true, position: 'bottom' } },
+            },
+          });
+        },
+
+        highlightStrategy() {
+          this.$nextTick(() => {
+            if (window.Prism) document.querySelectorAll('code.language-python').forEach(el => Prism.highlightElement(el));
+          });
+        },
+      };
+    }
+    window.app = app;
+  </script>
 </body>
 </html>

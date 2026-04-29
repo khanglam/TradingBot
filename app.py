@@ -1,24 +1,12 @@
-"""FastAPI backend for the TradingBot dashboard.
+"""TradingBot dashboard.
 
 Run:
-    uvicorn ui.server:app --reload
-or double-click run_ui.bat / run_ui.sh.
+    .venv/Scripts/python.exe app.py
+Then open http://127.0.0.1:8000
 
-Routes:
-    GET  /                      → static/index.html
-    GET  /api/health            → ping
-    GET  /api/summary           → KPI snapshot (best sharpe, counts, latest)
-    GET  /api/results           → results.tsv as JSON array
-    GET  /api/strategy          → strategy.py source
-    GET  /api/program           → program.md source
-    GET  /api/equity            → equity curve + drawdown for current strategy
-    GET  /api/git-log?n=20      → git history of strategy.py
-    GET  /api/setup             → environment / data file check
-    POST /api/backtest          → run backtest.py once, return parsed metrics
-    POST /api/loop/start        → spawn loop.py in background
-    POST /api/loop/stop         → kill the running loop
-    GET  /api/loop/status       → is the loop running?
-    GET  /api/loop/stream       → SSE stream of live stdout
+Two files, no build step:
+    app.py        ← this file (FastAPI server)
+    index.html    ← entire UI inline (HTML + Tailwind + Alpine + Chart.js + CSS)
 """
 from __future__ import annotations
 
@@ -37,12 +25,11 @@ from typing import Any
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-ROOT = Path(__file__).resolve().parent.parent
-STATIC = Path(__file__).resolve().parent / "static"
+ROOT = Path(__file__).resolve().parent
+INDEX_HTML = ROOT / "index.html"
 RESULTS = ROOT / "results.tsv"
 STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
@@ -55,7 +42,7 @@ if not PYTHON.exists():
 app = FastAPI(title="TradingBot Autoresearch UI")
 
 
-# ─────────────────────────── helpers ─────────────────────────────────
+# ───────────────────────────── helpers ───────────────────────────────
 
 def _load_results() -> pd.DataFrame:
     if not RESULTS.exists():
@@ -71,19 +58,17 @@ def _load_results() -> pd.DataFrame:
 
 
 def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
-    df = df.where(pd.notnull(df), None)
-    return df.to_dict(orient="records")
+    return df.where(pd.notnull(df), None).to_dict(orient="records")
 
 
-# ───────────────────────── loop process state ────────────────────────
+# ─────────────────────── loop process state ──────────────────────────
 
 class LoopProc:
-    """Singleton wrapper around the running loop.py subprocess."""
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
         self.buffer: deque[str] = deque(maxlen=2000)
         self.lock = threading.Lock()
-        self.reader_thread: threading.Thread | None = None
+        self.reader: threading.Thread | None = None
 
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -94,20 +79,14 @@ class LoopProc:
                 raise RuntimeError("Loop already running.")
             self.buffer.clear()
             self.buffer.append(f"[ui] starting loop.py --iters {iters}")
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
             self.proc = subprocess.Popen(
                 [str(PYTHON), "loop.py", "--iters", str(int(iters))],
-                cwd=ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                creationflags=creationflags,
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, creationflags=flags,
             )
-            self.reader_thread = threading.Thread(target=self._drain, daemon=True)
-            self.reader_thread.start()
+            self.reader = threading.Thread(target=self._drain, daemon=True)
+            self.reader.start()
 
     def _drain(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
@@ -139,7 +118,12 @@ class LoopProc:
 loop_proc = LoopProc()
 
 
-# ─────────────────────────── routes ──────────────────────────────────
+# ───────────────────────────── routes ────────────────────────────────
+
+@app.get("/")
+def index():
+    return FileResponse(INDEX_HTML)
+
 
 @app.get("/api/health")
 def health() -> dict:
@@ -176,8 +160,7 @@ def summary() -> dict:
 
 @app.get("/api/results")
 def results() -> list[dict[str, Any]]:
-    df = _load_results()
-    return _df_to_records(df)
+    return _df_to_records(_load_results())
 
 
 @app.get("/api/strategy")
@@ -212,12 +195,8 @@ def git_log(n: int = 20) -> dict:
 
 
 @app.get("/api/equity")
-def equity_curve() -> dict:
-    """Run strategy.py in-process to produce equity + drawdown for charting.
-
-    Same window/cash/commission as backtest.py — the metrics will agree.
-    This is a viz endpoint, not the official oracle.
-    """
+def equity_curve():
+    """Run strategy.py in-process to produce equity + drawdown for charting."""
     try:
         import importlib
 
@@ -243,18 +222,11 @@ def equity_curve() -> dict:
         )
         stats = bt.run()
         eq = stats._equity_curve
-        equity = eq["Equity"].astype(float).tolist()
-        drawdown = (-eq["DrawdownPct"].astype(float) * 100).tolist()
-        timestamps = [t.isoformat() for t in eq.index]
-        close = df["Close"].astype(float).tolist()
-        bh_scaled = (df["Close"] / df["Close"].iloc[0] * equity[0]).astype(float).tolist()
-
         return {
-            "timestamps": timestamps,
-            "equity": equity,
-            "buy_and_hold": bh_scaled,
-            "drawdown": drawdown,
-            "close": close,
+            "timestamps": [t.isoformat() for t in eq.index],
+            "equity": eq["Equity"].astype(float).tolist(),
+            "buy_and_hold": (df["Close"] / df["Close"].iloc[0] * float(eq["Equity"].iloc[0])).astype(float).tolist(),
+            "drawdown": (-eq["DrawdownPct"].astype(float) * 100).tolist(),
             "metrics": {
                 "sharpe": float(stats.get("Sharpe Ratio", 0.0) or 0.0),
                 "sortino": float(stats.get("Sortino Ratio", 0.0) or 0.0),
@@ -313,7 +285,7 @@ def setup_status() -> dict:
     }
 
 
-# ──────────────────── action endpoints ───────────────────────────────
+# ────────────────────── action endpoints ─────────────────────────────
 
 class BacktestRequest(BaseModel):
     window: str = "val"
@@ -327,20 +299,13 @@ def run_backtest(req: BacktestRequest) -> dict:
         [str(PYTHON), "backtest.py", "--window", req.window],
         cwd=ROOT, capture_output=True, text=True, timeout=300,
     )
-    out = proc.stdout
-    metrics = {}
-    pat = re.compile(r"^(\w+):\s+([-\d.]+)\s*$", re.MULTILINE)
-    for m in pat.finditer(out):
+    metrics: dict[str, float] = {}
+    for m in re.finditer(r"^(\w+):\s+([-\d.]+)\s*$", proc.stdout, re.MULTILINE):
         try:
             metrics[m.group(1)] = float(m.group(2))
         except ValueError:
-            continue
-    return {
-        "stdout": out,
-        "stderr": proc.stderr,
-        "exit_code": proc.returncode,
-        "metrics": metrics,
-    }
+            pass
+    return {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode, "metrics": metrics}
 
 
 class LoopStartRequest(BaseModel):
@@ -362,54 +327,37 @@ def loop_start(req: LoopStartRequest) -> dict:
 
 @app.post("/api/loop/stop")
 def loop_stop() -> dict:
-    stopped = loop_proc.stop()
-    return {"stopped": stopped}
+    return {"stopped": loop_proc.stop()}
 
 
 @app.get("/api/loop/status")
 def loop_status() -> dict:
-    return {
-        "running": loop_proc.is_running(),
-        "buffered_lines": len(loop_proc.buffer),
-    }
+    return {"running": loop_proc.is_running(), "buffered_lines": len(loop_proc.buffer)}
 
 
 @app.get("/api/loop/stream")
 async def loop_stream():
     async def event_gen():
-        last_len = 0
+        last = 0
         while True:
             buf = list(loop_proc.buffer)
-            if len(buf) > last_len:
-                for line in buf[last_len:]:
+            if len(buf) > last:
+                for line in buf[last:]:
                     yield {"event": "line", "data": json.dumps({"line": line})}
-                last_len = len(buf)
-            yield {
-                "event": "status",
-                "data": json.dumps({
-                    "running": loop_proc.is_running(),
-                    "lines": len(buf),
-                }),
-            }
+                last = len(buf)
+            yield {"event": "status", "data": json.dumps({
+                "running": loop_proc.is_running(),
+                "lines": len(buf),
+            })}
             await asyncio.sleep(0.5)
 
     return EventSourceResponse(event_gen())
 
 
-# ──────────────────────── static / index ─────────────────────────────
-
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
-
-
-@app.get("/")
-def index():
-    return FileResponse(STATIC / "index.html")
-
-
-def main() -> None:
-    import uvicorn
-    uvicorn.run("ui.server:app", host="127.0.0.1", port=8000, reload=False)
-
+# ─────────────────────────── entry point ─────────────────────────────
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+
+    print("\n  TradingBot dashboard -> http://127.0.0.1:8000\n")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
