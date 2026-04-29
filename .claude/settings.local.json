@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip3 list:*)",
+      "Bash(grep:*)",
+      "Bash(git clone *)",
+      "Bash(where claude *)"
+    ],
+    "deny": []
+  }
+}

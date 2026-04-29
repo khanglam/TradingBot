@@ -1,15 +1,14 @@
-logs
-.idea
-__pycache__
+# Environment variables
+.env
 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
 
-# windsurf rules
-.windsurfrules
-.windsurfrules
-optimization_results
+# IDE
+.vscode/
+.idea/
 
-.vscode/settings.json
-lorentzian_strategy/advanced_ta/results_logs
-results_logs
-best_parameters_TSLA.json
-.claude/settings.local.json
+# Virtual environment
+.venv/
