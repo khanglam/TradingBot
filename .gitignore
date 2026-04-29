@@ -16,6 +16,7 @@ __pycache__/
 # Autoresearch loop artifacts (per-machine, never committed)
 data/
 results.tsv
+results.tsv.legacy
 run.log
 trades.log
 logs/

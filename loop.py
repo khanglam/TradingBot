@@ -53,6 +53,18 @@ MAX_DRAWDOWN_LIMIT = 30.0
 MIN_TRADES = 20
 MAX_REGRESSIONS = 3
 
+# OPTIMIZE_METRIC env var picks the keep/discard scalar.
+# Allowed: "val_sharpe" (default; backtesting.py reported Sharpe)
+#         "calmar"     (return / max_drawdown — return-aware)
+# Both are logged to results.tsv either way; this just chooses the gradient
+# the loop hill-climbs against.
+ALLOWED_METRICS = {"val_sharpe", "calmar"}
+OPTIMIZE_METRIC = os.environ.get("OPTIMIZE_METRIC", "val_sharpe")
+if OPTIMIZE_METRIC not in ALLOWED_METRICS:
+    raise SystemExit(
+        f"OPTIMIZE_METRIC must be one of {sorted(ALLOWED_METRICS)}, got {OPTIMIZE_METRIC!r}"
+    )
+
 
 # ──────────────────────────── git helpers ──────────────────────────────
 
@@ -83,75 +95,163 @@ def git_reset_last() -> None:
 
 # ──────────────────────────── results.tsv ──────────────────────────────
 
-RESULTS_HEADER = "commit\tval_sharpe\tmax_drawdown\twin_rate\ttotal_trades\tstatus\tdescription\n"
+# Schema columns in fixed order. Append-only — never reorder. Adding a new
+# column? Append it to the end and migrate existing files.
+RESULTS_COLS = [
+    "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+    "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+    "status", "description",
+]
+RESULTS_HEADER = "\t".join(RESULTS_COLS) + "\n"
+LEGACY_COLS = [
+    "commit", "val_sharpe", "max_drawdown", "win_rate", "total_trades",
+    "status", "description",
+]
 
 
 def _ensure_results() -> None:
+    """Create results.tsv with new schema if missing, or migrate legacy files
+    in place by padding old rows with empty strings for the new columns."""
     if not RESULTS.exists():
         RESULTS.write_text(RESULTS_HEADER, encoding="utf-8")
+        return
+
+    lines = RESULTS.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        RESULTS.write_text(RESULTS_HEADER, encoding="utf-8")
+        return
+
+    header_cols = lines[0].split("\t")
+    if header_cols == RESULTS_COLS:
+        return  # already on new schema
+
+    if header_cols == LEGACY_COLS:
+        # Legacy → new: pad with empty values for the inserted columns.
+        # Old order:  commit, val_sharpe, max_drawdown, win_rate, total_trades, status, description
+        # New order:  commit, val_sharpe, sortino, sharpe_ann_4h, calmar, psr, skew, kurtosis,
+        #             max_drawdown, win_rate, total_trades, status, description
+        backup = RESULTS.with_suffix(".tsv.legacy")
+        if not backup.exists():
+            backup.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            print(f"[loop] migrated {RESULTS.name} (legacy backup at {backup.name})")
+        new_lines = [RESULTS_HEADER.rstrip("\n")]
+        for line in lines[1:]:
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            commit, val_sharpe, max_dd, win_rate, n_trades, status, desc = parts[:7]
+            # insert empty placeholders for sortino, sharpe_ann_4h, calmar, psr, skew, kurtosis
+            new_row = [commit, val_sharpe, "", "", "", "", "", "",
+                       max_dd, win_rate, n_trades, status, desc]
+            new_lines.append("\t".join(new_row))
+        RESULTS.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        return
+
+    raise RuntimeError(
+        f"results.tsv has unrecognized header: {header_cols}. "
+        f"Expected legacy or new schema. Move/rename it manually."
+    )
 
 
-def append_result(
-    sha: str,
-    val_sharpe: float,
-    max_dd: float,
-    win_rate: float,
-    n_trades: int,
-    status: str,
-    description: str,
-) -> None:
+def append_result(sha: str, metrics: dict, status: str, description: str) -> None:
+    """Append a row using the full new schema. metrics dict comes from
+    run_backtest() and is expected to contain every numeric column."""
     _ensure_results()
+    row = [
+        sha,
+        f"{metrics.get('val_sharpe', 0.0):.6f}",
+        f"{metrics.get('sortino', 0.0):.6f}",
+        f"{metrics.get('sharpe_ann_4h', 0.0):.6f}",
+        f"{metrics.get('calmar', 0.0):.6f}",
+        f"{metrics.get('psr', 0.0):.6f}",
+        f"{metrics.get('skew', 0.0):.3f}",
+        f"{metrics.get('kurtosis', 0.0):.3f}",
+        f"{metrics.get('max_drawdown', 0.0):.2f}",
+        f"{metrics.get('win_rate', 0.0):.3f}",
+        f"{metrics.get('total_trades', 0)}",
+        status,
+        description,
+    ]
     with RESULTS.open("a", encoding="utf-8") as f:
-        f.write(
-            f"{sha}\t{val_sharpe:.6f}\t{max_dd:.2f}\t"
-            f"{win_rate:.3f}\t{n_trades}\t{status}\t{description}\n"
-        )
+        f.write("\t".join(row) + "\n")
 
 
-def best_val_sharpe_so_far() -> float:
+def best_metric_so_far(metric: str) -> float:
+    """Best value of `metric` across kept rows. Reads by header column name
+    so it works on both legacy-migrated files and new files."""
     if not RESULTS.exists():
         return 0.0
+    lines = RESULTS.read_text(encoding="utf-8").splitlines()
+    if len(lines) < 2:
+        return 0.0
+    header = lines[0].split("\t")
+    try:
+        idx_metric = header.index(metric)
+        idx_status = header.index("status")
+    except ValueError:
+        return 0.0
     best = 0.0
-    for line in RESULTS.read_text(encoding="utf-8").splitlines()[1:]:
+    for line in lines[1:]:
         parts = line.split("\t")
-        if len(parts) >= 6 and parts[5] == "keep":
-            try:
-                best = max(best, float(parts[1]))
-            except ValueError:
-                continue
+        if len(parts) <= max(idx_metric, idx_status):
+            continue
+        if parts[idx_status] != "keep":
+            continue
+        try:
+            best = max(best, float(parts[idx_metric]))
+        except ValueError:
+            continue
     return best
 
 
 def last_n_rows(n: int = 10) -> list[dict]:
     if not RESULTS.exists():
         return []
-    lines = RESULTS.read_text(encoding="utf-8").splitlines()[1:]
+    lines = RESULTS.read_text(encoding="utf-8").splitlines()
+    if len(lines) < 2:
+        return []
+    header = lines[0].split("\t")
     out = []
     for line in lines[-n:]:
         parts = line.split("\t")
-        if len(parts) < 7:
-            continue
-        out.append({
-            "commit": parts[0],
-            "val_sharpe": parts[1],
-            "max_drawdown": parts[2],
-            "win_rate": parts[3],
-            "total_trades": parts[4],
-            "status": parts[5],
-            "description": parts[6],
-        })
+        if len(parts) < len(header):
+            parts = parts + [""] * (len(header) - len(parts))
+        out.append(dict(zip(header, parts)))
     return out
 
 
 # ─────────────────────────── backtest runner ───────────────────────────
 
-SUMMARY_RE = re.compile(
-    r"^val_sharpe:\s+([-\d.]+)\s*$.*?"
-    r"^max_drawdown:\s+([-\d.]+)\s*$.*?"
-    r"^win_rate:\s+([-\d.]+)\s*$.*?"
-    r"^total_trades:\s+(\d+)\s*$",
-    re.MULTILINE | re.DOTALL,
-)
+SUMMARY_FIELDS = {
+    "val_sharpe": float, "sortino": float, "sharpe_ann_4h": float,
+    "calmar": float, "psr": float, "skew": float, "kurtosis": float,
+    "max_drawdown": float, "win_rate": float, "total_trades": int,
+    "total_return_pct": float,
+}
+
+
+def _parse_summary(out: str) -> dict:
+    """Parse `key: value` lines between two `---` markers. Tolerant of any
+    field order; missing fields default to 0."""
+    metrics: dict[str, float | int] = {k: (0 if t is int else 0.0) for k, t in SUMMARY_FIELDS.items()}
+    in_block = False
+    for raw in out.splitlines():
+        line = raw.strip()
+        if line == "---":
+            in_block = not in_block
+            continue
+        if not in_block:
+            continue
+        m = re.match(r"^([a-z_0-9]+):\s+([-\d.]+)\s*$", line)
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2)
+        if key in SUMMARY_FIELDS:
+            try:
+                metrics[key] = SUMMARY_FIELDS[key](val)
+            except ValueError:
+                pass
+    return metrics
 
 
 def run_backtest() -> dict:
@@ -165,16 +265,7 @@ def run_backtest() -> dict:
     )
     out = proc.stdout
     RUN_LOG.write_text(out + "\n----- STDERR -----\n" + proc.stderr, encoding="utf-8")
-
-    m = SUMMARY_RE.search(out)
-    if not m:
-        return {"val_sharpe": 0.0, "max_drawdown": 0.0, "win_rate": 0.0, "total_trades": 0}
-    return {
-        "val_sharpe": float(m.group(1)),
-        "max_drawdown": float(m.group(2)),
-        "win_rate": float(m.group(3)),
-        "total_trades": int(m.group(4)),
-    }
+    return _parse_summary(out)
 
 
 # ──────────────────────────── Claude call ──────────────────────────────
@@ -226,18 +317,18 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
 
 # ──────────────────────────────── main ─────────────────────────────────
 
-def one_iteration(best_sharpe: float) -> tuple[str, float]:
-    """Run one experiment. Returns (status, new_best_sharpe)."""
+def one_iteration(best_metric: float) -> tuple[str, float]:
+    """Run one experiment. Returns (status, new_best_for_active_metric)."""
     strategy_src = STRATEGY.read_text(encoding="utf-8")
     program_src = PROGRAM.read_text(encoding="utf-8")
     history = last_n_rows(10)
 
-    print(f"\n[loop] best_so_far={best_sharpe:.4f}  asking Claude…")
+    print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking Claude…")
     try:
         description, new_code = call_claude(strategy_src, program_src, history)
     except Exception as e:
         print(f"[loop] claude error: {e}")
-        return "claude_error", best_sharpe
+        return "claude_error", best_metric
 
     print(f"[loop] proposed: {description}")
     STRATEGY.write_text(new_code, encoding="utf-8")
@@ -246,13 +337,17 @@ def one_iteration(best_sharpe: float) -> tuple[str, float]:
 
     metrics = run_backtest()
     sharpe = metrics["val_sharpe"]
+    calmar = metrics["calmar"]
     max_dd = metrics["max_drawdown"]
     n_trades = metrics["total_trades"]
     win_rate = metrics["win_rate"]
 
+    score = float(metrics.get(OPTIMIZE_METRIC, 0.0))
+
     print(
-        f"[loop] result: sharpe={sharpe:.4f}  max_dd={max_dd:.2f}%  "
-        f"trades={n_trades}  win_rate={win_rate:.3f}"
+        f"[loop] result: sharpe={sharpe:.4f}  calmar={calmar:.4f}  "
+        f"max_dd={max_dd:.2f}%  trades={n_trades}  win_rate={win_rate:.3f}  "
+        f"→ {OPTIMIZE_METRIC}={score:.4f}"
     )
 
     if sharpe == 0.0 and n_trades == 0:
@@ -261,7 +356,7 @@ def one_iteration(best_sharpe: float) -> tuple[str, float]:
         status = "discard"
     elif n_trades < MIN_TRADES:
         status = "discard"
-    elif sharpe > best_sharpe + KEEP_THRESHOLD:
+    elif score > best_metric + KEEP_THRESHOLD:
         status = "keep"
     else:
         status = "discard"
@@ -270,11 +365,11 @@ def one_iteration(best_sharpe: float) -> tuple[str, float]:
         git_reset_last()
         print(f"[loop] {status} → reverted")
     else:
-        best_sharpe = sharpe
-        print(f"[loop] KEEP — new best {sharpe:.4f}")
+        best_metric = score
+        print(f"[loop] KEEP — new best {OPTIMIZE_METRIC}={score:.4f}")
 
-    append_result(sha, sharpe, max_dd, win_rate, n_trades, status, description)
-    return status, best_sharpe
+    append_result(sha, metrics, status, description)
+    return status, best_metric
 
 
 def main() -> int:
@@ -298,7 +393,8 @@ def main() -> int:
         return 2
 
     _ensure_results()
-    best = best_val_sharpe_so_far()
+    best = best_metric_so_far(OPTIMIZE_METRIC)
+    print(f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}")
     consecutive_regressions = 0
 
     for i in range(1, args.iters + 1):

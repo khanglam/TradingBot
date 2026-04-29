@@ -44,16 +44,24 @@ app = FastAPI(title="TradingBot Autoresearch UI")
 
 # ───────────────────────────── helpers ───────────────────────────────
 
+_NEW_SCHEMA_COLS = [
+    "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+    "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+    "status", "description",
+]
+
+
 def _load_results() -> pd.DataFrame:
     if not RESULTS.exists():
-        return pd.DataFrame(columns=[
-            "commit", "val_sharpe", "max_drawdown",
-            "win_rate", "total_trades", "status", "description",
-        ])
+        return pd.DataFrame(columns=_NEW_SCHEMA_COLS)
     df = pd.read_csv(RESULTS, sep="\t")
-    for col in ("val_sharpe", "max_drawdown", "win_rate"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["total_trades"] = pd.to_numeric(df["total_trades"], errors="coerce").fillna(0).astype(int)
+    numeric_cols = ("val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+                    "skew", "kurtosis", "max_drawdown", "win_rate")
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "total_trades" in df.columns:
+        df["total_trades"] = pd.to_numeric(df["total_trades"], errors="coerce").fillna(0).astype(int)
     return df
 
 
