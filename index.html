@@ -141,7 +141,7 @@
             </div>
             <button @click="reloadEquity()" class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
           </div>
-          <div class="h-72 relative">
+          <div class="relative" style="height: 288px;">
             <canvas id="chart-equity"></canvas>
             <div x-show="equityLoading" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm">running backtest…</div>
           </div>
@@ -162,13 +162,13 @@
               <div class="text-sm text-ink-200">Best-so-far across kept experiments</div>
             </div>
           </div>
-          <div class="h-72 relative">
+          <div class="relative" style="height: 288px;">
             <canvas id="chart-progression"></canvas>
             <div x-show="!keepCount" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm">no keeps yet</div>
           </div>
-          <div class="h-24 mt-3">
+          <div class="mt-3" style="height: 96px;">
             <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-2">Drawdown</div>
-            <canvas id="chart-drawdown"></canvas>
+            <div style="height: 70px;"><canvas id="chart-drawdown"></canvas></div>
           </div>
         </div>
       </section>
@@ -373,13 +373,21 @@
         },
 
         async init() {
+          // Set up watchers BEFORE the first fetches so initial-set triggers them.
+          this.$watch('strategySource', () => this.highlightStrategy());
+          this.$watch('results', () => this.renderProgression());
+
           await Promise.all([this.fetchSummary(), this.fetchResults(), this.fetchSetup(), this.fetchStrategy(), this.fetchGitLog()]);
-          this.reloadEquity();
+          // Defer first chart paint by one rAF so Tailwind's CDN has time to
+          // inject styles. Otherwise parent height is 0 and Chart.js renders blank.
+          requestAnimationFrame(() => {
+            this.reloadEquity();
+            this.renderProgression();
+            this.highlightStrategy();
+          });
           this.connectSSE();
           setInterval(() => { this.fetchSummary(); this.fetchResults(); }, 4000);
           setInterval(() => { this.fetchSetup(); }, 15000);
-          this.$watch('strategySource', () => this.highlightStrategy());
-          this.$watch('results', () => this.renderProgression());
         },
 
         async fetchSummary()  { try { this.summary  = await fetch('/api/summary').then(r => r.json()); } catch {} },

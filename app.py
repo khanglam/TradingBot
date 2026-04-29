@@ -62,15 +62,18 @@ def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _active_model() -> str:
-    """Read CLAUDE_MODEL env override; fall back to loop.DEFAULT_MODEL."""
+    """Read CLAUDE_MODEL env override; else regex DEFAULT_MODEL out of loop.py.
+    Avoids importing loop (which has init-time side effects)."""
     if env := os.environ.get("CLAUDE_MODEL"):
         return env
     try:
-        sys.path.insert(0, str(ROOT))
-        import loop  # has side-effect reconfigure, but cheap
-        return getattr(loop, "DEFAULT_MODEL", "unknown")
+        text = (ROOT / "loop.py").read_text(encoding="utf-8")
+        m = re.search(r'^\s*DEFAULT_MODEL\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if m:
+            return m.group(1)
     except Exception:
-        return "unknown"
+        pass
+    return "unknown"
 
 
 # ─────────────────────── loop process state ──────────────────────────
