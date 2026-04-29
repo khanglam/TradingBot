@@ -55,7 +55,10 @@ TradingBot/
 ├── strategy.py                MUTABLE — only file the loop edits
 ├── loop.py                    autoresearch orchestrator
 ├── live_trade.py              paper / live execution via LumiBot
-├── data_fetch.py              CCXT + yfinance → Parquet
+├── data_fetch.py              CCXT + yfinance -> Parquet
+├── dashboard.py               Streamlit UI (viewer + launcher)
+├── run_dashboard.bat          Windows one-click launcher
+├── run_dashboard.sh           Mac/Linux launcher
 ├── data/                      cached OHLCV (gitignored)
 ├── results.tsv                experiment log (gitignored)
 ├── run.log                    latest backtest stdout (gitignored)
@@ -131,6 +134,28 @@ d4e5f6g 0.000000    0.00          0.000     0             crash   syntax error i
 # 6. paper trade the current strategy.py
 .venv/Scripts/python.exe live_trade.py --symbol SPY --asset stock
 ```
+
+## Dashboard (Streamlit UI)
+
+Single-file dashboard at `dashboard.py`. Run any of:
+
+```bash
+# Windows: double-click run_dashboard.bat
+.venv/Scripts/python.exe -m streamlit run dashboard.py
+```
+
+Then open http://localhost:8501. Five tabs:
+
+| Tab | What it shows |
+|---|---|
+| **Dashboard** | KPI strip · best-Sharpe progression · status mix · live equity curve + drawdown for the current `strategy.py` |
+| **Experiments** | Filterable, color-coded `results.tsv` |
+| **Strategy** | `strategy.py` source · git history · `program.md` viewer |
+| **Run** | Buttons to run a single backtest or launch the loop with live streaming output |
+| **Setup** | Environment check, data file inventory, quick reference |
+
+The dashboard is read-only against `results.tsv` and shells out to `backtest.py` /
+`loop.py` for actions — it does not implement the loop itself.
 
 ## Hard Rules for the Agent
 
