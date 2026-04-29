@@ -1,0 +1,83 @@
+name: Daily signal scan
+
+# Runs scan.py against the configured watchlist and posts BUY/SELL alerts
+# to a webhook (Discord/Slack-compatible). Designed for the user's stated
+# workflow: "ping me when there's a signal, I execute manually."
+#
+# Schedule: weekdays at 13:30 UTC = 05:30 PST = 1 hour before NYSE opens.
+# This gives the user a pre-market alert based on yesterday's close, so
+# they can plan their open-session orders before 06:30 PST.
+#
+# Required repo secrets:
+#   SCAN_WEBHOOK_URL  — Discord/Slack webhook (or anything that accepts
+#                       JSON {"content":"..."} or {"text":"..."} POST)
+#
+# Required repo variables (Settings → Secrets and variables → Actions → Variables):
+#   SCAN_WATCHLIST    — comma-sep symbols, e.g. "SPY,QQQ,TSLA,NVDA,AAPL"
+
+on:
+  schedule:
+    - cron: '30 13 * * 1-5'  # Mon-Fri 13:30 UTC
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: 'Override watchlist (comma-separated, blank = use repo var SCAN_WATCHLIST)'
+        required: false
+        default: ''
+        type: string
+      dry:
+        description: 'Dry run (do not POST to webhook, just print)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signal-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      SCAN_WATCHLIST: ${{ github.event.inputs.symbols || vars.SCAN_WATCHLIST || 'SPY,QQQ' }}
+      SCAN_WEBHOOK_URL: ${{ secrets.SCAN_WEBHOOK_URL }}
+      SCAN_LOOKBACK_DAYS: ${{ vars.SCAN_LOOKBACK_DAYS || '250' }}
+      SCAN_FRESH_BARS: ${{ vars.SCAN_FRESH_BARS || '1' }}
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+
+    steps:
+      - name: Checkout (current strategy.py)
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install backtesting yfinance pyarrow python-dotenv
+
+      - name: Run signal scan
+        run: |
+          if [ "${{ github.event.inputs.dry }}" = "true" ]; then
+            python scan.py --dry
+          else
+            python scan.py
+          fi
+
+      - name: Upload scan log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-log-${{ github.run_id }}
+          path: results/scan.log
+          retention-days: 14

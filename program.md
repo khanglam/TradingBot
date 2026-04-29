@@ -18,10 +18,13 @@ The active metric is one of:
 - `val_sharpe` (default) — risk-adjusted return; rewards smooth equity curves
 - `calmar` — `total_return / max_drawdown`; rewards strategies that compound
   money without large drawdowns
+- `dsr` — Deflated Sharpe Ratio (Bailey & López de Prado); like Sharpe but
+  adjusted for the number of trials run, so winning here is statistically
+  significant rather than just lucky
 
-Either way, *both* are logged to `results.tsv` along with auxiliary diagnostics
-(`sortino`, `sharpe_ann_4h`, `psr`, `skew`, `kurtosis`). Optimizing one
-generally moves the other in the same direction.
+All metrics (`val_sharpe`, `sortino`, `sharpe_ann_4h`, `calmar`, `psr`, `dsr`,
+`skew`, `kurtosis`) are logged to `results.tsv`. Optimizing one generally
+moves the others in the same direction.
 
 The training window (2019-01-01 → 2022-12-31) exists implicitly in the time
 series but is *not* what the metric is measured on. You may reason about it
@@ -36,8 +39,8 @@ caught there.
 ## Hard Rules
 
 1. **Only edit `strategy.py`.** Do not touch `backtest.py`, `loop.py`,
-   `data_fetch.py`, `live_trade.py`, the windows, or any Jesse/lumibot
-   internals.
+   `data_fetch.py`, `live_trade.py`, `scan.py`, the windows, or any
+   harness internals.
 2. **One change per experiment.** A "change" is a single coherent idea
    (e.g. "add an RSI filter" or "switch to Bollinger exits"), not a bundle.
 3. **No look-ahead.** Only use bars `[0..current]`. No `shift(-1)`, no
@@ -56,19 +59,45 @@ caught there.
   indicator beats fiddling with the EMA period by 1.
 - **Reference history in the prompt.** Each mutation must explain what
   similar past experiments did and why this one is different.
+- **Beware crowded edges.** RSI, MACD, vanilla Bollinger have been
+  arbitraged for decades. Combinations and regime-aware variants are
+  more likely to survive.
 
 ## Mutation Menu (suggestions, not exhaustive)
 
-- Replace or augment the entry signal (RSI threshold, MACD crossover,
-  Bollinger breakout, volume confirmation, ADX trend filter)
-- Replace or augment the exit (trailing stop, fixed take-profit, ATR-based
-  stop, time-based exit, opposite-cross exit)
-- Add a regime filter (only trade when price > 200-period SMA; skip
-  high-volatility regimes)
-- Add position sizing (fixed fraction, Kelly fraction, volatility-targeted)
-- Add a short side (be careful: a bad short side wipes out good longs)
-- Tune hyperparameters (fast/slow periods) — but only if a structural
-  change isn't more promising
+**Entry signals**
+- Replace or augment the entry: RSI threshold, MACD crossover, Bollinger
+  breakout, volume confirmation, ADX trend filter, Donchian channel break
+- Add momentum confirmation (price > 50/200 SMA, higher highs/lows)
+
+**Exit signals**
+- Trailing stop (ATR-based, percent-based, or volatility-targeted)
+- Fixed take-profit (1R, 2R, ATR multiple)
+- Time-based exit (close after N bars regardless)
+- Opposite-cross / mean-reversion exit
+- RSI overbought / oversold exit
+
+**Regime filters**
+- Skip when price below 200-period SMA (no longs in bear regimes)
+- Skip when realized vol > some threshold (chop avoidance)
+- Skip when ADX < 20 (no trend = no trend-following edge)
+- Day-of-week / time-of-day filters where data supports it
+
+**Position sizing**
+- Fixed fraction (currently 0.95)
+- Volatility-targeted (size inversely proportional to ATR)
+- Kelly fraction (be careful: assumes known edge)
+
+**Stat-arb / pattern**
+- Pullback to MA (buy dip in uptrend)
+- Mean reversion (z-score of return distribution)
+- Range-break with confirmation
+
+**Don't bother**
+- Adding a short side (a bad short side wipes out good longs; defer until
+  you have a strong long-side baseline)
+- Naive parameter sweeps without structural reason
+- Indicators that are linear combinations of ones already present
 
 ## What Counts as a Crash / Discard
 
@@ -77,6 +106,7 @@ caught there.
 | Active `OPTIMIZE_METRIC` improves and constraints pass | **keep** (advance branch) |
 | Active `OPTIMIZE_METRIC` regresses or equal | **discard** (`git reset --hard HEAD~1`) |
 | `max_drawdown ≥ 30%` or `total_trades < 20` | **discard** |
+| `dsr < DSR_GATE_THRESHOLD` (when gate enabled) | **discard** (multiple-testing reject) |
 | Import error / runtime crash / 0 trades | **crash** (discard) |
 | 3 consecutive regressions | **freeze** (loop pauses; human review) |
 

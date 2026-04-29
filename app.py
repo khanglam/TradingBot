@@ -29,8 +29,8 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 ROOT = Path(__file__).resolve().parent
-INDEX_HTML = ROOT / "index.html"
-RESULTS = ROOT / "results.tsv"
+INDEX_HTML = ROOT / "web" / "index.html"
+RESULTS = ROOT / "results" / "results.tsv"
 STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
 DATA_DIR = ROOT / "data"
@@ -45,7 +45,7 @@ app = FastAPI(title="TradingBot Autoresearch UI")
 # ───────────────────────────── helpers ───────────────────────────────
 
 _NEW_SCHEMA_COLS = [
-    "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+    "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
     "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
     "status", "description",
 ]
@@ -55,7 +55,7 @@ def _load_results() -> pd.DataFrame:
     if not RESULTS.exists():
         return pd.DataFrame(columns=_NEW_SCHEMA_COLS)
     df = pd.read_csv(RESULTS, sep="\t")
-    numeric_cols = ("val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+    numeric_cols = ("val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
                     "skew", "kurtosis", "max_drawdown", "win_rate")
     for col in numeric_cols:
         if col in df.columns:

@@ -3,9 +3,13 @@
 ## What This Project Is
 
 A **karpathy-autoresearch-style autonomous trading strategy optimizer**. An LLM
-agent modifies a strategy file, runs a backtest, measures Sharpe, keeps
-improvements, discards regressions, and loops — exactly like autoresearch does
-for LLM training.
+agent modifies a strategy file, runs a backtest, measures Sharpe (or Calmar /
+DSR), keeps improvements, discards regressions, and loops — exactly like
+autoresearch does for LLM training.
+
+A **daily signal scanner** (`scan.py`) deploys the latest strategy.py against
+a watchlist and pings a webhook when a buy/sell signal triggers — the
+"alert me, I'll execute manually" workflow.
 
 Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 
@@ -13,12 +17,13 @@ Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 
 | Layer | Choice | Why |
 |---|---|---|
-| Backtest engine | `backtesting.py` | Pure function call, returns metrics dict, no CLI, fast |
-| Live/paper exec | `lumibot` + Alpaca | One config flag flips paper ↔ live, supports stocks + crypto |
-| Crypto data | `ccxt` (Binance public) | Free, 8+ years OHLCV, no API key |
+| Backtest engine | `backtesting.py` | Pure function call, returns metrics dict, fast |
+| Live/paper exec | `lumibot` + Alpaca (optional) | Paper ↔ live via one flag |
+| Crypto data | `ccxt` (KuCoin public) | Free, 8+ years OHLCV, no API key |
 | Stock data | `yfinance` | Free, daily back to 1990 |
 | Storage | Parquet (pyarrow) | 40× faster reads than CSV for backtest loops |
-| LLM agent | Claude Sonnet 4.6 via `anthropic` SDK | Drives the mutation prompts |
+| LLM agent | Claude (Haiku 4.5 default; configurable) via `anthropic` SDK | Drives mutation prompts |
+| Scheduler | GitHub Actions cron | Loop weekly, scanner weekday mornings |
 
 Jesse was evaluated and archived to `archive/` — too heavy for the tight loop.
 
@@ -29,57 +34,68 @@ LOOP FOREVER:
   1. Read current strategy.py + last 10 rows of results.tsv + program.md
   2. Ask Claude for ONE mutation (description + new strategy.py contents)
   3. Write strategy.py, git commit
-  4. Run backtest.py → parses summary block from stdout
-  5. Apply keep/discard rules:
-       - val_sharpe > best_so_far AND constraints pass → keep
-       - else                                          → git reset --hard HEAD~1
-  6. Append row to results.tsv
-  7. Stop after --iters or 3 consecutive regressions
+  4. Compute DSR benchmark from prior trial variance
+  5. Run backtest.py with DSR_BENCHMARK in env → parse summary block
+  6. Apply keep/discard rules:
+       - OPTIMIZE_METRIC > best_so_far AND constraints pass → keep
+       - DSR < DSR_GATE_THRESHOLD (if enabled)              → discard
+       - max_drawdown ≥ 30% or trades < 20                  → discard
+       - else (regression)                                  → discard
+       - 0 trades or import error                           → crash (also discard)
+       discard / crash → git reset --hard HEAD~1
+  7. Append row to results.tsv
+  8. Stop after --iters or 3 consecutive regressions
 ```
 
 | autoresearch | this project |
 |---|---|
 | `prepare.py` (fixed) | `backtest.py` — immutable harness |
 | `train.py` (mutable) | `strategy.py` — only file the agent edits |
-| `val_bpb` (lower=better) | `val_sharpe` (higher=better) |
+| `val_bpb` (lower=better) | `val_sharpe` / `calmar` / `dsr` (higher=better) |
 | `program.md` | `program.md` (constraints + output format) |
-| `results.tsv` | `results.tsv` |
+| `results.tsv` | `results/results.tsv` |
 
 ## Repository Layout
 
 ```
 TradingBot/
 ├── CLAUDE.md                  this file
-├── program.md                 agent constraints + required output format
-├── backtest.py                FIXED — evaluation harness, never edit after stable
-├── strategy.py                MUTABLE — only file the loop edits
-├── loop.py                    autoresearch orchestrator
-├── live_trade.py              paper / live execution via LumiBot
-├── data_fetch.py              CCXT + yfinance -> Parquet
-├── app.py                     dashboard server (FastAPI + SSE)
-├── index.html                 dashboard UI (single file, Tailwind+Alpine+Chart.js)
 ├── README.md                  user-facing docs
+├── program.md                 agent constraints + required output format
+├── strategy.py                MUTABLE — only file the loop edits
+├── backtest.py                FIXED — evaluation harness (single + basket modes)
+├── loop.py                    autoresearch orchestrator
+├── scan.py                    daily watchlist scanner → webhook alerts
+├── live_trade.py              optional Alpaca paper/live executor
+├── data_fetch.py              CCXT + yfinance → Parquet
+├── app.py                     FastAPI dashboard + SSE
+├── web/index.html             dashboard UI (single self-contained file)
+├── results/
+│   ├── results.tsv            experiment log (committed; survives CI runs)
+│   ├── run.log                latest backtest stdout (gitignored)
+│   └── scan.log               signal-scan history (gitignored)
 ├── data/                      cached OHLCV (gitignored)
-├── results.tsv                experiment log (gitignored)
-├── run.log                    latest backtest stdout (gitignored)
+├── .github/workflows/
+│   ├── loop.yml               scheduled autoresearch (Sunday 02:00 PST)
+│   └── scan.yml               scheduled scan (weekdays 05:30 PST)
 ├── archive/                   old Jesse-based code
 └── karpathy-auto-research/    reference, read-only
 ```
 
 ## Backtest Configuration (FIXED — changing breaks comparability)
 
-| Parameter | Value |
-|---|---|
-| Asset | BTC/USDT |
-| Source | KuCoin via CCXT (Binance returns 451 to US IPs) |
-| Timeframe | 4h |
-| Train window | 2019-01-01 → 2022-12-31 |
-| Validation window | 2023-01-01 → 2024-12-31 |
-| Nominal cash | $1,000,000 (large to avoid backtesting.py integer-share rounding; metrics are scale-invariant) |
-| Commission | 0.06% (KuCoin taker) |
-| Leverage | 1x |
-| Min trades | 20 (below → val_sharpe forced to 0) |
-| Baseline (EMA 20/50) | Sharpe 0.96 · MaxDD 28.7% · Trades 37 · Return 125% (validation) |
+| Parameter | Default | Notes |
+|---|---|---|
+| Asset | BTC/USDT 4h | Switchable via BACKTEST_DATA env or BASKET_SYMBOLS |
+| Source | KuCoin via CCXT | Binance returns 451 to US IPs |
+| Train window | 2019-01-01 → 2022-12-31 | Agent reasons; not the metric |
+| Validation window | 2023-01-01 → 2024-12-31 | What the loop optimizes |
+| Lockbox window | 2025-01-01 → present | Held back; manual promotion only |
+| Nominal cash | $1,000,000 | Avoids backtesting.py integer-share rounding; metrics scale-invariant |
+| Commission | 0.06% (KuCoin taker) | Set to 0 for stock baskets |
+| Leverage | 1x | |
+| Min trades | 20 (single) / 5-per-symbol (basket) | Below → val_sharpe forced to 0 |
+| Baseline (EMA 15/45 + ADX>25 + ATR trail + RSI<30 exit) | val_sharpe 1.39 · MaxDD 11.7% · Trades 29 · Return 99% | Migrated 2026-04-28 |
 
 ## Output Format the Loop Parses
 
@@ -89,6 +105,12 @@ TradingBot/
 ---
 val_sharpe:       1.234567
 sortino:          1.890123
+sharpe_ann_4h:    1.728618
+calmar:           1.910234
+psr:              0.876543
+dsr:              0.654321
+skew:             0.123
+kurtosis:         5.4
 max_drawdown:     12.34
 win_rate:         0.456
 total_trades:     87
@@ -98,69 +120,73 @@ total_return_pct: 45.67
 
 Crashes / insufficient trades → all zeros, status `crash`.
 
-## results.tsv Schema
+## results.tsv Schema (current; migrations are in `loop.py:LEGACY_SCHEMAS`)
 
-Tab-separated, gitignored, append-only:
+Tab-separated. Header row + one data row per experiment, in order:
 
 ```
-commit  val_sharpe  max_drawdown  win_rate  total_trades  status  description
-a1b2c3d 1.234567    12.30         0.480     87            keep    baseline EMA 20/50
-b2c3d4e 1.456789    10.10         0.512     94            keep    added RSI<30 filter
-c3d4e5f 0.987654    18.20         0.401     61            discard tried Bollinger exits
-d4e5f6g 0.000000    0.00          0.000     0             crash   syntax error in init
+commit  val_sharpe  sortino  sharpe_ann_4h  calmar  psr  dsr  skew  kurtosis  max_drawdown  win_rate  total_trades  status  description
 ```
 
-## Setup
+Schemas evolve append-only. Adding a column? Add it to `RESULTS_COLS` and
+extend `LEGACY_SCHEMAS` so old files migrate cleanly.
+
+## Three optimization metrics
+
+| Metric | Picks for | When to use |
+|---|---|---|
+| `val_sharpe` | Risk-adjusted return | Default. Most defensible. |
+| `calmar` | Returns per drawdown | When you want bigger numbers, fewer crashes |
+| `dsr` | Statistical significance | After N≥50 trials; corrects for selection bias |
+
+The active metric is the keep/discard scalar; all metrics are logged
+regardless. `OPTIMIZE_METRIC=...` env var.
+
+## Basket mode (anti-overfit for stocks)
+
+Single-symbol optimization overfits hard. Basket mode evaluates the
+strategy on a list of symbols and scores `mean(sharpe) - 0.5·std(sharpe)`,
+penalizing strategies that win on one symbol but lose on others.
 
 ```bash
-# 1. install deps (first time)
-.venv/Scripts/python.exe -m pip install backtesting lumibot ccxt yfinance anthropic pyarrow
-
-# 2. download data
-.venv/Scripts/python.exe data_fetch.py --asset crypto --symbol BTC/USDT --timeframe 4h --start 2019-01-01
-
-# 3. set keys in .env
-#    ANTHROPIC_API_KEY=...
-#    ALPACA_API_KEY=...           (only needed for live_trade.py)
-#    ALPACA_API_SECRET=...
-#    ALPACA_PAPER=True
-
-# 4. baseline backtest
-.venv/Scripts/python.exe backtest.py
-
-# 5. start the loop
-.venv/Scripts/python.exe loop.py --iters 50
-
-# 6. paper trade the current strategy.py
-.venv/Scripts/python.exe live_trade.py --symbol SPY --asset stock
+BASKET_SYMBOLS=TSLA,NVDA,AAPL,MSFT BASKET_TIMEFRAME=1d \
+  .venv/Scripts/python.exe loop.py --iters 20
 ```
+
+Symbols are looked up under `data/{stocks|crypto}/{SYMBOL}_{tf}.parquet`.
+Fetch them with `data_fetch.py` first.
+
+## Scheduled execution (GitHub Actions)
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `.github/workflows/loop.yml` | Sunday 02:00 PST + dispatch | Loop runs, commits keeps + results.tsv back to main |
+| `.github/workflows/scan.yml` | Weekdays 05:30 PST + dispatch | Scanner runs, posts to webhook |
+
+Required repo secrets / variables:
+
+| Name | Type | Used by | Purpose |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | Secret | loop.yml | Claude API |
+| `SCAN_WEBHOOK_URL` | Secret | scan.yml | Discord/Slack webhook |
+| `CLAUDE_MODEL` | Variable | loop.yml | Override model |
+| `SCAN_WATCHLIST` | Variable | scan.yml | Comma-sep symbols |
 
 ## Dashboard UI
 
 Two files: `app.py` (FastAPI server + SSE for live loop output) and
-`index.html` (the entire UI — Tailwind + Alpine + Chart.js + Prism, all
-loaded from CDNs at runtime). No build step, no npm.
+`web/index.html` (the entire UI — Tailwind + Alpine + Chart.js + Prism, all
+loaded from CDNs). No build step.
 
 ```bash
 .venv/Scripts/python.exe app.py
 ```
 
-Then open http://127.0.0.1:8000. Single-page layout:
-
-- **Header bar** — best Sharpe · loop status pill · launch/stop button
-- **KPI cards** — best sharpe, total experiments, keep rate, current status
-- **Equity curve + drawdown** — Chart.js, strategy vs Buy & Hold on validation window
-- **Sharpe progression** — best-so-far line across kept experiments
-- **Experiments table** — sortable, filterable, color-coded by status
-- **Strategy panel** — `strategy.py` syntax-highlighted (Prism) + git history sidebar
-- **Setup section** — env check, data file inventory
-- **Live console** — SSE stream of loop stdout, slides up from the bottom when the loop runs
+Then open http://127.0.0.1:8000.
 
 API endpoints (under `/api/*`): `summary`, `results`, `strategy`, `program`,
 `equity`, `git-log`, `setup`, `backtest`, `loop/start`, `loop/stop`,
-`loop/status`, `loop/stream`. Loop runs as a managed subprocess inside
-the FastAPI process — start it from the UI and watch live, or stop it at
-any time.
+`loop/status`, `loop/stream`.
 
 ## Hard Rules for the Agent
 
@@ -168,7 +194,7 @@ These are mirrored in `program.md` and enforced by `loop.py`:
 
 - **CAN edit**: `strategy.py` only
 - **CANNOT edit**: `backtest.py`, `loop.py`, `data_fetch.py`, `live_trade.py`,
-  the windows, jesse internals, lumibot internals
+  `scan.py`, the windows, the harness internals
 - **One change per experiment** (no bundled mutations)
 - **No look-ahead** (only bars `[0..current]`)
 - **Class signature fixed**: `class Strategy(backtesting.Strategy)` with
@@ -183,12 +209,18 @@ These are mirrored in `program.md` and enforced by `loop.py`:
 
 Use `/scout` before adopting any new framework or major architectural change.
 
-## Status (2026-04-28)
+## Status (2026-04-29)
 
 - [x] Stack chosen via `/research`
-- [x] `backtest.py`, `strategy.py`, `loop.py`, `live_trade.py`, `data_fetch.py`, `program.md` written
+- [x] All core scripts written: backtest, loop, scan, live_trade, app
 - [x] Old Jesse code archived to `archive/`
-- [ ] Dependencies installed (in progress)
-- [ ] Initial data download
-- [ ] Baseline backtest executed
-- [ ] First loop iteration verified
+- [x] Folder reorg: results/, web/, .github/workflows/
+- [x] Calmar / Sortino / PSR / DSR / skew / kurtosis logged per trial
+- [x] Lockbox window (2025+) reserved
+- [x] DSR multiple-testing gate plumbed (off by default until N≥50)
+- [x] Basket-mode optimization for stocks
+- [x] Daily signal scanner + Discord/Slack webhook
+- [x] Scheduled GitHub Actions for both loop and scanner
+- [ ] First scheduled CI run executed
+- [ ] First scan signal received
+- [ ] First lockbox-window evaluation

@@ -1,18 +1,30 @@
 """Autoresearch orchestrator — the karpathy-style loop.
 
 Each iteration:
-  1. Read strategy.py + last 10 rows of results.tsv + program.md
+  1. Read strategy.py + last 10 rows of results/results.tsv + program.md
   2. Ask Claude for a single mutation (returns description + new strategy.py)
   3. Write strategy.py, git commit
-  4. Run backtest.py, parse summary block
-  5. If val_sharpe improves AND constraints pass → keep
-     Else                                       → git reset --hard HEAD~1
-  6. Append a row to results.tsv
-  7. Repeat until --iters reached or 3 consecutive regressions
+  4. Compute DSR benchmark from prior trial variance, set DSR_BENCHMARK env
+  5. Run backtest.py (subprocess), parse summary block
+  6. Apply keep/discard rules:
+       - constraints fail (max_dd, min_trades) → discard
+       - DSR_GATE_THRESHOLD enabled and dsr < threshold → discard
+       - OPTIMIZE_METRIC > best_so_far → keep
+       - else → discard (regression)
+       discard / crash → git reset --hard HEAD~1
+  7. Append a row to results.tsv
+  8. Repeat until --iters reached or 3 consecutive regressions
 
 Requires:
     ANTHROPIC_API_KEY in env (or .env file)
     A clean git working tree on entry (so we can reset cleanly)
+
+Environment knobs (all optional):
+    OPTIMIZE_METRIC        val_sharpe (default) | calmar | dsr
+    DSR_GATE_THRESHOLD     reject if dsr below this; 0 disables (default)
+    BASKET_SYMBOLS         comma-sep list → backtest.py runs each, aggregates
+    CLAUDE_MODEL           override the default Haiku model
+    OPENAI_*  / similar    not used; this loop only calls Anthropic
 
 Usage:
     python loop.py --iters 50
@@ -21,8 +33,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -38,8 +52,10 @@ except Exception:
 ROOT = Path(__file__).parent
 STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
-RESULTS = ROOT / "results.tsv"
-RUN_LOG = ROOT / "run.log"
+RESULTS_DIR = ROOT / "results"
+RESULTS = RESULTS_DIR / "results.tsv"
+RUN_LOG = RESULTS_DIR / "run.log"
+RESULTS_DIR.mkdir(exist_ok=True)
 
 PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PYTHON).exists():
@@ -53,17 +69,33 @@ MAX_DRAWDOWN_LIMIT = 30.0
 MIN_TRADES = 20
 MAX_REGRESSIONS = 3
 
+# Annualization factor — must match backtest.py's ANN_FACTOR_4H so we can
+# convert logged sharpe_ann_4h values back to per-bar units for DSR variance.
+ANN_FACTOR_4H = math.sqrt(365 * 6)
+
 # OPTIMIZE_METRIC env var picks the keep/discard scalar.
-# Allowed: "val_sharpe" (default; backtesting.py reported Sharpe)
-#         "calmar"     (return / max_drawdown — return-aware)
-# Both are logged to results.tsv either way; this just chooses the gradient
-# the loop hill-climbs against.
-ALLOWED_METRICS = {"val_sharpe", "calmar"}
+# Allowed:
+#   val_sharpe (default; backtesting.py reported Sharpe)
+#   calmar     (total_return / max_drawdown — return-aware)
+#   dsr        (Deflated Sharpe Ratio — multiple-testing-corrected; not
+#               recommended as primary metric until N ≥ 50 non-crash trials,
+#               since DSR is unstable at small N)
+# All metrics are logged to results.tsv regardless; this just picks the gradient.
+ALLOWED_METRICS = {"val_sharpe", "calmar", "dsr"}
 OPTIMIZE_METRIC = os.environ.get("OPTIMIZE_METRIC", "val_sharpe")
 if OPTIMIZE_METRIC not in ALLOWED_METRICS:
     raise SystemExit(
         f"OPTIMIZE_METRIC must be one of {sorted(ALLOWED_METRICS)}, got {OPTIMIZE_METRIC!r}"
     )
+
+# DSR_GATE_THRESHOLD: if > 0, any trial with dsr below this is discarded
+# regardless of OPTIMIZE_METRIC improvement. Disabled (0) by default —
+# enable it (e.g. 0.5) once you have 50+ non-crash trials. Below that, DSR's
+# variance estimator is too noisy to gate honestly.
+try:
+    DSR_GATE_THRESHOLD = float(os.environ.get("DSR_GATE_THRESHOLD", "0") or 0.0)
+except ValueError:
+    DSR_GATE_THRESHOLD = 0.0
 
 
 # ──────────────────────────── git helpers ──────────────────────────────
@@ -95,23 +127,42 @@ def git_reset_last() -> None:
 
 # ──────────────────────────── results.tsv ──────────────────────────────
 
-# Schema columns in fixed order. Append-only — never reorder. Adding a new
-# column? Append it to the end and migrate existing files.
+# Schema columns in fixed order. Migrations below pad missing columns with
+# empty strings — schema growth is supported, but never reorder existing
+# columns or rename them.
 RESULTS_COLS = [
-    "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+    "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
     "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
     "status", "description",
 ]
 RESULTS_HEADER = "\t".join(RESULTS_COLS) + "\n"
-LEGACY_COLS = [
-    "commit", "val_sharpe", "max_drawdown", "win_rate", "total_trades",
-    "status", "description",
+
+# Historical schemas, oldest first.
+LEGACY_SCHEMAS = [
+    # v0 — original 7-column layout
+    [
+        "commit", "val_sharpe", "max_drawdown", "win_rate", "total_trades",
+        "status", "description",
+    ],
+    # v1 — added sortino/sharpe_ann_4h/calmar/psr/skew/kurtosis (no dsr)
+    [
+        "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+        "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+        "status", "description",
+    ],
 ]
 
 
+def _migrate_row(parts: list[str], old_cols: list[str]) -> list[str]:
+    """Map a single row from an old schema into the current schema. Missing
+    columns become empty strings."""
+    old_map = dict(zip(old_cols, parts))
+    return [old_map.get(c, "") for c in RESULTS_COLS]
+
+
 def _ensure_results() -> None:
-    """Create results.tsv with new schema if missing, or migrate legacy files
-    in place by padding old rows with empty strings for the new columns."""
+    """Create results.tsv with current schema, or migrate any known legacy
+    layout in place. Backs up the original file before rewriting."""
     if not RESULTS.exists():
         RESULTS.write_text(RESULTS_HEADER, encoding="utf-8")
         return
@@ -123,34 +174,27 @@ def _ensure_results() -> None:
 
     header_cols = lines[0].split("\t")
     if header_cols == RESULTS_COLS:
-        return  # already on new schema
+        return  # current schema, no migration needed
 
-    if header_cols == LEGACY_COLS:
-        # Legacy → new: pad with empty values for the inserted columns.
-        # Old order:  commit, val_sharpe, max_drawdown, win_rate, total_trades, status, description
-        # New order:  commit, val_sharpe, sortino, sharpe_ann_4h, calmar, psr, skew, kurtosis,
-        #             max_drawdown, win_rate, total_trades, status, description
-        backup = RESULTS.with_suffix(".tsv.legacy")
-        if not backup.exists():
-            backup.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            print(f"[loop] migrated {RESULTS.name} (legacy backup at {backup.name})")
-        new_lines = [RESULTS_HEADER.rstrip("\n")]
-        for line in lines[1:]:
-            parts = line.split("\t")
-            if len(parts) < 7:
-                continue
-            commit, val_sharpe, max_dd, win_rate, n_trades, status, desc = parts[:7]
-            # insert empty placeholders for sortino, sharpe_ann_4h, calmar, psr, skew, kurtosis
-            new_row = [commit, val_sharpe, "", "", "", "", "", "",
-                       max_dd, win_rate, n_trades, status, desc]
-            new_lines.append("\t".join(new_row))
-        RESULTS.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-        return
+    matched = next((cols for cols in LEGACY_SCHEMAS if header_cols == cols), None)
+    if matched is None:
+        raise RuntimeError(
+            f"results.tsv has unrecognized header: {header_cols}. "
+            f"Expected one of: current={RESULTS_COLS} or legacy={LEGACY_SCHEMAS}."
+        )
 
-    raise RuntimeError(
-        f"results.tsv has unrecognized header: {header_cols}. "
-        f"Expected legacy or new schema. Move/rename it manually."
-    )
+    backup = RESULTS.with_suffix(".tsv.legacy")
+    if not backup.exists():
+        backup.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"[loop] migrated {RESULTS.name} (legacy backup at {backup.name})")
+
+    new_lines = [RESULTS_HEADER.rstrip("\n")]
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) < len(matched):
+            parts = parts + [""] * (len(matched) - len(parts))
+        new_lines.append("\t".join(_migrate_row(parts, matched)))
+    RESULTS.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def append_result(sha: str, metrics: dict, status: str, description: str) -> None:
@@ -164,6 +208,7 @@ def append_result(sha: str, metrics: dict, status: str, description: str) -> Non
         f"{metrics.get('sharpe_ann_4h', 0.0):.6f}",
         f"{metrics.get('calmar', 0.0):.6f}",
         f"{metrics.get('psr', 0.0):.6f}",
+        f"{metrics.get('dsr', 0.0):.6f}",
         f"{metrics.get('skew', 0.0):.3f}",
         f"{metrics.get('kurtosis', 0.0):.3f}",
         f"{metrics.get('max_drawdown', 0.0):.2f}",
@@ -224,7 +269,7 @@ def last_n_rows(n: int = 10) -> list[dict]:
 
 SUMMARY_FIELDS = {
     "val_sharpe": float, "sortino": float, "sharpe_ann_4h": float,
-    "calmar": float, "psr": float, "skew": float, "kurtosis": float,
+    "calmar": float, "psr": float, "dsr": float, "skew": float, "kurtosis": float,
     "max_drawdown": float, "win_rate": float, "total_trades": int,
     "total_return_pct": float,
 }
@@ -255,7 +300,8 @@ def _parse_summary(out: str) -> dict:
 
 
 def run_backtest() -> dict:
-    """Run backtest.py in a subprocess, parse summary block, return metrics."""
+    """Run backtest.py in a subprocess, parse summary block, return metrics.
+    Inherits DSR_BENCHMARK and BASKET_* env vars set by the caller."""
     proc = subprocess.run(
         [PYTHON, "backtest.py"],
         cwd=ROOT,
@@ -266,6 +312,59 @@ def run_backtest() -> dict:
     out = proc.stdout
     RUN_LOG.write_text(out + "\n----- STDERR -----\n" + proc.stderr, encoding="utf-8")
     return _parse_summary(out)
+
+
+# ──────────────────────────── DSR benchmark ────────────────────────────
+
+def compute_dsr_benchmark() -> float:
+    """Compute the DSR benchmark in *per-bar* Sharpe units from prior trial
+    history. Bailey & López de Prado's DSR adjusts the observed in-sample
+    Sharpe for the fact that running N trials inflates the maximum by chance.
+
+    SR* = √V[SR̂_n] × E[max_n]   (per-bar)
+
+    where V[SR̂_n] is the variance of trial Sharpes (per-bar) and E[max_n] is
+    the expected maximum of N standard-normal draws — approximated here by
+    √(2·log(N)) which is the leading term of the Gumbel envelope.
+
+    Returns 0 if there isn't enough history to compute a meaningful benchmark
+    (which makes DSR collapse to PSR — safe default at small N).
+    """
+    if not RESULTS.exists():
+        return 0.0
+    lines = RESULTS.read_text(encoding="utf-8").splitlines()
+    if len(lines) < 2:
+        return 0.0
+    header = lines[0].split("\t")
+    try:
+        idx_sa = header.index("sharpe_ann_4h")
+        idx_status = header.index("status")
+    except ValueError:
+        return 0.0
+
+    sharpes_per_bar: list[float] = []
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) <= max(idx_sa, idx_status):
+            continue
+        if parts[idx_status] == "crash":
+            continue
+        try:
+            sa = float(parts[idx_sa])
+        except ValueError:
+            continue
+        if sa == 0.0:
+            continue  # missing value (legacy row) or genuine zero — exclude either way
+        sharpes_per_bar.append(sa / ANN_FACTOR_4H)
+
+    n = len(sharpes_per_bar)
+    if n < 2:
+        return 0.0
+    var_sharpe = statistics.pvariance(sharpes_per_bar)
+    if var_sharpe <= 0:
+        return 0.0
+    expected_max = math.sqrt(2.0 * math.log(n))
+    return math.sqrt(var_sharpe) * expected_max
 
 
 # ──────────────────────────── Claude call ──────────────────────────────
@@ -335,9 +434,17 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
     sha = git_commit_strategy(description)
     print(f"[loop] committed {sha}, running backtest…")
 
+    # Set DSR benchmark from prior-trial variance before invoking backtest.py.
+    # Backtest reads DSR_BENCHMARK and emits a deflated PSR ("dsr").
+    dsr_benchmark = compute_dsr_benchmark()
+    os.environ["DSR_BENCHMARK"] = f"{dsr_benchmark:.10f}"
+    if dsr_benchmark > 0:
+        print(f"[loop] DSR benchmark (per-bar SR*) = {dsr_benchmark:.6f}")
+
     metrics = run_backtest()
     sharpe = metrics["val_sharpe"]
     calmar = metrics["calmar"]
+    dsr = metrics.get("dsr", 0.0)
     max_dd = metrics["max_drawdown"]
     n_trades = metrics["total_trades"]
     win_rate = metrics["win_rate"]
@@ -345,7 +452,7 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
     score = float(metrics.get(OPTIMIZE_METRIC, 0.0))
 
     print(
-        f"[loop] result: sharpe={sharpe:.4f}  calmar={calmar:.4f}  "
+        f"[loop] result: sharpe={sharpe:.4f}  calmar={calmar:.4f}  dsr={dsr:.4f}  "
         f"max_dd={max_dd:.2f}%  trades={n_trades}  win_rate={win_rate:.3f}  "
         f"→ {OPTIMIZE_METRIC}={score:.4f}"
     )
@@ -356,6 +463,11 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
         status = "discard"
     elif n_trades < MIN_TRADES:
         status = "discard"
+    elif DSR_GATE_THRESHOLD > 0 and dsr < DSR_GATE_THRESHOLD:
+        # Multiple-testing gate: reject "lucky" candidates that pass raw Sharpe
+        # but fail the trial-count-adjusted significance check.
+        status = "discard"
+        print(f"[loop] DSR gate: {dsr:.4f} < {DSR_GATE_THRESHOLD:.4f} → reject")
     elif score > best_metric + KEEP_THRESHOLD:
         status = "keep"
     else:
@@ -394,7 +506,8 @@ def main() -> int:
 
     _ensure_results()
     best = best_metric_so_far(OPTIMIZE_METRIC)
-    print(f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}")
+    gate_msg = f"  DSR_GATE={DSR_GATE_THRESHOLD:.2f}" if DSR_GATE_THRESHOLD > 0 else ""
+    print(f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}{gate_msg}")
     consecutive_regressions = 0
 
     for i in range(1, args.iters + 1):

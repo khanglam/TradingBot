@@ -13,10 +13,19 @@ __pycache__/
 # Virtual environment
 .venv/
 
-# Autoresearch loop artifacts (per-machine, never committed)
+# Cached OHLCV data (large, refetchable, never committed)
 data/
-results.tsv
-results.tsv.legacy
-run.log
+
+# Per-run artifacts inside results/ — keep results.tsv (and .gitkeep) so the
+# experiment log persists in git and across CI runs; ignore everything else.
+results/*
+!results/results.tsv
+!results/.gitkeep
+
+# Legacy artifacts at the project root (anchored with leading / so they don't
+# match files inside subfolders — e.g. /results.tsv ≠ results/results.tsv).
+/results.tsv
+/results.tsv.legacy
+/run.log
 trades.log
 logs/
