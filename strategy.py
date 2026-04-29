@@ -1,6 +1,6 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
-Baseline: long-only EMA(20) / EMA(50) crossover, all-in / all-out.
+Baseline: long-only EMA(15) / EMA(45) crossover, all-in / all-out.
 
 Constraints (also enforced by program.md):
     - Class must be named `Strategy` and importable as `from strategy import Strategy`
@@ -20,8 +20,8 @@ def _ema(series: pd.Series, n: int) -> np.ndarray:
 
 
 class Strategy(_BTStrategy):
-    fast = 20
-    slow = 50
+    fast = 15
+    slow = 45
 
     def init(self) -> None:
         close = self.data.Close
