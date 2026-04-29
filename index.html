@@ -72,6 +72,11 @@
           </div>
         </div>
         <div class="ml-auto flex items-center gap-6">
+          <div class="text-xs text-ink-300 font-mono px-2 py-1 rounded bg-ink-800 border border-ink-700"
+               :title="'Model used by the autoresearch loop. Override with CLAUDE_MODEL env var.'">
+            <span class="text-ink-300">model</span>
+            <span class="text-ink-100 ml-1.5" x-text="summary.model || '...'"></span>
+          </div>
           <div class="text-sm text-ink-300">best&nbsp;<span class="font-mono font-semibold text-ink-100" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></span></div>
           <div class="flex items-center gap-2 text-sm">
             <span class="relative flex h-2 w-2">

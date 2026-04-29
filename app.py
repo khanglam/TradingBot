@@ -61,6 +61,18 @@ def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return df.where(pd.notnull(df), None).to_dict(orient="records")
 
 
+def _active_model() -> str:
+    """Read CLAUDE_MODEL env override; fall back to loop.DEFAULT_MODEL."""
+    if env := os.environ.get("CLAUDE_MODEL"):
+        return env
+    try:
+        sys.path.insert(0, str(ROOT))
+        import loop  # has side-effect reconfigure, but cheap
+        return getattr(loop, "DEFAULT_MODEL", "unknown")
+    except Exception:
+        return "unknown"
+
+
 # ─────────────────────── loop process state ──────────────────────────
 
 class LoopProc:
@@ -159,6 +171,7 @@ def summary() -> dict:
         "crashes": int(len(crashes)),
         "keep_rate": (len(keeps) / len(df)) if len(df) else 0.0,
         "latest": latest,
+        "model": _active_model(),
     }
 
 
