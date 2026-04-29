@@ -20,20 +20,6 @@ def _ema(series: pd.Series, n: int) -> np.ndarray:
     return pd.Series(series).ewm(span=n, adjust=False).mean().to_numpy()
 
 
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
-    """Compute Average True Range."""
-    high = pd.Series(high)
-    low = pd.Series(low)
-    close = pd.Series(close)
-    
-    tr1 = high - low
-    tr2 = np.abs(high - close.shift(1))
-    tr3 = np.abs(low - close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(n).mean()
-    return atr.fillna(0).to_numpy()
-
-
 def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
     """Compute ADX (Average Directional Index) trend strength indicator."""
     high = pd.Series(high)
@@ -84,8 +70,6 @@ class Strategy(_BTStrategy):
     slow = 45
     adx_period = 14
     adx_threshold = 25
-    atr_period = 14
-    atr_mult = 2.0
     rsi_period = 14
     rsi_oversold = 30
 
@@ -97,11 +81,7 @@ class Strategy(_BTStrategy):
         self.ema_fast = self.I(_ema, close, self.fast)
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
-        self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.rsi = self.I(_rsi, close, self.rsi_period)
-        
-        self.entry_price = None
-        self.trailing_stop = None
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -111,16 +91,6 @@ class Strategy(_BTStrategy):
 
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold:
             self.buy(size=0.95)
-            self.entry_price = self.data.Close[-1]
-            self.trailing_stop = self.entry_price - self.atr_mult * self.atr[-1]
         elif self.position:
-            # Update trailing stop: never lower, only higher
-            new_stop = self.data.Close[-1] - self.atr_mult * self.atr[-1]
-            if new_stop > self.trailing_stop:
-                self.trailing_stop = new_stop
-            
-            # Exit on RSI oversold OR trailing stop hit
-            if self.rsi[-1] < self.rsi_oversold or self.data.Close[-1] <= self.trailing_stop:
+            if self.rsi[-1] < self.rsi_oversold:
                 self.position.close()
-                self.entry_price = None
-                self.trailing_stop = None
