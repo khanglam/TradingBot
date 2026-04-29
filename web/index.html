@@ -382,7 +382,6 @@
           // inject styles. Otherwise parent height is 0 and Chart.js renders blank.
           requestAnimationFrame(() => {
             this.reloadEquity();
-            this.renderProgression();
             this.highlightStrategy();
           });
           this.connectSSE();
@@ -506,7 +505,7 @@
               ],
             },
             options: {
-              responsive: true, maintainAspectRatio: false,
+              responsive: true, maintainAspectRatio: false, animation: false,
               interaction: { mode: 'index', intersect: false },
               scales: {
                 x: { ticks: { maxTicksLimit: 8, callback: (v, i) => labels[i]?.slice(0, 10) || '' }, grid: { display: false } },
@@ -528,7 +527,7 @@
               datasets: [{ label: 'Drawdown %', data: this.equity.drawdown || [], borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)', borderWidth: 1, pointRadius: 0, fill: true, tension: 0.05 }],
             },
             options: {
-              responsive: true, maintainAspectRatio: false,
+              responsive: true, maintainAspectRatio: false, animation: false,
               plugins: { legend: { display: false } },
               scales: {
                 x: { display: false },
@@ -555,7 +554,7 @@
               ],
             },
             options: {
-              responsive: true, maintainAspectRatio: false,
+              responsive: true, maintainAspectRatio: false, animation: false,
               interaction: { mode: 'index', intersect: false },
               scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => v.toFixed(2) } } },
               plugins: { legend: { display: true, position: 'bottom' } },
