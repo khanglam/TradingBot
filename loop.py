@@ -28,6 +28,13 @@ import sys
 import time
 from pathlib import Path
 
+# Windows console defaults to cp1252; force UTF-8 so unicode prints never crash.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = Path(__file__).parent
 STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"

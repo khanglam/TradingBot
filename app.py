@@ -80,10 +80,14 @@ class LoopProc:
             self.buffer.clear()
             self.buffer.append(f"[ui] starting loop.py --iters {iters}")
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
             self.proc = subprocess.Popen(
                 [str(PYTHON), "loop.py", "--iters", str(int(iters))],
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, creationflags=flags,
+                encoding="utf-8", errors="replace", env=env,
             )
             self.reader = threading.Thread(target=self._drain, daemon=True)
             self.reader.start()
@@ -338,7 +342,10 @@ def loop_status() -> dict:
 @app.get("/api/loop/stream")
 async def loop_stream():
     async def event_gen():
-        last = 0
+        # Only stream lines emitted AFTER the client connects.
+        # Avoids replaying buffered history on every reconnect (which
+        # otherwise produces duplicate console output).
+        last = len(loop_proc.buffer)
         while True:
             buf = list(loop_proc.buffer)
             if len(buf) > last:

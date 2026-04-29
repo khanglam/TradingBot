@@ -13,10 +13,17 @@ indexed by a timezone-naive UTC DatetimeIndex (backtesting.py expects this).
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import pandas as pd
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 DATA_DIR = Path(__file__).parent / "data"
 

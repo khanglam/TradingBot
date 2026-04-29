@@ -30,6 +30,12 @@ from pathlib import Path
 
 import pandas as pd
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # ───────────────────────── Fixed configuration ──────────────────────────
 # Changing any of these makes past results incomparable. Treat as constants.
 
