@@ -1,6 +1,7 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
-Baseline: long-only EMA(15) / EMA(45) crossover, all-in / all-out.
+Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
+Exit: ATR-based trailing stop to reduce premature exits and whipsaws.
 
 Constraints (also enforced by program.md):
     - Class must be named `Strategy` and importable as `from strategy import Strategy`
@@ -17,6 +18,20 @@ from backtesting import Strategy as _BTStrategy
 
 def _ema(series: pd.Series, n: int) -> np.ndarray:
     return pd.Series(series).ewm(span=n, adjust=False).mean().to_numpy()
+
+
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
+    """Compute Average True Range."""
+    high = pd.Series(high)
+    low = pd.Series(low)
+    close = pd.Series(close)
+    
+    tr1 = high - low
+    tr2 = np.abs(high - close.shift(1))
+    tr3 = np.abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(n).mean()
+    return atr.fillna(0).to_numpy()
 
 
 def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
@@ -54,6 +69,8 @@ class Strategy(_BTStrategy):
     slow = 45
     adx_period = 14
     adx_threshold = 25
+    atr_period = 14
+    atr_mult = 2.0
 
     def init(self) -> None:
         close = self.data.Close
@@ -63,6 +80,10 @@ class Strategy(_BTStrategy):
         self.ema_fast = self.I(_ema, close, self.fast)
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
+        self.atr = self.I(_atr, high, low, close, self.atr_period)
+        
+        self.entry_price = None
+        self.trailing_stop = None
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -73,5 +94,16 @@ class Strategy(_BTStrategy):
 
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold:
             self.buy(size=0.95)
-        elif crossed_dn and self.position:
-            self.position.close()
+            self.entry_price = self.data.Close[-1]
+            self.trailing_stop = self.entry_price - self.atr_mult * self.atr[-1]
+        elif self.position:
+            # Update trailing stop: never lower, only higher
+            new_stop = self.data.Close[-1] - self.atr_mult * self.atr[-1]
+            if new_stop > self.trailing_stop:
+                self.trailing_stop = new_stop
+            
+            # Exit on EMA crossdown OR trailing stop hit
+            if crossed_dn or self.data.Close[-1] <= self.trailing_stop:
+                self.position.close()
+                self.entry_price = None
+                self.trailing_stop = None
