@@ -63,6 +63,29 @@ caught there.
   arbitraged for decades. Combinations and regime-aware variants are
   more likely to survive.
 
+## Diagnose Before You Mutate
+
+Before proposing a change, scan the last 10 rows of `results.tsv` and
+classify the situation. The right kind of mutation depends on what
+recently failed.
+
+| Pattern in recent rows | What it means | What to try next |
+|---|---|---|
+| ≥2 `crash` rows with `total_trades = 0` | Entry conditions are over-filtered — the intersection of all `if` checks in `next` rejects every bar | **Loosen, remove, or replace** an existing filter. Do NOT add another entry condition. |
+| ≥2 `discard` rows clustered just under best | You're orbiting the current basin with cosmetic tweaks | Make a **structurally different** change (different exit family, regime gate, sizing rule), not another parameter nudge |
+| Most recent `keep` followed by crashes | The last kept change pushed the strategy near a 0-trade cliff; further filters tip it over | Relax one of the conditions added in the last keep, or change the exit instead of the entry |
+| Mixed crashes from unrelated mutations | Genuine exploration; broad-search mode | Free choice from the Mutation Menu |
+
+**The "stacked entry filter" trap.** Current baseline already requires
+EMA crossup AND ADX>25. Anything you AND onto entries will further shrink
+the candidate set. If recent rows show 0-trade crashes, your job is to
+*subtract* — change the exit, swap an existing filter for a different
+one, or relax a threshold — not pile on another condition.
+
+State your diagnosis explicitly in the Description: e.g. "Recent 3 rows
+crashed with 0 trades; loosening ADX threshold from 25→20 to widen the
+entry set."
+
 ## Mutation Menu (suggestions, not exhaustive)
 
 **Entry signals**
@@ -96,8 +119,12 @@ caught there.
 **Don't bother**
 - Adding a short side (a bad short side wipes out good longs; defer until
   you have a strong long-side baseline)
-- Naive parameter sweeps without structural reason
+- Naive parameter sweeps without structural reason — **but** structural
+  sweeps after a 0-trade crash (e.g. relaxing ADX 25→20 because the
+  filter set is empty) are valid and encouraged
 - Indicators that are linear combinations of ones already present
+- Stacking yet another `if` onto entries when recent rows show 0-trade
+  crashes — see the Diagnose Before You Mutate table above
 
 ## What Counts as a Crash / Discard
 
@@ -108,7 +135,7 @@ caught there.
 | `max_drawdown ≥ 30%` or `total_trades < 20` | **discard** |
 | `dsr < DSR_GATE_THRESHOLD` (when gate enabled) | **discard** (multiple-testing reject) |
 | Import error / runtime crash / 0 trades | **crash** (discard) |
-| 3 consecutive regressions | **freeze** (loop pauses; human review) |
+| `MAX_REGRESSIONS>0` and that many consecutive non-keeps | **freeze** (off by default; loop runs until `--iters` or interrupt) |
 
 ## Output Format You Must Produce
 

@@ -13,7 +13,7 @@ Each iteration:
        - else → discard (regression)
        discard / crash → git reset --hard HEAD~1
   7. Append a row to results.tsv
-  8. Repeat until --iters reached or 3 consecutive regressions
+  8. Repeat until --iters reached (or human interrupt; karpathy-style)
 
 Requires:
     ANTHROPIC_API_KEY in env (or .env file)
@@ -69,7 +69,10 @@ MAX_OUTPUT_TOKENS = 8000
 KEEP_THRESHOLD = 0.0  # require strictly > best so far
 MAX_DRAWDOWN_LIMIT = 30.0
 MIN_TRADES = 20
-MAX_REGRESSIONS = 3
+# Karpathy autoresearch runs until --iters or human interrupt — no strike-out.
+# Failure is the steady state at ~25% keep rate. Set MAX_REGRESSIONS>0 in env
+# to re-enable a brake for unattended runs.
+MAX_REGRESSIONS = int(os.environ.get("MAX_REGRESSIONS", 0))
 
 # Annualization factor — must match backtest.py's ANN_FACTOR_4H so we can
 # convert logged sharpe_ann_4h values back to per-bar units for DSR variance.
@@ -522,7 +525,7 @@ def main() -> int:
             time.sleep(10)
         else:
             consecutive_regressions += 1
-            if consecutive_regressions >= MAX_REGRESSIONS:
+            if MAX_REGRESSIONS > 0 and consecutive_regressions >= MAX_REGRESSIONS:
                 print(f"\n[loop] {MAX_REGRESSIONS} consecutive regressions — freezing for review.")
                 return 1
     return 0

@@ -44,7 +44,7 @@ LOOP FOREVER:
        - 0 trades or import error                           → crash (also discard)
        discard / crash → git reset --hard HEAD~1
   7. Append row to results.tsv
-  8. Stop after --iters or 3 consecutive regressions
+  8. Stop after --iters (or human interrupt). Strike-out is opt-in: set `MAX_REGRESSIONS=N` env to freeze after N consecutive non-keeps; off by default.
 ```
 
 | autoresearch | this project |
