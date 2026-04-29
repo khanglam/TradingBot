@@ -31,7 +31,11 @@ from sse_starlette.sse import EventSourceResponse
 
 ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "web" / "index.html"
-RESULTS = ROOT / "results" / "results.tsv"
+def _results_path() -> Path:
+    """Per-campaign results.tsv path, recomputed each call so the dashboard
+    follows env changes without restart."""
+    import backtest as bt
+    return bt.results_path()
 STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
 DATA_DIR = ROOT / "data"
@@ -53,6 +57,7 @@ _NEW_SCHEMA_COLS = [
 
 
 def _load_results() -> pd.DataFrame:
+    RESULTS = _results_path()
     if not RESULTS.exists():
         return pd.DataFrame(columns=_NEW_SCHEMA_COLS)
     df = pd.read_csv(RESULTS, sep="\t")
@@ -195,6 +200,8 @@ def summary() -> dict:
             "status": last["status"],
             "description": last["description"],
         }
+    import backtest as bt_module
+    symbols_spec = os.environ.get("SYMBOLS") or bt_module.DEFAULT_SYMBOLS
     return {
         "best_sharpe": best,
         "total": int(len(df)),
@@ -204,6 +211,8 @@ def summary() -> dict:
         "keep_rate": (len(keeps) / len(df)) if len(df) else 0.0,
         "latest": latest,
         "model": _active_model(),
+        "symbols": symbols_spec,
+        "val_window": f"{bt_module.VAL_START} → {bt_module.VAL_END}",
     }
 
 

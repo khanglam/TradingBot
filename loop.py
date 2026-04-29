@@ -55,9 +55,14 @@ ROOT = Path(__file__).parent
 STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
 RESULTS_DIR = ROOT / "results"
-RESULTS = RESULTS_DIR / "results.tsv"
 RUN_LOG = RESULTS_DIR / "run.log"
 RESULTS_DIR.mkdir(exist_ok=True)
+
+# RESULTS path is per-campaign — derived from active SYMBOLS × val-window so
+# each (asset, window) combo gets its own history. Switching SYMBOLS env var
+# does not clobber prior research; both files coexist under results/.
+import backtest as _bt_module
+RESULTS = _bt_module.results_path()
 
 PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PYTHON).exists():
@@ -66,9 +71,9 @@ if not Path(PYTHON).exists():
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 8000
 
-KEEP_THRESHOLD = 0.0  # require strictly > best so far
-MAX_DRAWDOWN_LIMIT = 30.0
-MIN_TRADES = 20
+KEEP_THRESHOLD = float(os.environ.get("KEEP_THRESHOLD", "0.0"))  # strictly > best
+MAX_DRAWDOWN_LIMIT = float(os.environ.get("MAX_DRAWDOWN_LIMIT", "30.0"))
+MIN_TRADES = int(os.environ.get("MIN_TRADES", "20"))
 # Karpathy autoresearch runs until --iters or human interrupt — no strike-out.
 # Failure is the steady state at ~25% keep rate. Set MAX_REGRESSIONS>0 in env
 # to re-enable a brake for unattended runs.

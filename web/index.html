@@ -68,7 +68,7 @@
           <div class="w-8 h-8 rounded-md bg-gradient-to-br from-emerald-500 to-blue-500 flex items-center justify-center font-mono font-bold text-ink-950">A</div>
           <div>
             <div class="font-semibold tracking-tight">TradingBot</div>
-            <div class="text-xs text-ink-300 font-mono">autoresearch · BTC/USDT 4h</div>
+            <div class="text-xs text-ink-300 font-mono" x-text="'autoresearch · ' + (summary.symbols || '...')"></div>
           </div>
         </div>
         <div class="ml-auto flex items-center gap-6">
@@ -137,7 +137,7 @@
           <div class="flex items-center justify-between mb-4">
             <div>
               <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Equity Curve</div>
-              <div class="text-sm text-ink-200">Strategy vs Buy &amp; Hold · 2023–2024</div>
+              <div class="text-sm text-ink-200" x-text="'Strategy vs Buy &amp; Hold · ' + (summary.val_window || '')"></div>
             </div>
             <button @click="reloadEquity()" class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
           </div>

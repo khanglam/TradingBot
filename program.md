@@ -8,7 +8,7 @@ and either keeps or reverts based on the active optimization metric.
 ## Goal
 
 Maximize the active **`OPTIMIZE_METRIC`** on the fixed validation window
-(2023-01-01 → 2024-12-31, BTC/USDT 4h) subject to:
+(2020-01-01 → 2024-12-31, basket of TSLA/NVDA/PYPL daily) subject to:
 
 - `max_drawdown` < 30%
 - `total_trades` ≥ 20

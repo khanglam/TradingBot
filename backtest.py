@@ -79,28 +79,75 @@ except Exception:
 
 ROOT = Path(__file__).parent
 
-# ───────────────────────── Fixed configuration ──────────────────────────
-# Changing any of these makes past results incomparable. Treat as constants.
+# ───────────────────────── Configuration ──────────────────────────
+# Defaults below; ALL overridable via env vars so the same harness can run
+# multiple campaigns side-by-side. Each (symbols × val-window) combination
+# writes to its own results file so histories never collide — see
+# results_path() further down.
+#
+# Env vars read at module load:
+#   SYMBOLS              comma-sep parquet stems (e.g. "stocks/TSLA_1d,stocks/NVDA_1d")
+#   STARTING_CASH        int (default 1_000_000)
+#   COMMISSION           float, e.g. 0.0006 for crypto, 0.0 for equities
+#   TRAIN_START/END      ISO dates
+#   VAL_START/END        ISO dates  (the loop optimizes against this window)
+#   LOCKBOX_START        ISO date — held-out; loop never touches
+#   MIN_TRADES           single-symbol min trade count (below → val_sharpe forced to 0)
+#   MIN_BASKET_TRADES    per-symbol min in basket mode
+#   BASKET_PENALTY       stdev penalty in basket scoring (read at use site)
+#   DSR_BENCHMARK        per-bar SR benchmark for DSR (loop sets per-iter)
+#   OPTIMIZE_METRIC      val_sharpe | calmar | dsr (read by loop.py)
 
-DEFAULT_SYMBOLS = "crypto/BTC_USDT_4h"
-DEFAULT_DATA = f"data/{DEFAULT_SYMBOLS}.parquet"  # legacy alias for app.py
-# backtesting.py floors share counts to integers, so we use a large nominal
-# cash so fractional-equity sizing produces >= 1 BTC unit. Sharpe and
-# percentage returns are scale-invariant — this changes nothing about
-# strategy comparison, just lets the broker actually fill orders.
-STARTING_CASH = 1_000_000
-COMMISSION = 0.0006  # 6 bps, KuCoin taker default for crypto
+DEFAULT_SYMBOLS = os.environ.get("SYMBOLS") or "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d"
+DEFAULT_DATA = f"data/{DEFAULT_SYMBOLS.split(',')[0]}.parquet"  # legacy alias for app.py
 
-TRAIN_START = "2019-01-01"
-TRAIN_END = "2022-12-31"
-VAL_START = "2023-01-01"
-VAL_END = "2024-12-31"
-LOCKBOX_START = "2025-01-01"  # held-out; loop never touches this
+STARTING_CASH = int(os.environ.get("STARTING_CASH", "1000000"))
+COMMISSION = float(os.environ.get("COMMISSION", "0.0"))
 
-MIN_TRADES = 20  # below this, val_sharpe forced to 0 (single-symbol mode only;
-                 # basket mode aggregates total_trades and uses MIN_BASKET_TRADES)
-MIN_BASKET_TRADES = 5  # per-symbol minimum in basket mode (looser since each
-                       # symbol contributes ~1/N of the total signal)
+TRAIN_START = os.environ.get("TRAIN_START", "2018-01-01")
+TRAIN_END = os.environ.get("TRAIN_END", "2019-12-31")
+VAL_START = os.environ.get("VAL_START", "2020-01-01")
+VAL_END = os.environ.get("VAL_END", "2024-12-31")
+LOCKBOX_START = os.environ.get("LOCKBOX_START", "2025-01-01")
+
+MIN_TRADES = int(os.environ.get("MIN_TRADES", "20"))
+MIN_BASKET_TRADES = int(os.environ.get("MIN_BASKET_TRADES", "5"))
+
+
+def _slug_for_symbols(spec: str) -> str:
+    """Filesystem-safe slug from a SYMBOLS spec.
+    Compresses common asset/timeframe when uniform across the basket.
+
+    Examples:
+      "crypto/BTC_USDT_4h"                          → "crypto-BTC_USDT_4h"
+      "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d" → "stocks-NVDA-PYPL-TSLA_1d"
+      "crypto/BTC_USDT_4h,stocks/TSLA_1d"            → "crypto_BTC_USDT_4h+stocks_TSLA_1d"
+    """
+    parts = sorted({p.strip() for p in spec.split(",") if p.strip()})
+    if not parts:
+        return "empty"
+    try:
+        if all("/" in p for p in parts):
+            assets = {p.split("/", 1)[0] for p in parts}
+            stems = [p.split("/", 1)[1] for p in parts]
+            if len(assets) == 1 and all("_" in s for s in stems):
+                tfs = {s.rsplit("_", 1)[1] for s in stems}
+                if len(tfs) == 1:
+                    asset = assets.pop()
+                    tf = tfs.pop()
+                    names = [s.rsplit("_", 1)[0] for s in stems]
+                    return f"{asset}-{'-'.join(names)}_{tf}"
+    except Exception:
+        pass
+    return "+".join(p.replace("/", "_") for p in parts)
+
+
+def results_path() -> Path:
+    """Per-campaign results.tsv path: <symbols-slug>_<val-window>.tsv.
+    Distinct (symbols × val-window) combos write to distinct files so histories
+    are preserved across asset/window changes."""
+    window = f"{VAL_START[:4]}-{VAL_END[:4]}"
+    return ROOT / "results" / f"{_slug_for_symbols(DEFAULT_SYMBOLS)}_{window}.tsv"
 
 # Annualization factor for 4h bars: 6 bars/day * 365 days = 2190.
 # Used as the legacy default; per-run factor is inferred from data frequency.

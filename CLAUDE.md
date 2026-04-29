@@ -82,20 +82,43 @@ TradingBot/
 └── karpathy-auto-research/    reference, read-only
 ```
 
-## Backtest Configuration (FIXED — changing breaks comparability)
+## Backtest Configuration
 
-| Parameter | Default | Notes |
+All settings are env-driven; defaults below. Each `(SYMBOLS × VAL window)` pair
+writes to its own `results/<slug>_<years>.tsv` file so changing asset or window
+NEVER clobbers prior research. Switching back resumes the right history.
+
+| Env var | Default | Notes |
 |---|---|---|
-| Asset | BTC/USDT 4h | Switchable via SYMBOLS env (single or basket) |
-| Source | KuCoin via CCXT | Binance returns 451 to US IPs |
-| Train window | 2019-01-01 → 2022-12-31 | Agent reasons; not the metric |
-| Validation window | 2023-01-01 → 2024-12-31 | What the loop optimizes |
-| Lockbox window | 2025-01-01 → present | Held back; manual promotion only |
-| Nominal cash | $1,000,000 | Avoids backtesting.py integer-share rounding; metrics scale-invariant |
-| Commission | 0.06% (KuCoin taker) | Set to 0 for stock baskets |
-| Leverage | 1x | |
-| Min trades | 20 (single) / 5-per-symbol (basket) | Below → val_sharpe forced to 0 |
-| Baseline (EMA 15/45 + ADX>25 + ATR trail + RSI<30 exit) | val_sharpe 1.39 · MaxDD 11.7% · Trades 29 · Return 99% | Migrated 2026-04-28 |
+| `SYMBOLS` | `stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d` | Comma-sep parquet stems under `data/`. N=1 → single-symbol mode; N≥2 → basket mode. |
+| `OPTIMIZE_METRIC` | `val_sharpe` | One of `val_sharpe` / `calmar` / `dsr`. The keep/discard scalar. All metrics logged regardless. |
+| `TRAIN_START`/`TRAIN_END` | `2018-01-01` / `2019-12-31` | Agent reasons about; not the metric. |
+| `VAL_START`/`VAL_END` | `2020-01-01` / `2024-12-31` | What the loop optimizes. 5y default covers COVID, mania, 2022 bear, 2023 recovery, 2024 bull. |
+| `LOCKBOX_START` | `2025-01-01` | Held back; loop never touches. Promote manually. |
+| `STARTING_CASH` | `1000000` | Nominal — avoids integer-share rounding. Sharpe & % returns are scale-invariant. |
+| `COMMISSION` | `0.0` | 0 for equities; `0.0006` for KuCoin crypto. |
+| `MIN_TRADES` | `20` | Single-symbol min; below → val_sharpe forced to 0. |
+| `MIN_BASKET_TRADES` | `5` | Per-symbol min in basket mode. |
+| `BASKET_PENALTY` | `0.5` | basket score = `mean(sharpe) - PENALTY * std(sharpe)`. |
+| `MAX_DRAWDOWN_LIMIT` | `30.0` | Discard threshold (percent). |
+| `KEEP_THRESHOLD` | `0.0` | Margin needed above best-so-far to keep. |
+| `MAX_REGRESSIONS` | `0` (disabled) | Strike-out brake; karpathy mode by default. |
+| `DSR_GATE_THRESHOLD` | `0` (disabled) | Multiple-testing rejection threshold. Enable when N≥50 trials. |
+| `CLAUDE_MODEL` | `claude-haiku-4-5` | Agent model. |
+
+Stock data via yfinance (free, daily back to 1990); crypto via ccxt/KuCoin (Binance returns 451 to US IPs).
+
+| Run | Active results file | Baseline (current strategy.py) |
+|---|---|---|
+| stocks basket (current) | `results/stocks-NVDA-PYPL-TSLA_1d_2020-2024.tsv` | val_sharpe 0.52 · MaxDD 58% · 24 trades · 212% return |
+| BTC archive (resume with env) | `results/crypto-BTC_USDT_4h_2023-2024.tsv` | val_sharpe 1.5251 best (achieved iter 8 on commit `6cf72b9`) |
+
+To resume the BTC research:
+```bash
+SYMBOLS=crypto/BTC_USDT_4h VAL_START=2023-01-01 VAL_END=2024-12-31 \
+  COMMISSION=0.0006 .venv/Scripts/python.exe loop.py --iters 20
+```
+The loop auto-routes to the correct history file.
 
 ## Output Format the Loop Parses
 
