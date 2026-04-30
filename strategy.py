@@ -1,7 +1,7 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: Fixed 2% trailing stop to lock in gains and enforce strict drawdown control.
+Exit: Fixed 3% trailing stop to balance locking in gains with trend following.
 
 Constraints (also enforced by program.md):
     - Class must be named `Strategy` and importable as `from strategy import Strategy`
@@ -55,7 +55,7 @@ class Strategy(_BTStrategy):
     slow = 45
     adx_period = 14
     adx_threshold = 25
-    trailing_stop_pct = 0.02  # 2% trailing stop
+    trailing_stop_pct = 0.03  # 3% trailing stop
 
     def init(self) -> None:
         close = self.data.Close
@@ -80,7 +80,7 @@ class Strategy(_BTStrategy):
             # Update highest price since entry
             self.highest_price = max(self.highest_price, self.data.Close[-1])
             
-            # Exit if price drops 2% below highest price since entry
+            # Exit if price drops 3% below highest price since entry
             trailing_stop_level = self.highest_price * (1 - self.trailing_stop_pct)
             if self.data.Close[-1] <= trailing_stop_level:
                 self.position.close()
