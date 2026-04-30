@@ -23,7 +23,7 @@ Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 | Stock data | `yfinance` | Free, daily back to 1990 |
 | Storage | Parquet (pyarrow) | 40× faster reads than CSV for backtest loops |
 | LLM agent | Claude (Haiku 4.5 default; configurable) via `anthropic` SDK | Drives mutation prompts |
-| Scheduler | GitHub Actions cron | Loop weekly, scanner weekday mornings |
+| Scheduler | GitHub Actions cron | Loop daily, scanner weekday mornings |
 
 Jesse was evaluated and archived to `archive/` — too heavy for the tight loop.
 
@@ -76,7 +76,7 @@ TradingBot/
 │   └── scan.log               signal-scan history (gitignored)
 ├── data/                      cached OHLCV (gitignored)
 ├── .github/workflows/
-│   ├── loop.yml               scheduled autoresearch (Sunday 02:00 PST)
+│   ├── loop.yml               scheduled autoresearch (daily 02:00 PST)
 │   └── scan.yml               scheduled scan (weekdays 05:30 PST)
 ├── archive/                   old Jesse-based code
 └── karpathy-auto-research/    reference, read-only
@@ -188,7 +188,7 @@ Mode is auto-selected by count — no separate basket flag. Empty/unset →
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `.github/workflows/loop.yml` | Sunday 02:00 PST + dispatch | Loop runs, commits keeps + results.tsv back to main |
+| `.github/workflows/loop.yml` | Daily 02:00 PST + dispatch | Loop runs, commits keeps + results.tsv back to main |
 | `.github/workflows/scan.yml` | Weekdays 05:30 PST + dispatch | Scanner runs, posts to webhook |
 
 Required repo secrets / variables:

@@ -27,7 +27,7 @@ TradingBot/
 ├── data/                   ← Cached parquet OHLCV (gitignored)
 ├── archive/                ← Old code retained for reference
 └── .github/workflows/
-    ├── loop.yml            ← Scheduled autoresearch run (weekly Sunday 02:00 PST)
+    ├── loop.yml            ← Scheduled autoresearch run (daily 02:00 PST)
     └── scan.yml            ← Scheduled signal scan (weekdays 05:30 PST)
 ```
 
@@ -150,7 +150,7 @@ Two workflows ship in `.github/workflows/`:
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `loop.yml` | Sunday 02:00 PST | Runs the autoresearch loop, commits keeps + results.tsv back to main |
+| `loop.yml` | Daily 02:00 PST | Runs the autoresearch loop, commits keeps + results.tsv back to main |
 | `scan.yml` | Weekdays 05:30 PST | Runs the signal scanner, posts to webhook |
 
 Both have `workflow_dispatch` triggers, so you can also fire them

@@ -4,16 +4,16 @@ name: Autoresearch loop
 # results.tsv back to main. Manual trigger via workflow_dispatch is also
 # supported for ad-hoc runs.
 #
-# Schedule: weekly on Sunday at 10:00 UTC = 02:00 PST (Saturday night for
-# the user in California). Off-hours so it doesn't compete with the daily
-# signal scan workflow. Adjust the cron string below to change cadence.
+# Schedule: daily at 10:00 UTC = 02:00 PST. Off-hours so it doesn't compete
+# with the morning signal scan workflow. Adjust the cron string below to
+# change cadence — every 6h is `0 */6 * * *`, every 4h is `0 */4 * * *`.
 #
 # Required repo secrets:
 #   ANTHROPIC_API_KEY  — used by loop.py to call Claude
 
 on:
   schedule:
-    - cron: '0 10 * * 0'  # Sunday 10:00 UTC
+    - cron: '0 10 * * *'  # daily 10:00 UTC
   workflow_dispatch:
     inputs:
       iters:
@@ -31,7 +31,7 @@ on:
           - calmar
           - dsr
       symbols:
-        description: 'Comma-sep parquet stems under data/ (e.g. crypto/BTC_USDT_4h or stocks/TSLA_1d,stocks/NVDA_1d). Empty = default crypto/BTC_USDT_4h.'
+        description: 'Comma-sep parquet stems under data/ (e.g. crypto/BTC_USDT_4h or stocks/TSLA_1d,stocks/NVDA_1d). Empty = default stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d.'
         required: false
         default: ''
         type: string
@@ -87,7 +87,7 @@ jobs:
 
       - name: Fetch OHLCV data for each entry in SYMBOLS
         env:
-          EFFECTIVE_SYMBOLS: ${{ env.SYMBOLS != '' && env.SYMBOLS || 'crypto/BTC_USDT_4h' }}
+          EFFECTIVE_SYMBOLS: ${{ env.SYMBOLS != '' && env.SYMBOLS || 'stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d' }}
         run: |
           # Each entry is "{asset}/{NAME}_{tf}" — e.g. crypto/BTC_USDT_4h, stocks/TSLA_1d.
           # Resolve to data_fetch.py args; for crypto, restore "/" inside the pair name.
@@ -131,14 +131,15 @@ jobs:
 
       - name: Push kept mutations + results back to main
         run: |
-          # Only push if HEAD has advanced beyond origin/main
+          # results files are now per-campaign (results/<symbols>_<window>.tsv),
+          # so commit any changes under results/*.tsv as a single bookkeeping entry.
+          if ! git diff --quiet -- 'results/*.tsv'; then
+            git add 'results/*.tsv'
+            git commit -m "chore(loop): update results after CI run"
+          fi
+          # Only push if HEAD advanced beyond origin/main (kept mutations or the
+          # bookkeeping commit above).
           if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/${GITHUB_REF_NAME})" ]; then
-            # results.tsv may also have new uncommitted rows from discards/crashes;
-            # commit them as a single "loop bookkeeping" entry so we don't lose history.
-            if ! git diff --quiet -- results/results.tsv; then
-              git add results/results.tsv
-              git commit -m "chore(loop): update results.tsv after CI run"
-            fi
             git push origin "HEAD:${GITHUB_REF_NAME}"
             echo "Pushed loop output to ${GITHUB_REF_NAME}"
           else
@@ -152,5 +153,5 @@ jobs:
           name: run-log-${{ github.run_id }}
           path: |
             results/run.log
-            results/results.tsv
+            results/*.tsv
           retention-days: 30
