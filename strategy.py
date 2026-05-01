@@ -69,7 +69,7 @@ class Strategy(_BTStrategy):
     adx_period = 14
     adx_threshold = 25
     rsi_period = 14
-    rsi_threshold = 70
+    rsi_oversold_threshold = 30
     trailing_stop_pct = 0.03  # 3% trailing stop
 
     def init(self) -> None:
@@ -89,7 +89,7 @@ class Strategy(_BTStrategy):
 
         crossed_up = self.ema_fast[-2] <= self.ema_slow[-2] and self.ema_fast[-1] > self.ema_slow[-1]
 
-        if crossed_up and not self.position and self.adx[-1] > self.adx_threshold and self.rsi[-1] < self.rsi_threshold:
+        if crossed_up and not self.position and self.adx[-1] > self.adx_threshold and self.rsi[-1] > self.rsi_oversold_threshold:
             self.buy(size=0.95)
             self.highest_price = self.data.Close[-1]
         elif self.position:
