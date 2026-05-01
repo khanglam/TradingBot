@@ -67,7 +67,6 @@ import sys
 import traceback
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
@@ -99,10 +98,16 @@ ROOT = Path(__file__).parent
 #   OPTIMIZE_METRIC      val_sharpe | calmar | dsr (read by loop.py)
 
 DEFAULT_SYMBOLS = os.environ.get("SYMBOLS") or "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d"
-DEFAULT_DATA = f"data/{DEFAULT_SYMBOLS.split(',')[0]}.parquet"  # legacy alias for app.py
 
 STARTING_CASH = int(os.environ.get("STARTING_CASH", "1000000"))
-COMMISSION = float(os.environ.get("COMMISSION", "0.0"))
+# COMMISSION is applied per side in backtesting.py (entry + exit each pay it),
+# so 0.001 = 10 bps round-trip. This is a conservative slippage-and-spread
+# proxy for liquid US large-caps (real spread ~2-5 bps for SPY/TSLA/NVDA,
+# 5-10 bps for thinner names like PYPL). For KuCoin crypto, taker fee is
+# ~0.1% — 0.001 is similar to taker + thin spread padding.
+# The point is to kill "scalp the noise" overfits — strategies that capture
+# 0.1% moves look great with commission=0 and bleed money in production.
+COMMISSION = float(os.environ.get("COMMISSION", "0.001"))
 
 TRAIN_START = os.environ.get("TRAIN_START", "2018-01-01")
 TRAIN_END = os.environ.get("TRAIN_END", "2019-12-31")

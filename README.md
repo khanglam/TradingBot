@@ -15,20 +15,22 @@ TradingBot/
 ├── backtest.py             ← FIXED — evaluation harness; do not edit after baseline
 ├── loop.py                 ← Orchestrator: ask Claude → backtest → keep/discard
 ├── scan.py                 ← Daily watchlist scanner; emits BUY/SELL alerts to webhook
-├── live_trade.py           ← Optional Alpaca paper/live executor (LumiBot-based)
+├── live_trade.py           ← Alpaca paper/live executor (alpaca-py; reuses scan.py's harness)
 ├── data_fetch.py           ← OHLCV downloader (CCXT for crypto, yfinance for stocks)
 ├── app.py                  ← FastAPI dashboard server
 ├── program.md              ← System prompt: rules + output format for the LLM
 ├── web/index.html          ← Dashboard UI (single self-contained file)
 ├── results/                ← Runtime outputs
-│   ├── results.tsv         ← Append-only experiment log (committed)
+│   ├── <slug>_<years>.tsv  ← Per-campaign experiment log (committed)
 │   ├── run.log             ← Latest backtest stdout (gitignored)
-│   └── scan.log            ← Append-only signal-scan log (gitignored)
+│   ├── scan.log            ← Append-only signal-scan log (gitignored)
+│   └── paper.log           ← Paper-trade execution history (gitignored)
 ├── data/                   ← Cached parquet OHLCV (gitignored)
 ├── archive/                ← Old code retained for reference
 └── .github/workflows/
-    ├── loop.yml            ← Scheduled autoresearch run (daily 02:00 PST)
-    └── scan.yml            ← Scheduled signal scan (weekdays 05:30 PST)
+    ├── loop.yml            ← Autoresearch every 6h, matrix(stocks, crypto)
+    ├── scan.yml            ← Stocks pre-market + crypto every 4h
+    └── paper.yml           ← Alpaca paper executor (mirrors scan)
 ```
 
 ## First-time setup
@@ -146,14 +148,15 @@ I execute manually" workflow.
 
 ## GitHub Actions (scheduled runs)
 
-Two workflows ship in `.github/workflows/`:
+Three workflows ship in `.github/workflows/`:
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `loop.yml` | Daily 02:00 PST | Runs the autoresearch loop, commits keeps + results.tsv back to main |
-| `scan.yml` | Weekdays 05:30 PST | Runs the signal scanner, posts to webhook |
+| `loop.yml` | Every 6h, matrix(stocks, crypto) | Runs the autoresearch loop for both campaigns in parallel; commits keeps + per-campaign tsv back to `main` |
+| `scan.yml` | Stocks weekdays 13:30 UTC; crypto every 4h | Signal scanner posts to webhook |
+| `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | Alpaca paper executor — runs `live_trade.py` against the latest `strategy.py` |
 
-Both have `workflow_dispatch` triggers, so you can also fire them
+All three have `workflow_dispatch` triggers, so you can also fire them
 on-demand from the GitHub Actions tab.
 
 ### Required repo secrets / variables
@@ -164,22 +167,48 @@ Settings → Secrets and variables → Actions:
 |---|---|---|---|
 | Secret | `ANTHROPIC_API_KEY` | `loop.yml` | Claude API key |
 | Secret | `SCAN_WEBHOOK_URL` | `scan.yml` | Discord/Slack webhook for alerts |
+| Secret | `ALPACA_API_KEY` | `paper.yml` | Alpaca paper API key |
+| Secret | `ALPACA_API_SECRET` | `paper.yml` | Alpaca paper API secret |
 | Variable | `CLAUDE_MODEL` | `loop.yml` | (optional) override model; default `claude-haiku-4-5` |
-| Variable | `SCAN_WATCHLIST` | `scan.yml` | comma-sep symbols, e.g. `SPY,QQQ,TSLA,NVDA` |
-| Variable | `SCAN_LOOKBACK_DAYS` | `scan.yml` | (optional) default 250 |
+| Variable | `SCAN_WATCHLIST` | `scan.yml` | stocks, e.g. `SPY,QQQ,TSLA,NVDA` |
+| Variable | `SCAN_WATCHLIST_CRYPTO` | `scan.yml` | crypto via yfinance, e.g. `BTC-USD,ETH-USD` |
+| Variable | `PAPER_WATCHLIST` | `paper.yml` | stocks, Alpaca tickers |
+| Variable | `PAPER_CRYPTO_WATCHLIST` | `paper.yml` | crypto, e.g. `BTC/USD,ETH/USD` |
+| Variable | `PAPER_PER_SYMBOL_CASH` | `paper.yml` | per-symbol cash budget (default `10000`) |
 
-## Paper trading
+## Paper trading (Alpaca, $10k per symbol)
+
+The executor in `live_trade.py` reuses the same `backtesting.py` harness as
+`scan.py`, so it automatically picks up whatever the autoresearch loop just
+optimized. No hand-coded mirror of the strategy — there is one strategy.
 
 ```bash
-.venv/Scripts/python.exe -m pip install lumibot
-# In .env:
-#   ALPACA_API_KEY=...
-#   ALPACA_API_SECRET=...
-#   ALPACA_PAPER=True
-.venv/Scripts/python.exe live_trade.py --symbol SPY --asset stock
+# 1. Get free paper keys at https://app.alpaca.markets/paper/dashboard/overview
+# 2. Add to .env:
+#       ALPACA_API_KEY=...
+#       ALPACA_API_SECRET=...
+#       ALPACA_PAPER=True
+#       PAPER_PER_SYMBOL_CASH=10000
+#       PAPER_WATCHLIST=SPY,QQQ,TSLA,NVDA
+#       PAPER_CRYPTO_WATCHLIST=BTC/USD,ETH/USD
+# 3. Install the SDK
+.venv/Scripts/python.exe -m pip install alpaca-py
+
+# Dry run — fetch bars, run strategy, print signals, do NOT submit orders
+.venv/Scripts/python.exe live_trade.py --dry --symbols SPY --asset stock
+
+# Real paper run — submit market orders to the Alpaca paper endpoint
+.venv/Scripts/python.exe live_trade.py --asset stock
+.venv/Scripts/python.exe live_trade.py --asset crypto
+
+# Live mode (real money) — must pass --live AND set ALPACA_PAPER=False
+.venv/Scripts/python.exe live_trade.py --live --asset stock
 ```
 
-Flip `ALPACA_PAPER=False` (or pass `--live`) to use real money. **Don't.**
+The executor is idempotent — re-running it within the same bar checks for
+existing positions and open orders before submitting, so the GitHub Actions
+schedule won't double-submit. Every run appends a JSONL record to
+`results/paper.log`.
 
 ## What the metrics actually mean
 

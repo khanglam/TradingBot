@@ -113,7 +113,6 @@ def _scan_symbol(symbol: str, days: int, fresh_bars: int, cash: float) -> dict:
         return out
 
     # Compare timestamps as numpy datetime64 to avoid timezone hiccups.
-    last_bar = df.index[-1]
     fresh_cutoff = df.index[-min(fresh_bars, len(df))]
 
     most_recent = trades.iloc[-1]

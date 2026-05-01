@@ -18,14 +18,20 @@ Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 | Layer | Choice | Why |
 |---|---|---|
 | Backtest engine | `backtesting.py` | Pure function call, returns metrics dict, fast |
-| Live/paper exec | `lumibot` + Alpaca (optional) | Paper ↔ live via one flag |
-| Crypto data | `ccxt` (KuCoin public) | Free, 8+ years OHLCV, no API key |
+| Paper/live exec | `alpaca-py` (Alpaca paper) | Stocks + crypto in one account; the executor in `live_trade.py` reuses the same `backtesting.py` harness `scan.py` uses, so it always tracks the latest `strategy.py` |
+| Crypto data (loop) | `ccxt` (KuCoin public) | Free, 8+ years OHLCV, no API key |
+| Crypto data (paper) | `alpaca-py` `CryptoHistoricalDataClient` | Same broker as execution; one less dependency |
 | Stock data | `yfinance` | Free, daily back to 1990 |
 | Storage | Parquet (pyarrow) | 40× faster reads than CSV for backtest loops |
 | LLM agent | Claude (Haiku 4.5 default; configurable) via `anthropic` SDK | Drives mutation prompts |
-| Scheduler | GitHub Actions cron | Loop daily, scanner weekday mornings |
+| Scheduler | GitHub Actions cron | Loop every 6h matrix (stocks + crypto), scanner stocks pre-market + crypto every 4h, paper executor mirrors |
 
 Jesse was evaluated and archived to `archive/` — too heavy for the tight loop.
+Lumibot was tried and dropped — its strategy class hard-coded an EMA crossover
+that diverged from `strategy.py` whenever the autoresearch loop changed it.
+The `alpaca-py`-based executor in `live_trade.py` reuses the in-tree `Strategy`
+class and the same `backtesting.Backtest` harness as `scan.py`, so the paper
+trader automatically inherits whatever the loop optimized last.
 
 ## The Autoresearch Loop
 
@@ -66,19 +72,21 @@ TradingBot/
 ├── backtest.py                FIXED — evaluation harness (single + basket modes)
 ├── loop.py                    autoresearch orchestrator
 ├── scan.py                    daily watchlist scanner → webhook alerts
-├── live_trade.py              optional Alpaca paper/live executor
+├── live_trade.py              Alpaca paper/live executor (reuses scan.py logic)
 ├── data_fetch.py              CCXT + yfinance → Parquet
 ├── app.py                     FastAPI dashboard + SSE
 ├── web/index.html             dashboard UI (single self-contained file)
 ├── results/
-│   ├── results.tsv            experiment log (committed; survives CI runs)
+│   ├── <slug>_<years>.tsv     per-campaign experiment log (committed)
 │   ├── run.log                latest backtest stdout (gitignored)
-│   └── scan.log               signal-scan history (gitignored)
+│   ├── scan.log               signal-scan history (gitignored)
+│   └── paper.log              paper-trade execution history (gitignored)
 ├── data/                      cached OHLCV (gitignored)
 ├── .github/workflows/
-│   ├── loop.yml               scheduled autoresearch (daily 02:00 PST)
-│   └── scan.yml               scheduled scan (weekdays 05:30 PST)
-├── archive/                   old Jesse-based code
+│   ├── loop.yml               autoresearch every 6h, matrix(stocks, crypto)
+│   ├── scan.yml               stocks pre-market + crypto every 4h
+│   └── paper.yml              Alpaca paper-trade executor (mirrors scan)
+├── archive/                   old Jesse + Lumibot code
 └── karpathy-auto-research/    reference, read-only
 ```
 
@@ -96,7 +104,7 @@ NEVER clobbers prior research. Switching back resumes the right history.
 | `VAL_START`/`VAL_END` | `2020-01-01` / `2024-12-31` | What the loop optimizes. 5y default covers COVID, mania, 2022 bear, 2023 recovery, 2024 bull. |
 | `LOCKBOX_START` | `2025-01-01` | Held back; loop never touches. Promote manually. |
 | `STARTING_CASH` | `1000000` | Nominal — avoids integer-share rounding. Sharpe & % returns are scale-invariant. |
-| `COMMISSION` | `0.0` | 0 for equities; `0.0006` for KuCoin crypto. |
+| `COMMISSION` | `0.001` | Per side (so 10 bps round-trip). Slippage+spread proxy that kills micro-scalp overfits. Same value for stocks and crypto by default. |
 | `MIN_TRADES` | `20` | Single-symbol min; below → val_sharpe forced to 0. |
 | `MIN_BASKET_TRADES` | `5` | Per-symbol min in basket mode. |
 | `BASKET_PENALTY` | `0.5` | basket score = `mean(sharpe) - PENALTY * std(sharpe)`. |
@@ -116,9 +124,15 @@ Stock data via yfinance (free, daily back to 1990); crypto via ccxt/KuCoin (Bina
 To resume the BTC research:
 ```bash
 SYMBOLS=crypto/BTC_USDT_4h VAL_START=2023-01-01 VAL_END=2024-12-31 \
-  COMMISSION=0.0006 .venv/Scripts/python.exe loop.py --iters 20
+  COMMISSION=0.001 .venv/Scripts/python.exe loop.py --iters 20
 ```
 The loop auto-routes to the correct history file.
+
+**Commission was bumped from 0.0/0.0006 → 0.001 on 2026-04-30.** Prior
+experiments under the cheaper costs are not directly comparable; the loop
+will re-converge from scratch under the new constraint. Old tsv rows are
+kept for historical reference but `best_metric_so_far()` will be reset
+in practice as the new realistic-cost world rejects most prior bests.
 
 ## Output Format the Loop Parses
 
@@ -188,8 +202,9 @@ Mode is auto-selected by count — no separate basket flag. Empty/unset →
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `.github/workflows/loop.yml` | Daily 02:00 PST + dispatch | Loop runs, commits keeps + results.tsv back to main |
-| `.github/workflows/scan.yml` | Weekdays 05:30 PST + dispatch | Scanner runs, posts to webhook |
+| `.github/workflows/loop.yml` | Every 6h (`0 */6 * * *`) + dispatch. Matrix: `stocks` (TSLA/NVDA/PYPL basket) + `crypto` (BTC_USDT_4h). Both shards advance every tick; per-campaign concurrency keys; push step rebases + retries to survive shard races. ~6,000 min/mo (public repo $0). | Two parallel autoresearch tracks; commits keeps + per-campaign tsv back to `main` |
+| `.github/workflows/scan.yml` | Stocks: weekdays 13:30 UTC (05:30 PST). Crypto: every 4h, every day (`0 */4 * * *`). Mode resolved per cron string; per-mode concurrency keys; ~605 min/mo. | Signal alerts to webhook (Discord/Slack format) |
+| `.github/workflows/paper.yml` | Stocks: weekdays 13:35 UTC (5 min after scan). Crypto: every 4h. Reuses `scan.py`'s logic via `live_trade.py`; submits Alpaca paper orders for fresh BUY/SELL signals; idempotent re-runs. | Paper-trade the latest `strategy.py` against the watchlists |
 
 Required repo secrets / variables:
 
@@ -197,8 +212,14 @@ Required repo secrets / variables:
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Secret | loop.yml | Claude API |
 | `SCAN_WEBHOOK_URL` | Secret | scan.yml | Discord/Slack webhook |
+| `ALPACA_API_KEY` | Secret | paper.yml | Alpaca paper API key |
+| `ALPACA_API_SECRET` | Secret | paper.yml | Alpaca paper API secret |
 | `CLAUDE_MODEL` | Variable | loop.yml | Override model |
-| `SCAN_WATCHLIST` | Variable | scan.yml | Comma-sep symbols |
+| `SCAN_WATCHLIST` | Variable | scan.yml | Stock watchlist (e.g. `SPY,QQQ,TSLA,NVDA`) |
+| `SCAN_WATCHLIST_CRYPTO` | Variable | scan.yml | Crypto watchlist via yfinance (e.g. `BTC-USD,ETH-USD`) |
+| `PAPER_WATCHLIST` | Variable | paper.yml | Stock watchlist (Alpaca tickers) |
+| `PAPER_CRYPTO_WATCHLIST` | Variable | paper.yml | Crypto watchlist (Alpaca pairs, e.g. `BTC/USD,ETH/USD`) |
+| `PAPER_PER_SYMBOL_CASH` | Variable | paper.yml | Per-symbol cash budget (default `10000`) |
 
 ## Dashboard UI
 
@@ -248,7 +269,11 @@ Use `/scout` before adopting any new framework or major architectural change.
 - [x] DSR multiple-testing gate plumbed (off by default until N≥50)
 - [x] Basket-mode optimization for stocks
 - [x] Daily signal scanner + Discord/Slack webhook
-- [x] Scheduled GitHub Actions for both loop and scanner
-- [ ] First scheduled CI run executed
-- [ ] First scan signal received
+- [x] Scheduled GitHub Actions for loop, scanner, and paper trader
+- [x] Loop runs every 6h with parallel stocks + crypto matrix shards
+- [x] Paper trading (`live_trade.py`) rewritten on `alpaca-py` — reuses `scan.py`'s strategy harness so it always tracks the latest `strategy.py`
+- [x] $10K per-symbol cash default, idempotent re-runs, JSONL `paper.log`
+- [ ] User signs up for Alpaca paper keys + sets `ALPACA_API_KEY`/`ALPACA_API_SECRET` repo secrets
+- [ ] First scheduled CI run executed (loop + scan + paper)
+- [ ] First paper order filled
 - [ ] First lockbox-window evaluation

@@ -4,22 +4,29 @@ name: Autoresearch loop
 # results.tsv back to main. Manual trigger via workflow_dispatch is also
 # supported for ad-hoc runs.
 #
-# Schedule: daily at 10:00 UTC = 02:00 PST. Off-hours so it doesn't compete
-# with the morning signal scan workflow. Adjust the cron string below to
-# change cadence — every 6h is `0 */6 * * *`, every 4h is `0 */4 * * *`.
+# Schedule: every 6 hours (00:00, 06:00, 12:00, 18:00 UTC). Each cron tick
+# spawns a matrix of TWO campaigns that run in parallel — one for stocks,
+# one for crypto — so both research tracks advance simultaneously.
+# Adjust the cron string below to change cadence — every 4h is `0 */4 * * *`.
+#
+# Cost estimate (GitHub Actions free tier):
+#   4 ticks/day x 2 matrix shards x ~25 min avg runtime = ~200 min/day
+#   ~6,000 min/month. Public repo: $0. Private repo: exceeds the 2,000
+#   min/month free tier — this workflow assumes a public repo. If the
+#   repo is private, drop the cadence to `0 */12 * * *` (~2,000 min/mo).
 #
 # Required repo secrets:
 #   ANTHROPIC_API_KEY  — used by loop.py to call Claude
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # daily 10:00 UTC
+    - cron: '0 */6 * * *'  # every 6h: 00:00, 06:00, 12:00, 18:00 UTC
   workflow_dispatch:
     inputs:
       iters:
-        description: 'Number of mutations to attempt'
+        description: 'Number of mutations to attempt per shard'
         required: false
-        default: '15'
+        default: '8'
         type: string
       optimize_metric:
         description: 'val_sharpe | calmar | dsr'
@@ -30,68 +37,112 @@ on:
           - val_sharpe
           - calmar
           - dsr
-      symbols:
-        description: 'Comma-sep parquet stems under data/ (e.g. crypto/BTC_USDT_4h or stocks/TSLA_1d,stocks/NVDA_1d). Empty = default stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d.'
+      campaign:
+        description: 'Which campaign to run on manual dispatch (both/stocks/crypto)'
         required: false
-        default: ''
-        type: string
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - stocks
+          - crypto
 
 permissions:
   contents: write   # needed to push the commits the loop produces
-
-concurrency:
-  # Only one loop run at a time across both schedule and dispatch — protects
-  # the repo from racing pushes / divergent histories.
-  group: autoresearch-loop
-  cancel-in-progress: false
 
 jobs:
   run-loop:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    # Per-job concurrency keyed on campaign name. Stocks and crypto run
+    # concurrently (different keys → different queues, different results
+    # files). A second tick for the SAME campaign queues behind the first
+    # to avoid racing pushes against itself.
+    concurrency:
+      group: autoresearch-loop-${{ matrix.campaign.name }}
+      cancel-in-progress: false
+
+    strategy:
+      fail-fast: false   # one campaign crashing must not kill the other
+      matrix:
+        campaign:
+          - name: stocks
+            symbols: 'stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d'
+            # 0.001 per side (10 bps round-trip) — slippage + spread proxy.
+            # See backtest.py:COMMISSION for rationale.
+            commission: '0.001'
+            val_start: '2020-01-01'
+            val_end: '2024-12-31'
+          - name: crypto
+            symbols: 'crypto/BTC_USDT_4h'
+            # 0.001 per side — KuCoin taker (~0.1%) + thin spread padding.
+            commission: '0.001'
+            val_start: '2023-01-01'
+            val_end: '2024-12-31'
+
     env:
-      ITERS: ${{ github.event.inputs.iters || '15' }}
+      ITERS: ${{ github.event.inputs.iters || '8' }}
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
-      SYMBOLS: ${{ github.event.inputs.symbols || '' }}
+      SYMBOLS: ${{ matrix.campaign.symbols }}
+      COMMISSION: ${{ matrix.campaign.commission }}
+      VAL_START: ${{ matrix.campaign.val_start }}
+      VAL_END: ${{ matrix.campaign.val_end }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-4-5' }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
     steps:
+      - name: Skip if dispatch selected a different campaign
+        id: gate
+        run: |
+          REQUESTED='${{ github.event.inputs.campaign }}'
+          CAMPAIGN='${{ matrix.campaign.name }}'
+          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != "both" ] && [ "$REQUESTED" != "$CAMPAIGN" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch requested '$REQUESTED'; skipping '$CAMPAIGN' shard."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout (full history so loop can reset cleanly)
+        if: steps.gate.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: true
 
       - name: Setup Python
+        if: steps.gate.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install backtesting ccxt yfinance anthropic pyarrow scipy python-dotenv
 
       - name: Cache OHLCV parquet data
+        if: steps.gate.outputs.skip != 'true'
         id: cache-data
         uses: actions/cache@v4
         with:
           path: data/
-          key: ohlcv-${{ runner.os }}-v1
-          restore-keys: ohlcv-${{ runner.os }}-
+          key: ohlcv-${{ runner.os }}-${{ matrix.campaign.name }}-v1
+          restore-keys: |
+            ohlcv-${{ runner.os }}-${{ matrix.campaign.name }}-
+            ohlcv-${{ runner.os }}-
 
       - name: Fetch OHLCV data for each entry in SYMBOLS
-        env:
-          EFFECTIVE_SYMBOLS: ${{ env.SYMBOLS != '' && env.SYMBOLS || 'stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d' }}
+        if: steps.gate.outputs.skip != 'true'
         run: |
           # Each entry is "{asset}/{NAME}_{tf}" — e.g. crypto/BTC_USDT_4h, stocks/TSLA_1d.
           # Resolve to data_fetch.py args; for crypto, restore "/" inside the pair name.
-          echo "$EFFECTIVE_SYMBOLS" | tr ',' '\n' | while read -r entry; do
+          echo "$SYMBOLS" | tr ',' '\n' | while read -r entry; do
             entry=$(echo "$entry" | xargs)
             [ -z "$entry" ] && continue
             parquet="data/${entry}.parquet"
@@ -115,11 +166,13 @@ jobs:
           done
 
       - name: Configure git for commits the loop makes
+        if: steps.gate.outputs.skip != 'true'
         run: |
           git config user.name 'autoresearch-bot'
           git config user.email 'autoresearch-bot@users.noreply.github.com'
 
       - name: Sanity check secrets
+        if: steps.gate.outputs.skip != 'true'
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ]; then
             echo "::error ::ANTHROPIC_API_KEY secret is not set on this repo"
@@ -127,30 +180,55 @@ jobs:
           fi
 
       - name: Run autoresearch loop
+        if: steps.gate.outputs.skip != 'true'
         run: python loop.py --iters "$ITERS"
 
       - name: Push kept mutations + results back to main
+        if: steps.gate.outputs.skip != 'true'
         run: |
-          # results files are now per-campaign (results/<symbols>_<window>.tsv),
-          # so commit any changes under results/*.tsv as a single bookkeeping entry.
+          # results files are per-campaign (results/<symbols>_<window>.tsv),
+          # so each matrix shard only writes its OWN tsv. Bookkeeping commit
+          # adds just that file to avoid stomping on the other shard's tsv.
           if ! git diff --quiet -- 'results/*.tsv'; then
             git add 'results/*.tsv'
-            git commit -m "chore(loop): update results after CI run"
-          fi
-          # Only push if HEAD advanced beyond origin/main (kept mutations or the
-          # bookkeeping commit above).
-          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/${GITHUB_REF_NAME})" ]; then
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-            echo "Pushed loop output to ${GITHUB_REF_NAME}"
-          else
-            echo "No new commits from loop; nothing to push"
+            git commit -m "chore(loop): update ${{ matrix.campaign.name }} results after CI run"
           fi
 
+          # Rebase onto whatever the other shard already pushed (kept commits
+          # touch strategy.py — different shards won't both keep the SAME
+          # mutation, but if they do, prefer the more recent push and let
+          # the next tick reconcile). Pull with autostash so any local
+          # uncommitted state survives; conflicts in tsv prefer ours since
+          # shards write disjoint files.
+          MAX_RETRIES=5
+          for i in $(seq 1 $MAX_RETRIES); do
+            git fetch origin "${GITHUB_REF_NAME}"
+            if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/${GITHUB_REF_NAME})" ]; then
+              echo "No new commits from loop; nothing to push"
+              exit 0
+            fi
+            # Rebase onto remote; strategy: ours for tsv files (disjoint shards).
+            if ! git pull --rebase -X ours origin "${GITHUB_REF_NAME}"; then
+              echo "Rebase failed; aborting and retrying ($i/$MAX_RETRIES)"
+              git rebase --abort || true
+              sleep 5
+              continue
+            fi
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Pushed ${{ matrix.campaign.name }} loop output to ${GITHUB_REF_NAME}"
+              exit 0
+            fi
+            echo "Push rejected (likely concurrent shard); retrying ($i/$MAX_RETRIES)"
+            sleep 5
+          done
+          echo "::error ::Failed to push after $MAX_RETRIES attempts"
+          exit 1
+
       - name: Upload run.log artifact
-        if: always()
+        if: always() && steps.gate.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: run-log-${{ github.run_id }}
+          name: run-log-${{ matrix.campaign.name }}-${{ github.run_id }}
           path: |
             results/run.log
             results/*.tsv

@@ -1,0 +1,115 @@
+name: Paper trade (Alpaca)
+
+# Runs live_trade.py against the configured watchlists and submits paper
+# orders to Alpaca whenever the current strategy.py emits a fresh BUY/SELL
+# signal. Uses the SAME backtesting.py harness as scan.py, so the executor
+# automatically tracks whatever the autoresearch loop optimized last.
+#
+# Two scheduled jobs:
+#   - stocks: weekdays 13:35 UTC (5 minutes after scan.yml fires at 13:30)
+#   - crypto: every 4 hours (markets never close)
+#
+# Required repo secrets:
+#   ALPACA_API_KEY     — paper keys from https://app.alpaca.markets/paper/dashboard/overview
+#   ALPACA_API_SECRET
+#
+# Optional repo variables (Settings → Secrets and variables → Actions → Variables):
+#   PAPER_WATCHLIST            — e.g. "SPY,QQQ,TSLA,NVDA"  (default if unset)
+#   PAPER_CRYPTO_WATCHLIST     — e.g. "BTC/USD,ETH/USD"     (default if unset)
+#   PAPER_PER_SYMBOL_CASH      — e.g. "10000"               (default if unset)
+
+on:
+  schedule:
+    - cron: '35 13 * * 1-5'   # stocks: weekdays 13:35 UTC
+    - cron: '0 */4 * * *'     # crypto: every 4 hours
+  workflow_dispatch:
+    inputs:
+      asset:
+        description: 'Asset class to trade'
+        required: true
+        default: 'stock'
+        type: choice
+        options:
+          - stock
+          - crypto
+      symbols:
+        description: 'Override watchlist (comma-separated, blank = use repo var)'
+        required: false
+        default: ''
+        type: string
+      dry:
+        description: 'Dry run (compute signals, do NOT submit orders)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-trade-${{ github.event.schedule || github.event.inputs.asset || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+      ALPACA_PAPER: 'True'
+      PAPER_WATCHLIST: ${{ vars.PAPER_WATCHLIST || 'SPY,QQQ,TSLA,NVDA' }}
+      PAPER_CRYPTO_WATCHLIST: ${{ vars.PAPER_CRYPTO_WATCHLIST || 'BTC/USD,ETH/USD' }}
+      PAPER_PER_SYMBOL_CASH: ${{ vars.PAPER_PER_SYMBOL_CASH || '10000' }}
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+
+    steps:
+      - name: Checkout (current strategy.py)
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install backtesting yfinance pyarrow python-dotenv alpaca-py
+
+      - name: Determine asset class from trigger
+        id: asset
+        run: |
+          if [ -n "${{ github.event.inputs.asset }}" ]; then
+            echo "value=${{ github.event.inputs.asset }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 */4 * * *" ]; then
+            echo "value=crypto" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=stock" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run paper trader
+        run: |
+          ARGS="--asset ${{ steps.asset.outputs.value }}"
+          if [ -n "${{ github.event.inputs.symbols }}" ]; then
+            ARGS="$ARGS --symbols ${{ github.event.inputs.symbols }}"
+          fi
+          if [ "${{ github.event.inputs.dry }}" = "true" ]; then
+            ARGS="$ARGS --dry"
+          fi
+          # Exit 1 means "no fresh signals" — that's fine, not a failure.
+          python live_trade.py $ARGS || code=$?
+          if [ "${code:-0}" -gt 1 ]; then
+            exit "$code"
+          fi
+
+      - name: Upload paper log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-log-${{ steps.asset.outputs.value }}-${{ github.run_id }}
+          path: results/paper.log
+          retention-days: 14

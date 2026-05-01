@@ -16,11 +16,15 @@ __pycache__/
 # Cached OHLCV data (large, refetchable, never committed)
 data/
 
-# Per-run artifacts inside results/ — keep results.tsv (and .gitkeep) so the
-# experiment log persists in git and across CI runs; ignore everything else.
+# Per-run artifacts inside results/ — keep per-campaign *.tsv files (and
+# .gitkeep) so experiment logs persist in git and across CI runs; ignore
+# logs and one-time backups.
 results/*
-!results/results.tsv
+!results/*.tsv
 !results/.gitkeep
+results/*.tsv.legacy
+results/run.log
+results/scan.log
 
 # Legacy artifacts at the project root (anchored with leading / so they don't
 # match files inside subfolders — e.g. /results.tsv ≠ results/results.tsv).

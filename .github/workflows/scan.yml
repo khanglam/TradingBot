@@ -4,24 +4,43 @@ name: Daily signal scan
 # to a webhook (Discord/Slack-compatible). Designed for the user's stated
 # workflow: "ping me when there's a signal, I execute manually."
 #
-# Schedule: weekdays at 13:30 UTC = 05:30 PST = 1 hour before NYSE opens.
-# This gives the user a pre-market alert based on yesterday's close, so
-# they can plan their open-session orders before 06:30 PST.
+# Two schedules coexist:
+#   * Stocks: weekdays 13:30 UTC = 05:30 PST = 1 hour pre-NYSE-open. Single
+#     run/day on weekdays — pre-market alert based on yesterday's close.
+#   * Crypto: every 4 hours, every day. Crypto trades 24/7, so signals are
+#     time-sensitive. yfinance serves crypto via `BTC-USD` style tickers.
+#
+# Cost estimate (GitHub Actions free tier):
+#   Stocks: 5 days/wk x 1 run/day x ~3 min   ≈   65 min/month
+#   Crypto: 6 runs/day x 30 days x ~3 min    ≈  540 min/month
+#   Total                                    ≈  605 min/month
+#   Public repo: $0. Private repo: comfortably within 2,000 min free tier.
 #
 # Required repo secrets:
 #   SCAN_WEBHOOK_URL  — Discord/Slack webhook (or anything that accepts
 #                       JSON {"content":"..."} or {"text":"..."} POST)
 #
 # Required repo variables (Settings → Secrets and variables → Actions → Variables):
-#   SCAN_WATCHLIST    — comma-sep symbols, e.g. "SPY,QQQ,TSLA,NVDA,AAPL"
+#   SCAN_WATCHLIST         — stocks watchlist, e.g. "SPY,QQQ,TSLA,NVDA,AAPL"
+#   SCAN_WATCHLIST_CRYPTO  — crypto watchlist, e.g. "BTC-USD,ETH-USD,SOL-USD"
 
 on:
   schedule:
-    - cron: '30 13 * * 1-5'  # Mon-Fri 13:30 UTC
+    - cron: '30 13 * * 1-5'  # stocks: Mon-Fri 13:30 UTC (05:30 PST)
+    - cron: '0 */4 * * *'    # crypto: every 4h, every day
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Which watchlist to scan (auto = pick from cron, stocks, crypto)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - stocks
+          - crypto
       symbols:
-        description: 'Override watchlist (comma-separated, blank = use repo var SCAN_WATCHLIST)'
+        description: 'Override watchlist (comma-separated; blank = use repo var for selected mode)'
         required: false
         default: ''
         type: string
@@ -35,7 +54,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: signal-scan
+  # Per-mode concurrency so a stocks scan can't queue behind a crypto scan
+  # (and vice versa). The mode is decided in the first step; we approximate
+  # it here with the cron string so each schedule has its own queue, and
+  # workflow_dispatch gets its own bucket.
+  group: signal-scan-${{ github.event.schedule || github.event.inputs.mode || 'dispatch' }}
   cancel-in-progress: false
 
 jobs:
@@ -44,7 +67,6 @@ jobs:
     timeout-minutes: 10
 
     env:
-      SCAN_WATCHLIST: ${{ github.event.inputs.symbols || vars.SCAN_WATCHLIST || 'SPY,QQQ' }}
       SCAN_WEBHOOK_URL: ${{ secrets.SCAN_WEBHOOK_URL }}
       SCAN_LOOKBACK_DAYS: ${{ vars.SCAN_LOOKBACK_DAYS || '250' }}
       SCAN_FRESH_BARS: ${{ vars.SCAN_FRESH_BARS || '1' }}
@@ -52,6 +74,45 @@ jobs:
       PYTHONIOENCODING: 'utf-8'
 
     steps:
+      - name: Decide mode (stocks vs crypto) and resolve watchlist
+        id: mode
+        env:
+          # The cron string that triggered this run (empty for dispatch).
+          TRIGGER_CRON: ${{ github.event.schedule }}
+          DISPATCH_MODE: ${{ github.event.inputs.mode }}
+          OVERRIDE_SYMBOLS: ${{ github.event.inputs.symbols }}
+          STOCKS_WATCHLIST: ${{ vars.SCAN_WATCHLIST || 'SPY,QQQ' }}
+          CRYPTO_WATCHLIST: ${{ vars.SCAN_WATCHLIST_CRYPTO || 'BTC-USD,ETH-USD' }}
+        run: |
+          # Resolution order:
+          #   1) Manual dispatch with explicit mode (stocks|crypto) wins.
+          #   2) Manual dispatch with mode=auto (or schedule run) inspects
+          #      the cron string. The stocks cron is '30 13 * * 1-5'; any
+          #      other cron is the crypto schedule.
+          MODE=""
+          if [ -n "$DISPATCH_MODE" ] && [ "$DISPATCH_MODE" != "auto" ]; then
+            MODE="$DISPATCH_MODE"
+          elif [ "$TRIGGER_CRON" = "30 13 * * 1-5" ]; then
+            MODE="stocks"
+          elif [ -n "$TRIGGER_CRON" ]; then
+            MODE="crypto"
+          else
+            # workflow_dispatch with mode=auto and no cron — default stocks.
+            MODE="stocks"
+          fi
+
+          if [ -n "$OVERRIDE_SYMBOLS" ]; then
+            WATCHLIST="$OVERRIDE_SYMBOLS"
+          elif [ "$MODE" = "crypto" ]; then
+            WATCHLIST="$CRYPTO_WATCHLIST"
+          else
+            WATCHLIST="$STOCKS_WATCHLIST"
+          fi
+
+          echo "mode=$MODE"          >> "$GITHUB_OUTPUT"
+          echo "watchlist=$WATCHLIST" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode='$MODE' watchlist='$WATCHLIST'"
+
       - name: Checkout (current strategy.py)
         uses: actions/checkout@v4
 
@@ -67,6 +128,9 @@ jobs:
           pip install backtesting yfinance pyarrow python-dotenv
 
       - name: Run signal scan
+        env:
+          SCAN_WATCHLIST: ${{ steps.mode.outputs.watchlist }}
+          SCAN_MODE: ${{ steps.mode.outputs.mode }}
         run: |
           if [ "${{ github.event.inputs.dry }}" = "true" ]; then
             python scan.py --dry
@@ -78,6 +142,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scan-log-${{ github.run_id }}
+          name: scan-log-${{ steps.mode.outputs.mode }}-${{ github.run_id }}
           path: results/scan.log
           retention-days: 14

@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -56,6 +57,7 @@ STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
 RESULTS_DIR = ROOT / "results"
 RUN_LOG = RESULTS_DIR / "run.log"
+LAST_CRASH = RESULTS_DIR / "last_crash.json"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 # RESULTS path is per-campaign — derived from active SYMBOLS × val-window so
@@ -334,6 +336,62 @@ def run_backtest() -> dict:
     return _parse_summary(out)
 
 
+# ──────────────────────── crash feed-forward ─────────────────────────
+
+# When a backtest crashes, the loop reverts the offending strategy.py via
+# git_reset_last(). The next iteration's Claude call would otherwise see
+# only `status=crash` in the history row — no traceback, no idea what
+# broke. We persist the crashed source + stderr tail to last_crash.json
+# so the *next* call_claude can show Claude exactly what failed.
+#
+# Lifecycle:
+#   crash   → write last_crash.json (overwrites prior crash if any)
+#   keep    → clear (we moved past the bug)
+#   discard → clear (LLM moved on; old crash no longer relevant)
+#   noop    → leave as-is (no real attempt was made)
+
+
+def _read_stderr_tail() -> str:
+    """Pull the stderr block written by run_backtest() out of run.log."""
+    if not RUN_LOG.exists():
+        return ""
+    try:
+        content = RUN_LOG.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    parts = content.split("----- STDERR -----")
+    return parts[-1].strip() if len(parts) > 1 else ""
+
+
+def save_last_crash(src: str, stderr: str, description: str, sha: str | None) -> None:
+    LAST_CRASH.write_text(
+        json.dumps({
+            "src": src,
+            "stderr": stderr[-2000:],  # tail; tracebacks are at the end
+            "description": description,
+            "commit": sha or "",
+        }),
+        encoding="utf-8",
+    )
+
+
+def load_last_crash() -> dict | None:
+    if not LAST_CRASH.exists():
+        return None
+    try:
+        return json.loads(LAST_CRASH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def clear_last_crash() -> None:
+    if LAST_CRASH.exists():
+        try:
+            LAST_CRASH.unlink()
+        except Exception:
+            pass
+
+
 # ──────────────────────────── DSR benchmark ────────────────────────────
 
 def compute_dsr_benchmark() -> float:
@@ -393,8 +451,17 @@ DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL
 CODE_RE = re.compile(r"##\s*strategy\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
 
 
-def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
-    """Returns (description, new_strategy_source)."""
+def call_claude(
+    strategy_src: str,
+    program_src: str,
+    history: list[dict],
+    last_crash: dict | None = None,
+) -> tuple[str, str]:
+    """Returns (description, new_strategy_source).
+
+    If last_crash is provided AND the most recent history row is a crash, the
+    crashed strategy.py source + traceback are included in the prompt so
+    Claude can fix the actual bug instead of guessing from `status=crash`."""
     import anthropic
 
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
@@ -412,8 +479,22 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
     user_msg = (
         f"# Current strategy.py\n```python\n{strategy_src}\n```\n\n"
         f"# Last {len(history)} experiments (results.tsv tail)\n```\n{history_block}\n```\n\n"
-        f"Propose ONE change. Reply with the two required sections only."
     )
+
+    # If the immediately-previous iteration crashed, show Claude the exact code
+    # that broke and the traceback. Without this, the loop wastes iterations
+    # re-proposing the same broken pattern.
+    if last_crash and history and history[-1].get("status") == "crash":
+        user_msg += (
+            "# LAST ITERATION CRASHED — your previous mutation broke. "
+            "It has already been reverted. Diagnose and fix the bug; "
+            "do not repropose the same code.\n\n"
+            f"## Crashed strategy.py (commit {last_crash.get('commit', '?')})\n"
+            f"```python\n{last_crash['src']}\n```\n\n"
+            f"## Traceback / stderr (tail)\n```\n{last_crash['stderr']}\n```\n\n"
+        )
+
+    user_msg += "Propose ONE change. Reply with the two required sections only."
 
     model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
     resp = client.messages.create(
@@ -441,10 +522,14 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
     strategy_src = STRATEGY.read_text(encoding="utf-8")
     program_src = PROGRAM.read_text(encoding="utf-8")
     history = last_n_rows(10)
+    last_crash = load_last_crash()
+
+    if last_crash and history and history[-1].get("status") == "crash":
+        print(f"[loop] feeding back last crash (commit {last_crash.get('commit', '?')}) to Claude")
 
     print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking Claude…")
     try:
-        description, new_code = call_claude(strategy_src, program_src, history)
+        description, new_code = call_claude(strategy_src, program_src, history, last_crash=last_crash)
     except Exception as e:
         print(f"[loop] claude error: {e}")
         return "claude_error", best_metric
@@ -497,6 +582,13 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
         status = "keep"
     else:
         status = "discard"
+
+    # Persist crash artifacts BEFORE git reset so the next iteration can show
+    # Claude exactly what failed. On keep/discard, clear stale crash blob.
+    if status == "crash":
+        save_last_crash(new_code, _read_stderr_tail(), description, sha)
+    else:
+        clear_last_crash()
 
     if status != "keep":
         git_reset_last()

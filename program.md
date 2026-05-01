@@ -126,6 +126,150 @@ entry set."
 - Stacking yet another `if` onto entries when recent rows show 0-trade
   crashes — see the Diagnose Before You Mutate table above
 
+## Indicator Cookbook (verified templates)
+
+These are correct, tested implementations of the indicators most strategies
+need. **Copy them verbatim into `strategy.py`** when you want to use them —
+do not reinvent the math. Each returns a `numpy.ndarray` (or tuple of them)
+suitable for `self.I(...)` inside `init`.
+
+The baseline `strategy.py` already has `_ema`, `_rsi`, and `_adx`. The
+templates below add the rest of the common toolbox. Take only what you
+need — unused helpers are dead code and should be removed (Soft Preference
+#1: simpler is better).
+
+### MACD — momentum / trend
+```python
+def _macd(close, fast=12, slow=26, signal=9):
+    """Returns (macd_line, signal_line, histogram). Signal is EMA of MACD.
+    Bullish cross: macd_line > signal_line after being below."""
+    close = pd.Series(close)
+    macd = close.ewm(span=fast, adjust=False).mean() - close.ewm(span=slow, adjust=False).mean()
+    sig = macd.ewm(span=signal, adjust=False).mean()
+    hist = macd - sig
+    return macd.to_numpy(), sig.to_numpy(), hist.to_numpy()
+```
+Wire-up: `self.macd, self.macd_sig, self.macd_hist = self.I(_macd, close, 12, 26, 9)`.
+
+### Bollinger Bands — mean reversion / breakout
+```python
+def _bollinger(close, n=20, k=2.0):
+    """Returns (upper, middle, lower). Buy at lower for mean reversion;
+    breakout above upper for momentum. Width = upper - lower (volatility)."""
+    close = pd.Series(close)
+    mid = close.rolling(n).mean()
+    sd = close.rolling(n).std(ddof=0)
+    return (mid + k * sd).to_numpy(), mid.to_numpy(), (mid - k * sd).to_numpy()
+```
+
+### ATR — volatility / stop sizing
+```python
+def _atr(high, low, close, n=14):
+    """Average True Range. Use for ATR-multiple stops, position sizing,
+    and Keltner channels. Rising ATR = expanding volatility."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(n).mean().bfill().to_numpy()
+```
+
+### Stochastic — oscillator (overbought/oversold)
+```python
+def _stochastic(high, low, close, k=14, d=3):
+    """Returns (%K, %D). %K = (close - low_min) / (high_max - low_min) * 100.
+    %D = SMA of %K. Above 80 = overbought; below 20 = oversold."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    low_min = low.rolling(k).min()
+    high_max = high.rolling(k).max()
+    pct_k = 100 * (close - low_min) / (high_max - low_min).replace(0, np.nan)
+    pct_d = pct_k.rolling(d).mean()
+    return pct_k.fillna(50).to_numpy(), pct_d.fillna(50).to_numpy()
+```
+
+### Donchian Channels — breakout
+```python
+def _donchian(high, low, n=20):
+    """Returns (upper, lower). Classic Turtle entry: buy on close > upper(20),
+    exit on close < lower(10). The 'breakout of the n-bar high'."""
+    return (
+        pd.Series(high).rolling(n).max().to_numpy(),
+        pd.Series(low).rolling(n).min().to_numpy(),
+    )
+```
+
+### Keltner Channels — trend-following bands
+```python
+def _keltner(high, low, close, n=20, atr_n=10, k=2.0):
+    """Returns (upper, middle, lower). EMA(close) +/- k * ATR(atr_n).
+    Smoother than Bollinger for trend-following because it uses ATR
+    instead of stdev (less choppy in low-vol regimes)."""
+    mid = pd.Series(close).ewm(span=n, adjust=False).mean()
+    atr = pd.Series(_atr(high, low, close, atr_n))
+    return (mid + k * atr).to_numpy(), mid.to_numpy(), (mid - k * atr).to_numpy()
+```
+
+### Williams %R — overbought/oversold (inverted stochastic)
+```python
+def _williams_r(high, low, close, n=14):
+    """Returns %R in range [-100, 0]. -20 to 0 = overbought; -100 to -80 = oversold."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    high_max = high.rolling(n).max()
+    low_min = low.rolling(n).min()
+    return (-100 * (high_max - close) / (high_max - low_min).replace(0, np.nan)).fillna(-50).to_numpy()
+```
+
+### CCI — Commodity Channel Index (mean reversion)
+```python
+def _cci(high, low, close, n=20):
+    """Returns CCI. Above +100 = strong uptrend; below -100 = strong downtrend.
+    Often used for divergence detection."""
+    tp = (pd.Series(high) + pd.Series(low) + pd.Series(close)) / 3.0
+    sma = tp.rolling(n).mean()
+    md = (tp - sma).abs().rolling(n).mean()
+    return ((tp - sma) / (0.015 * md.replace(0, np.nan))).fillna(0).to_numpy()
+```
+
+### OBV — On-Balance Volume (volume confirmation)
+```python
+def _obv(close, volume):
+    """Cumulative volume signed by close-direction. Rising OBV with rising
+    price = real participation; flat OBV with rising price = weak rally."""
+    close = pd.Series(close)
+    volume = pd.Series(volume)
+    direction = np.sign(close.diff().fillna(0))
+    return (direction * volume).cumsum().to_numpy()
+```
+
+### SMA — simple moving average (regime filter)
+```python
+def _sma(series, n):
+    return pd.Series(series).rolling(n).mean().to_numpy()
+```
+Common use: regime gate `if close[-1] > self.sma200[-1]:` — only long in uptrends.
+
+### Z-score — standardized deviation
+```python
+def _zscore(series, n=20):
+    """Rolling z-score. |z| > 2 = unusual move; mean-reversion candidates."""
+    s = pd.Series(series)
+    mu = s.rolling(n).mean()
+    sd = s.rolling(n).std(ddof=0)
+    return ((s - mu) / sd.replace(0, np.nan)).fillna(0).to_numpy()
+```
+
+**Important**: every helper above returns a numpy array of the same length as
+the input. `self.I(helper, *args)` wraps it so `self.helper[-1]` gives the
+current bar value, `self.helper[-2]` the prior, etc. — same access pattern as
+the baseline `self.ema_fast`, `self.adx`, `self.rsi`.
+
+When a helper returns a tuple (MACD, Bollinger, Stochastic, Donchian, Keltner),
+unpack at the `self.I` call site:
+```python
+self.macd, self.macd_sig, self.macd_hist = self.I(_macd, close, 12, 26, 9)
+```
+
 ## What Counts as a Crash / Discard
 
 | Outcome | Action |
