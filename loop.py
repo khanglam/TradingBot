@@ -122,6 +122,24 @@ def git_dirty() -> bool:
     return bool(_git("status", "--porcelain"))
 
 
+def git_commit_results() -> None:
+    """Checkpoint any un-committed experiment rows in results/*.tsv.
+
+    The loop never commits the tsv during a session — only strategy.py is
+    committed per iteration. After a session ends the tsv has new rows on
+    disk but no git commit. On the next startup those rows make the working
+    tree dirty and the dirty-check fires.
+
+    Fix: stage and commit whatever tsv rows have accumulated before the
+    dirty-check runs. This mirrors exactly what CI does at the end of each
+    GitHub Actions run, keeps history in git, and leaves a clean tree.
+    """
+    _git("add", "results/*.tsv")
+    if _git("diff", "--cached", "--name-only").strip():
+        _git("commit", "-m", "chore: checkpoint experiment log", "--no-verify")
+        print("[loop] committed pending results.tsv rows")
+
+
 def git_short_sha() -> str:
     return _git("rev-parse", "--short=7", "HEAD")
 
@@ -590,6 +608,10 @@ def main() -> int:
     if not os.environ.get("OPENROUTER_API_KEY"):
         print("ERROR: OPENROUTER_API_KEY not set (env or .env file)", file=sys.stderr)
         return 2
+
+    # Auto-commit any experiment rows accumulated since the last session.
+    # This must run before git_dirty() so the tsv is no longer untracked.
+    git_commit_results()
 
     if git_dirty():
         print("ERROR: git working tree is dirty. Commit or stash first.", file=sys.stderr)
