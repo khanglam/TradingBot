@@ -2,7 +2,8 @@
 STRATEGY_FILE points here (default for the stocks matrix shard).
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: ATR-based trailing stop (1.0 × ATR) to adapt exit width to volatility.
+Exit: ATR-based trailing stop (1.0 × ATR) to adapt exit width to volatility,
+plus RSI>70 overbought exit to take profits at overbought levels.
 """
 from __future__ import annotations
 
@@ -76,6 +77,7 @@ class Strategy(_BTStrategy):
     adx_threshold = 25
     rsi_period = 14
     rsi_oversold_threshold = 30
+    rsi_overbought_threshold = 70
     atr_period = 14
     atr_multiplier = 1.0  # ATR multiplier for trailing stop
 
@@ -104,7 +106,8 @@ class Strategy(_BTStrategy):
             # Update highest price since entry
             self.highest_price = max(self.highest_price, self.data.Close[-1])
             
-            # Exit if price drops ATR multiplier below highest price since entry
+            # Exit conditions: ATR trailing stop or RSI overbought
             trailing_stop_level = self.highest_price - self.atr[-1] * self.atr_multiplier
-            if self.data.Close[-1] <= trailing_stop_level:
+            rsi_overbought = self.rsi[-1] > self.rsi_overbought_threshold
+            if self.data.Close[-1] <= trailing_stop_level or rsi_overbought:
                 self.position.close()
