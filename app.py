@@ -46,9 +46,15 @@ def _results_path() -> Path:
     follows env changes without restart."""
     import backtest as bt
     return bt.results_path()
-STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
 DATA_DIR = ROOT / "data"
+
+
+def _strategy_path() -> Path:
+    """Per-campaign strategy file path (resolved each call so the dashboard
+    follows STRATEGY_FILE env changes without a restart)."""
+    import backtest as bt
+    return ROOT / bt.STRATEGY_FILE
 
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 if not PYTHON.exists():
@@ -233,9 +239,11 @@ def results() -> list[dict[str, Any]]:
 
 @app.get("/api/strategy")
 def strategy_source() -> dict:
-    if not STRATEGY.exists():
-        raise HTTPException(404, "strategy.py not found")
-    return {"source": STRATEGY.read_text(encoding="utf-8")}
+    path = _strategy_path()
+    if not path.exists():
+        raise HTTPException(404, f"{path.name} not found")
+    rel = str(path.relative_to(ROOT)).replace("\\", "/")
+    return {"path": rel, "source": path.read_text(encoding="utf-8")}
 
 
 @app.get("/api/program")
@@ -247,9 +255,14 @@ def program_source() -> dict:
 
 @app.get("/api/git-log")
 def git_log(n: int = 20) -> dict:
+    # Show commit history for the active campaign's strategy file. Pre-split
+    # commits used "strategy.py" — include it as a fallback path so older
+    # history still appears.
+    rel = str(_strategy_path().relative_to(ROOT)).replace("\\", "/")
     try:
         out = subprocess.run(
-            ["git", "log", "--pretty=format:%h|%ar|%s", f"-{int(n)}", "--", "strategy.py"],
+            ["git", "log", "--pretty=format:%h|%ar|%s", f"-{int(n)}",
+             "--", rel, "strategy.py"],
             cwd=ROOT, capture_output=True, text=True, check=True,
         ).stdout
         commits = []
@@ -271,10 +284,8 @@ def equity_curve():
         sys.path.insert(0, str(ROOT))
         import backtest as bt_module
         importlib.reload(bt_module)
-        if "strategy" in sys.modules:
-            importlib.reload(sys.modules["strategy"])
         from backtesting import Backtest
-        from strategy import Strategy as UserStrategy
+        UserStrategy = bt_module.load_strategy_class(bt_module.STRATEGY_FILE)
 
         # Equity curve is single-asset by definition: pick the first symbol
         # the harness would resolve from $SYMBOLS (or DEFAULT_SYMBOLS).
@@ -354,7 +365,7 @@ def setup_status() -> dict:
             "openrouter_api_key": env_key,
             "btc_data": (DATA_DIR / "crypto" / "BTC_USDT_4h.parquet").exists(),
             "venv_python": PYTHON.exists(),
-            "strategy_py": STRATEGY.exists(),
+            "strategy_file": _strategy_path().exists(),
             "program_md": PROGRAM.exists(),
             "git_clean": not git_dirty,
         },

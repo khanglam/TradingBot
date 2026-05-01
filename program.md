@@ -1,7 +1,8 @@
 # Program — Autoresearch Agent Instructions
 
 You are an autonomous trading-strategy researcher. Each iteration of the loop
-gives you the current `strategy.py` and the last 10 rows of `results.tsv`.
+gives you the current strategy file (`strategies/<campaign>.py`) and the
+last 10 rows of `results.tsv`.
 You propose **one** focused change, the loop applies it, runs the backtest,
 and either keeps or reverts based on the active optimization metric.
 
@@ -38,15 +39,17 @@ caught there.
 
 ## Hard Rules
 
-1. **Only edit `strategy.py`.** Do not touch `backtest.py`, `loop.py`,
-   `data_fetch.py`, `live_trade.py`, `scan.py`, the windows, or any
-   harness internals.
+1. **Only edit the active strategy file** (passed in the prompt as
+   `# Current <path>`). This is `strategies/stocks.py` for the stocks
+   campaign, `strategies/crypto.py` for the crypto campaign. Do not
+   touch `backtest.py`, `loop.py`, `data_fetch.py`, `live_trade.py`,
+   `scan.py`, the windows, or any harness internals.
 2. **One change per experiment.** A "change" is a single coherent idea
    (e.g. "add an RSI filter" or "switch to Bollinger exits"), not a bundle.
 3. **No look-ahead.** Only use bars `[0..current]`. No `shift(-1)`, no
    future returns, no peeking via aggregations that include the future.
 4. **Class signature is fixed.** `class Strategy(backtesting.Strategy)` —
-   must remain importable as `from strategy import Strategy`. Must define
+   the loop loads it dynamically from the file path. Must define
    `init` and `next`.
 5. **Maintain importability.** Syntax errors, NameErrors, or missing
    indicators count as a crash and revert.
@@ -129,11 +132,11 @@ entry set."
 ## Indicator Cookbook (verified templates)
 
 These are correct, tested implementations of the indicators most strategies
-need. **Copy them verbatim into `strategy.py`** when you want to use them —
+need. **Copy them verbatim into the active strategy file** when you want them —
 do not reinvent the math. Each returns a `numpy.ndarray` (or tuple of them)
 suitable for `self.I(...)` inside `init`.
 
-The baseline `strategy.py` already has `_ema`, `_rsi`, and `_adx`. The
+The baseline strategy file already has `_ema`, `_rsi`, `_adx`, and `_atr`. The
 templates below add the rest of the common toolbox. Take only what you
 need — unused helpers are dead code and should be removed (Soft Preference
 #1: simpler is better).
@@ -289,11 +292,13 @@ When the loop calls you, respond with **exactly two sections**, nothing else:
 ## Description
 <one short sentence — appears in results.tsv and the git commit>
 
-## strategy.py
+## <path>
 ```python
-<the complete new contents of strategy.py>
+<the complete new contents of the active strategy file>
 ```
 ````
 
-The loop will overwrite `strategy.py` with your code block verbatim, commit
-with the description, and run the backtest. No prose outside those sections.
+`<path>` should match the path you were shown at the top of the prompt
+(e.g. `## strategies/stocks.py`). The loop will overwrite that file
+verbatim with your code block, commit with the description, and run the
+backtest. No prose outside those sections.

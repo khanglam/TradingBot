@@ -80,18 +80,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install backtesting yfinance pyarrow python-dotenv alpaca-py
 
-      - name: Determine asset class from trigger
+      - name: Determine asset class + strategy file from trigger
         id: asset
         run: |
           if [ -n "${{ github.event.inputs.asset }}" ]; then
-            echo "value=${{ github.event.inputs.asset }}" >> "$GITHUB_OUTPUT"
+            ASSET="${{ github.event.inputs.asset }}"
           elif [ "${{ github.event.schedule }}" = "0 */4 * * *" ]; then
-            echo "value=crypto" >> "$GITHUB_OUTPUT"
+            ASSET="crypto"
           else
-            echo "value=stock" >> "$GITHUB_OUTPUT"
+            ASSET="stock"
           fi
+          # Per-campaign strategy file: stocks → strategies/stocks.py,
+          # crypto → strategies/crypto.py.
+          if [ "$ASSET" = "crypto" ]; then
+            STRATEGY_FILE="strategies/crypto.py"
+          else
+            STRATEGY_FILE="strategies/stocks.py"
+          fi
+          echo "value=$ASSET"                  >> "$GITHUB_OUTPUT"
+          echo "strategy_file=$STRATEGY_FILE"  >> "$GITHUB_OUTPUT"
 
       - name: Run paper trader
+        env:
+          STRATEGY_FILE: ${{ steps.asset.outputs.strategy_file }}
         run: |
           ARGS="--asset ${{ steps.asset.outputs.value }}"
           if [ -n "${{ github.event.inputs.symbols }}" ]; then

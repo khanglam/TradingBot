@@ -109,9 +109,18 @@ jobs:
             WATCHLIST="$STOCKS_WATCHLIST"
           fi
 
-          echo "mode=$MODE"          >> "$GITHUB_OUTPUT"
-          echo "watchlist=$WATCHLIST" >> "$GITHUB_OUTPUT"
-          echo "Resolved mode='$MODE' watchlist='$WATCHLIST'"
+          # Each campaign owns its own strategy file post-split, so the
+          # scanner has to load the matching one.
+          if [ "$MODE" = "crypto" ]; then
+            STRATEGY_FILE="strategies/crypto.py"
+          else
+            STRATEGY_FILE="strategies/stocks.py"
+          fi
+
+          echo "mode=$MODE"                  >> "$GITHUB_OUTPUT"
+          echo "watchlist=$WATCHLIST"         >> "$GITHUB_OUTPUT"
+          echo "strategy_file=$STRATEGY_FILE" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode='$MODE' watchlist='$WATCHLIST' strategy='$STRATEGY_FILE'"
 
       - name: Checkout (current strategy.py)
         uses: actions/checkout@v4
@@ -131,6 +140,7 @@ jobs:
         env:
           SCAN_WATCHLIST: ${{ steps.mode.outputs.watchlist }}
           SCAN_MODE: ${{ steps.mode.outputs.mode }}
+          STRATEGY_FILE: ${{ steps.mode.outputs.strategy_file }}
         run: |
           if [ "${{ github.event.inputs.dry }}" = "true" ]; then
             python scan.py --dry

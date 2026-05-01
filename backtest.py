@@ -99,6 +99,42 @@ ROOT = Path(__file__).parent
 
 DEFAULT_SYMBOLS = os.environ.get("SYMBOLS") or "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d"
 
+# STRATEGY_FILE = path (relative to repo root or absolute) of the strategy
+# file the backtest harness, loop, scanner, and paper executor should load.
+# Different campaigns use different files (strategies/stocks.py vs
+# strategies/crypto.py) so they can evolve independently without overwriting
+# each other's keeps. If unset, default is derived from SYMBOLS prefix
+# (crypto/* → strategies/crypto.py, anything else → strategies/stocks.py).
+def _default_strategy_file(symbols_spec: str) -> str:
+    parts = [p.strip() for p in symbols_spec.split(",") if p.strip()]
+    if parts and all(p.startswith("crypto/") for p in parts):
+        return "strategies/crypto.py"
+    return "strategies/stocks.py"
+
+
+STRATEGY_FILE = os.environ.get("STRATEGY_FILE") or _default_strategy_file(DEFAULT_SYMBOLS)
+
+
+def load_strategy_class(path: str | Path) -> type:
+    """Load the user `Strategy` class from an arbitrary file path. Used by
+    every consumer (loop, backtest, scan, live_trade, app) so the file
+    being optimized can be selected at runtime via STRATEGY_FILE."""
+    import importlib.util
+    p = Path(path)
+    if not p.is_absolute():
+        p = ROOT / p
+    if not p.exists():
+        raise ImportError(f"strategy file not found: {p}")
+    spec = importlib.util.spec_from_file_location("user_strategy", str(p))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load strategy from {p}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, "Strategy"):
+        raise ImportError(f"{p} has no `Strategy` class")
+    return mod.Strategy
+
+
 STARTING_CASH = int(os.environ.get("STARTING_CASH", "1000000"))
 # COMMISSION is applied per side in backtesting.py (entry + exit each pay it),
 # so 0.001 = 10 bps round-trip. This is a conservative slippage-and-spread
@@ -268,7 +304,7 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
     Does not print; printing is handled at the caller level."""
     try:
         from backtesting import Backtest
-        from strategy import Strategy as UserStrategy
+        UserStrategy = load_strategy_class(STRATEGY_FILE)
     except Exception as e:
         print(f"# import error: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)

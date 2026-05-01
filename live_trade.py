@@ -183,7 +183,8 @@ def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: floa
 
     try:
         from backtesting import Backtest
-        from strategy import Strategy as UserStrategy
+        from backtest import load_strategy_class, STRATEGY_FILE
+        UserStrategy = load_strategy_class(STRATEGY_FILE)
         bt = Backtest(df, UserStrategy, cash=cash, commission=0.0,
                       exclusive_orders=True, finalize_trades=True)
         stats = bt.run()
@@ -422,7 +423,10 @@ def main() -> int:
 
     mode = "DRY" if args.dry else ("PAPER" if paper else "LIVE")
     print(f"[paper] mode={mode}  asset={args.asset}  symbols={','.join(symbols)}")
-    print(f"[paper] strategy: {(ROOT / 'strategy.py').read_text(encoding='utf-8').splitlines()[0]}")
+    from backtest import STRATEGY_FILE
+    strat_path = (ROOT / STRATEGY_FILE)
+    head = strat_path.read_text(encoding="utf-8").splitlines()[0] if strat_path.exists() else "(missing)"
+    print(f"[paper] strategy file: {STRATEGY_FILE}  | first line: {head}")
     print(f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={args.days}d  fresh={args.fresh}")
 
     # If we're going to actually submit, fail fast on missing creds — the user

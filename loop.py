@@ -1,9 +1,9 @@
 """Autoresearch orchestrator — the karpathy-style loop.
 
 Each iteration:
-  1. Read strategy.py + last 10 rows of results/results.tsv + program.md
-  2. Ask Claude for a single mutation (returns description + new strategy.py)
-  3. Write strategy.py, git commit
+  1. Read STRATEGY_FILE + last 10 rows of per-campaign results.tsv + program.md
+  2. Ask Claude for a single mutation (returns description + new strategy file)
+  3. Write strategy file, git commit
   4. Compute DSR benchmark from prior trial variance, set DSR_BENCHMARK env
   5. Run backtest.py (subprocess), parse summary block
   6. Apply keep/discard rules:
@@ -14,6 +14,7 @@ Each iteration:
        discard / crash → git reset --hard HEAD~1
   7. Append a row to results.tsv
   8. Repeat until --iters reached (or human interrupt; karpathy-style)
+  9. Session end: commit accumulated tsv rows in one chore commit.
 
 Requires:
     OPENROUTER_API_KEY in env (or .env file). Get one at https://openrouter.ai/keys
@@ -56,7 +57,6 @@ except Exception:
     pass
 
 ROOT = Path(__file__).parent
-STRATEGY = ROOT / "strategy.py"
 PROGRAM = ROOT / "program.md"
 RESULTS_DIR = ROOT / "results"
 RUN_LOG = RESULTS_DIR / "run.log"
@@ -65,8 +65,14 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # RESULTS path is per-campaign — derived from active SYMBOLS × val-window so
 # each (asset, window) combo gets its own history. Switching SYMBOLS env var
 # does not clobber prior research; both files coexist under results/.
+#
+# STRATEGY is the per-campaign strategy file the loop reads/writes/commits.
+# Defaults derived from SYMBOLS prefix (crypto/* → strategies/crypto.py,
+# else → strategies/stocks.py). Override with STRATEGY_FILE env var.
 import backtest as _bt_module
 RESULTS = _bt_module.results_path()
+STRATEGY = (ROOT / _bt_module.STRATEGY_FILE).resolve()
+STRATEGY_REL = str(STRATEGY.relative_to(ROOT)).replace("\\", "/")
 
 PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PYTHON).exists():
@@ -126,18 +132,48 @@ def git_dirty() -> bool:
     return bool(_git("status", "--porcelain"))
 
 
+def git_commit_results() -> bool:
+    """Stage and commit any pending experiment rows in results/*.tsv.
+
+    Called at the start AND end of every loop session so the tsv never sits
+    dirty in the working tree:
+      - start: catches rows from a prior aborted session before the dirty-check
+      - end:   commits this session's accumulated rows in one chore commit
+
+    Pathspec-scoped to `results/` only. If there are other staged changes
+    in the index, this function does NOT sweep them into the chore commit
+    — they stay staged for whoever staged them.
+
+    Returns True if a commit was created, False if nothing to commit."""
+    # Stage tsv changes (only). `git add -- results/*.tsv` adds tracked tsv
+    # files that have been modified.
+    _git("add", "--", "results/")
+    # Diff cached, scoped to results/. If empty, there's nothing for us
+    # specifically to do.
+    diff = _git("diff", "--cached", "--name-only", "--", "results/")
+    if not diff.strip():
+        return False
+    # `git commit -- <pathspec>` filters the staged set by pathspec, so any
+    # other staged changes from an outer workflow stay staged.
+    _git("commit", "-m", "chore: checkpoint experiment log",
+         "--no-verify", "--", "results/")
+    print("[loop] committed pending results.tsv rows")
+    return True
+
+
 def git_short_sha() -> str:
     return _git("rev-parse", "--short=7", "HEAD")
 
 
 def git_commit_strategy(description: str) -> str | None:
-    """Commit strategy.py. Returns None if Claude wrote bytes-identical content
-    (no diff) — the caller must treat this as a no-op iteration, not a crash."""
+    """Commit the active strategy file. Returns None if Claude wrote
+    bytes-identical content (no diff) — the caller must treat this as
+    a no-op iteration, not a crash."""
     _git("add", str(STRATEGY))
     diff = _git("diff", "--cached", "--name-only")
     if not diff.strip():
         return None
-    _git("commit", "-m", f"experiment: {description}", "--no-verify")
+    _git("commit", "-m", f"experiment ({STRATEGY_REL}): {description}", "--no-verify")
     return git_short_sha()
 
 
@@ -421,7 +457,10 @@ def compute_dsr_benchmark() -> float:
 # ──────────────────────────── LLM call (OpenRouter) ──────────────────────────────
 
 DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL)
-CODE_RE = re.compile(r"##\s*strategy\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
+# Accept any `*.py` filename in the section header — `## strategy.py`,
+# `## strategies/stocks.py`, `## strategies/crypto.py`, etc. — so the
+# section label matches whatever file is actively being edited.
+CODE_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
 
 
 def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
@@ -452,28 +491,36 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
         history_block = "\n".join(rows)
 
     user_msg = (
-        f"# Current strategy.py\n```python\n{strategy_src}\n```\n\n"
+        f"# Current {STRATEGY_REL}\n```python\n{strategy_src}\n```\n\n"
         f"# Last {len(history)} experiments (results.tsv tail)\n```\n{history_block}\n```\n\n"
     )
 
-    # If the immediately-previous iteration crashed, show Claude the exact code
-    # that broke and the traceback. Without this, the loop wastes iterations
-    # re-proposing the same broken pattern.
+    # If the immediately-previous iteration crashed, show the LLM the exact
+    # code that broke and the traceback. Without this, the loop wastes
+    # iterations re-proposing the same broken pattern.
     if history and history[-1].get("status") == "crash":
         sha = history[-1].get("commit", "")
-        try:
-            crashed_src = _git("show", f"{sha}:strategy.py") if sha else ""
-        except subprocess.CalledProcessError:
+        crashed_src = ""
+        if sha:
+            # Try the active campaign's strategy file first; fall back to the
+            # legacy "strategy.py" path for crashes recorded before the split.
+            for candidate in (STRATEGY_REL, "strategy.py"):
+                try:
+                    crashed_src = _git("show", f"{sha}:{candidate}")
+                    break
+                except subprocess.CalledProcessError:
+                    continue
+        if not crashed_src:
             crashed_src = "(commit not retrievable — likely git-gc'd)"
         crashed_stderr = _read_stderr_tail()[-2000:]
         user_msg += (
             "# CRITICAL CONTEXT: YOUR LAST EXPERIMENT CRASHED!\n"
-            "Below is the strategy.py that broke and the Python traceback.\n"
+            f"Below is the {STRATEGY_REL} that broke and the Python traceback.\n"
             "Your primary goal right now is to diagnose and fix this error — "
             "do not propose new features until the bug is gone. "
             "If the traceback is empty, the crash was a 0-trade run "
             "(filters too strict): relax or remove a condition.\n\n"
-            f"## Crashed strategy.py (commit {sha or '?'})\n"
+            f"## Crashed {STRATEGY_REL} (commit {sha or '?'})\n"
             f"```python\n{crashed_src}\n```\n\n"
             f"## Traceback / stderr (tail)\n```text\n{crashed_stderr}\n```\n\n"
         )
@@ -599,6 +646,10 @@ def main() -> int:
         )
         return 2
 
+    # Layer 1 — checkpoint anything left dirty by a prior aborted session
+    # so the dirty-check below sees a clean tree.
+    git_commit_results()
+
     if git_dirty():
         print("ERROR: git working tree is dirty. Commit or stash first.", file=sys.stderr)
         return 2
@@ -606,26 +657,37 @@ def main() -> int:
     _ensure_results()
     best = best_metric_so_far(OPTIMIZE_METRIC)
     gate_msg = f"  DSR_GATE={DSR_GATE_THRESHOLD:.2f}" if DSR_GATE_THRESHOLD > 0 else ""
-    print(f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}{gate_msg}")
+    print(
+        f"[loop] campaign={STRATEGY_REL}  symbols={_bt_module.DEFAULT_SYMBOLS}\n"
+        f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}{gate_msg}"
+    )
     consecutive_regressions = 0
 
-    for i in range(1, args.iters + 1):
-        print(f"\n========== iteration {i}/{args.iters} ==========")
-        status, best = one_iteration(best)
+    # Layer 2 — try/finally guarantees we commit accumulated tsv rows even if
+    # the user Ctrl-C's mid-loop or an iteration crashes uncaught. The CI
+    # workflow's separate commit step is now redundant.
+    rc = 0
+    try:
+        for i in range(1, args.iters + 1):
+            print(f"\n========== iteration {i}/{args.iters} ==========")
+            status, best = one_iteration(best)
 
-        if status == "keep":
-            consecutive_regressions = 0
-        elif status == "claude_error":
-            time.sleep(10)
-        elif status == "noop":
-            # No real attempt made (identical code) — don't count toward streak.
-            pass
-        else:
-            consecutive_regressions += 1
-            if MAX_REGRESSIONS > 0 and consecutive_regressions >= MAX_REGRESSIONS:
-                print(f"\n[loop] {MAX_REGRESSIONS} consecutive regressions — freezing for review.")
-                return 1
-    return 0
+            if status == "keep":
+                consecutive_regressions = 0
+            elif status == "claude_error":
+                time.sleep(10)
+            elif status == "noop":
+                # No real attempt made (identical code) — don't count toward streak.
+                pass
+            else:
+                consecutive_regressions += 1
+                if MAX_REGRESSIONS > 0 and consecutive_regressions >= MAX_REGRESSIONS:
+                    print(f"\n[loop] {MAX_REGRESSIONS} consecutive regressions — freezing for review.")
+                    rc = 1
+                    break
+    finally:
+        git_commit_results()
+    return rc
 
 
 if __name__ == "__main__":

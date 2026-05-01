@@ -71,6 +71,7 @@ jobs:
       matrix:
         campaign:
           - name: stocks
+            strategy_file: 'strategies/stocks.py'
             symbols: 'stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d'
             # 0.001 per side (10 bps round-trip) — slippage + spread proxy.
             # See backtest.py:COMMISSION for rationale.
@@ -78,6 +79,7 @@ jobs:
             val_start: '2020-01-01'
             val_end: '2024-12-31'
           - name: crypto
+            strategy_file: 'strategies/crypto.py'
             symbols: 'crypto/BTC_USDT_4h'
             # 0.001 per side — KuCoin taker (~0.1%) + thin spread padding.
             commission: '0.001'
@@ -87,6 +89,7 @@ jobs:
     env:
       ITERS: ${{ github.event.inputs.iters || '8' }}
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
+      STRATEGY_FILE: ${{ matrix.campaign.strategy_file }}
       SYMBOLS: ${{ matrix.campaign.symbols }}
       COMMISSION: ${{ matrix.campaign.commission }}
       VAL_START: ${{ matrix.campaign.val_start }}
@@ -186,23 +189,16 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: python loop.py --iters "$ITERS"
 
-      - name: Push kept mutations + results back to main
+      - name: Push kept mutations + tsv back to main
         if: steps.gate.outputs.skip != 'true'
         run: |
-          # results files are per-campaign (results/<symbols>_<window>.tsv),
-          # so each matrix shard only writes its OWN tsv. Bookkeeping commit
-          # adds just that file to avoid stomping on the other shard's tsv.
-          if ! git diff --quiet -- 'results/*.tsv'; then
-            git add 'results/*.tsv'
-            git commit -m "chore(loop): update ${{ matrix.campaign.name }} results after CI run"
-          fi
-
-          # Rebase onto whatever the other shard already pushed (kept commits
-          # touch strategy.py — different shards won't both keep the SAME
-          # mutation, but if they do, prefer the more recent push and let
-          # the next tick reconcile). Pull with autostash so any local
-          # uncommitted state survives; conflicts in tsv prefer ours since
-          # shards write disjoint files.
+          # loop.py is now responsible for ALL commits in the session:
+          #   - per-iteration `experiment (strategies/<campaign>.py): ...` (kept)
+          #   - end-of-session `chore: checkpoint experiment log` (tsv rows)
+          # Each matrix shard now edits a DIFFERENT strategy file — stocks
+          # writes strategies/stocks.py, crypto writes strategies/crypto.py
+          # — so kept commits never conflict. Tsvs are per-campaign too.
+          # All this step has to do is rebase + push, with retry.
           MAX_RETRIES=5
           for i in $(seq 1 $MAX_RETRIES); do
             git fetch origin "${GITHUB_REF_NAME}"
@@ -210,8 +206,9 @@ jobs:
               echo "No new commits from loop; nothing to push"
               exit 0
             fi
-            # Rebase onto remote; strategy: ours for tsv files (disjoint shards).
-            if ! git pull --rebase -X ours origin "${GITHUB_REF_NAME}"; then
+            # Plain rebase — disjoint files between shards means real
+            # conflicts should be vanishingly rare.
+            if ! git pull --rebase origin "${GITHUB_REF_NAME}"; then
               echo "Rebase failed; aborting and retrying ($i/$MAX_RETRIES)"
               git rebase --abort || true
               sleep 5

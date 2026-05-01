@@ -37,9 +37,9 @@ trader automatically inherits whatever the loop optimized last.
 
 ```
 LOOP FOREVER:
-  1. Read current strategy.py + last 10 rows of results.tsv + program.md
-  2. Ask Claude for ONE mutation (description + new strategy.py contents)
-  3. Write strategy.py, git commit
+  1. Read current STRATEGY_FILE (per-campaign) + last 10 rows of tsv + program.md
+  2. Ask Claude for ONE mutation (description + new strategy file contents)
+  3. Write strategy file, git commit
   4. Compute DSR benchmark from prior trial variance
   5. Run backtest.py with DSR_BENCHMARK in env → parse summary block
   6. Apply keep/discard rules:
@@ -56,7 +56,7 @@ LOOP FOREVER:
 | autoresearch | this project |
 |---|---|
 | `prepare.py` (fixed) | `backtest.py` — immutable harness |
-| `train.py` (mutable) | `strategy.py` — only file the agent edits |
+| `train.py` (mutable) | `strategies/<campaign>.py` — only file the agent edits per campaign |
 | `val_bpb` (lower=better) | `val_sharpe` / `calmar` / `dsr` (higher=better) |
 | `program.md` | `program.md` (constraints + output format) |
 | `results.tsv` | `results/results.tsv` |
@@ -68,7 +68,9 @@ TradingBot/
 ├── CLAUDE.md                  this file
 ├── README.md                  user-facing docs
 ├── program.md                 agent constraints + required output format
-├── strategy.py                MUTABLE — only file the loop edits
+├── strategies/
+│   ├── stocks.py              MUTABLE — stocks campaign edits this only
+│   └── crypto.py              MUTABLE — crypto campaign edits this only
 ├── backtest.py                FIXED — evaluation harness (single + basket modes)
 ├── loop.py                    autoresearch orchestrator
 ├── scan.py                    daily watchlist scanner → webhook alerts
@@ -99,6 +101,7 @@ NEVER clobbers prior research. Switching back resumes the right history.
 | Env var | Default | Notes |
 |---|---|---|
 | `SYMBOLS` | `stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d` | Comma-sep parquet stems under `data/`. N=1 → single-symbol mode; N≥2 → basket mode. |
+| `STRATEGY_FILE` | derived from SYMBOLS prefix | `strategies/stocks.py` or `strategies/crypto.py`. Each campaign owns its own file so stocks and crypto evolve independently. |
 | `OPTIMIZE_METRIC` | `val_sharpe` | One of `val_sharpe` / `calmar` / `dsr`. The keep/discard scalar. All metrics logged regardless. |
 | `TRAIN_START`/`TRAIN_END` | `2018-01-01` / `2019-12-31` | Agent reasons about; not the metric. |
 | `VAL_START`/`VAL_END` | `2020-01-01` / `2024-12-31` | What the loop optimizes. 5y default covers COVID, mania, 2022 bear, 2023 recovery, 2024 bull. |
@@ -241,7 +244,7 @@ API endpoints (under `/api/*`): `summary`, `results`, `strategy`, `program`,
 
 These are mirrored in `program.md` and enforced by `loop.py`:
 
-- **CAN edit**: `strategy.py` only
+- **CAN edit**: the active campaign strategy file only (`strategies/stocks.py` or `strategies/crypto.py` — never both, never anything else)
 - **CANNOT edit**: `backtest.py`, `loop.py`, `data_fetch.py`, `live_trade.py`,
   `scan.py`, the windows, the harness internals
 - **One change per experiment** (no bundled mutations)

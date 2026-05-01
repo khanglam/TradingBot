@@ -1,7 +1,8 @@
 # TradingBot
 
-A self-improving trading strategy. An LLM proposes mutations to `strategy.py`,
-the harness runs a backtest, and only improvements are kept. Loops forever.
+A self-improving trading strategy. An LLM proposes mutations to per-campaign
+`strategies/stocks.py` and `strategies/crypto.py`, the harness runs a backtest,
+and only improvements are kept. Loops forever.
 
 It also ships a daily **signal scanner** (`scan.py`) that runs the current
 strategy against a watchlist and pings a webhook when a buy/sell signal
@@ -11,7 +12,9 @@ fires — the workflow for "alert me, I'll execute manually."
 
 ```
 TradingBot/
-├── strategy.py             ← MUTABLE — the only file the agent edits
+├── strategies/             ← MUTABLE — agent edits per-campaign files
+│   ├── stocks.py           ←   stocks campaign baseline
+│   └── crypto.py           ←   crypto campaign baseline
 ├── backtest.py             ← FIXED — evaluation harness; do not edit after baseline
 ├── loop.py                 ← Orchestrator: ask Claude → backtest → keep/discard
 ├── scan.py                 ← Daily watchlist scanner; emits BUY/SELL alerts to webhook

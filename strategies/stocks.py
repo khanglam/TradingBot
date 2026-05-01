@@ -1,4 +1,5 @@
-"""Mutable strategy file — the autoresearch agent edits this and only this.
+"""Stocks campaign strategy. Mutated by the autoresearch loop when
+STRATEGY_FILE points here (default for the stocks matrix shard).
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
 Exit: ATR-based trailing stop (1.0 × ATR) to adapt exit width to volatility.

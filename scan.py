@@ -100,7 +100,8 @@ def _scan_symbol(symbol: str, days: int, fresh_bars: int, cash: float) -> dict:
     try:
         # Lazy imports — don't pay the cost if data fetch failed
         from backtesting import Backtest
-        from strategy import Strategy as UserStrategy
+        from backtest import load_strategy_class, STRATEGY_FILE
+        UserStrategy = load_strategy_class(STRATEGY_FILE)
         bt = Backtest(df, UserStrategy, cash=cash, commission=0.0,
                       exclusive_orders=True, finalize_trades=True)
         stats = bt.run()
@@ -211,7 +212,10 @@ def main() -> int:
         return 2
 
     print(f"[scan] {len(symbols)} symbols: {', '.join(symbols)}")
-    print(f"[scan] strategy: {(ROOT / 'strategy.py').read_text(encoding='utf-8').splitlines()[0]}")
+    from backtest import STRATEGY_FILE
+    strat_path = (ROOT / STRATEGY_FILE)
+    head = strat_path.read_text(encoding="utf-8").splitlines()[0] if strat_path.exists() else "(missing)"
+    print(f"[scan] strategy file: {STRATEGY_FILE}  | first line: {head}")
 
     scans: list[dict] = []
     for sym in symbols:
