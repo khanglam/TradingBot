@@ -16,7 +16,10 @@ name: Autoresearch loop
 #   repo is private, drop the cadence to `0 */12 * * *` (~2,000 min/mo).
 #
 # Required repo secrets:
-#   ANTHROPIC_API_KEY  — used by loop.py to call Claude
+#   OPENROUTER_API_KEY  — used by loop.py to call the LLM (https://openrouter.ai/keys)
+# Optional repo variables:
+#   OPENROUTER_MODEL    — any model slug from https://openrouter.ai/models
+#                         (default: anthropic/claude-haiku-4-5)
 
 on:
   schedule:
@@ -88,8 +91,8 @@ jobs:
       COMMISSION: ${{ matrix.campaign.commission }}
       VAL_START: ${{ matrix.campaign.val_start }}
       VAL_END: ${{ matrix.campaign.val_end }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-4-5' }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5' }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
@@ -124,7 +127,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
-          pip install backtesting ccxt yfinance anthropic pyarrow scipy python-dotenv
+          pip install backtesting ccxt yfinance openai pyarrow scipy python-dotenv
 
       - name: Cache OHLCV parquet data
         if: steps.gate.outputs.skip != 'true'
@@ -174,8 +177,8 @@ jobs:
       - name: Sanity check secrets
         if: steps.gate.outputs.skip != 'true'
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "::error ::ANTHROPIC_API_KEY secret is not set on this repo"
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error ::OPENROUTER_API_KEY secret is not set on this repo"
             exit 1
           fi
 

@@ -23,7 +23,7 @@ Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 | Crypto data (paper) | `alpaca-py` `CryptoHistoricalDataClient` | Same broker as execution; one less dependency |
 | Stock data | `yfinance` | Free, daily back to 1990 |
 | Storage | Parquet (pyarrow) | 40× faster reads than CSV for backtest loops |
-| LLM agent | Claude (Haiku 4.5 default; configurable) via `anthropic` SDK | Drives mutation prompts |
+| LLM agent | OpenRouter via `openai` SDK; default `anthropic/claude-haiku-4-5`, any model slug works | Drives mutation prompts |
 | Scheduler | GitHub Actions cron | Loop every 6h matrix (stocks + crypto), scanner stocks pre-market + crypto every 4h, paper executor mirrors |
 
 Jesse was evaluated and archived to `archive/` — too heavy for the tight loop.
@@ -112,7 +112,7 @@ NEVER clobbers prior research. Switching back resumes the right history.
 | `KEEP_THRESHOLD` | `0.0` | Margin needed above best-so-far to keep. |
 | `MAX_REGRESSIONS` | `0` (disabled) | Strike-out brake; karpathy mode by default. |
 | `DSR_GATE_THRESHOLD` | `0` (disabled) | Multiple-testing rejection threshold. Enable when N≥50 trials. |
-| `CLAUDE_MODEL` | `claude-haiku-4-5` | Agent model. |
+| `OPENROUTER_MODEL` | `anthropic/claude-haiku-4-5` | Any model slug from openrouter.ai/models — Anthropic, OpenAI, DeepSeek, Google, etc. |
 
 Stock data via yfinance (free, daily back to 1990); crypto via ccxt/KuCoin (Binance returns 451 to US IPs).
 
@@ -210,11 +210,11 @@ Required repo secrets / variables:
 
 | Name | Type | Used by | Purpose |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Secret | loop.yml | Claude API |
+| `OPENROUTER_API_KEY` | Secret | loop.yml | OpenRouter API key (https://openrouter.ai/keys) |
 | `SCAN_WEBHOOK_URL` | Secret | scan.yml | Discord/Slack webhook |
 | `ALPACA_API_KEY` | Secret | paper.yml | Alpaca paper API key |
 | `ALPACA_API_SECRET` | Secret | paper.yml | Alpaca paper API secret |
-| `CLAUDE_MODEL` | Variable | loop.yml | Override model |
+| `OPENROUTER_MODEL` | Variable | loop.yml | Override default model (any openrouter.ai slug) |
 | `SCAN_WATCHLIST` | Variable | scan.yml | Stock watchlist (e.g. `SPY,QQQ,TSLA,NVDA`) |
 | `SCAN_WATCHLIST_CRYPTO` | Variable | scan.yml | Crypto watchlist via yfinance (e.g. `BTC-USD,ETH-USD`) |
 | `PAPER_WATCHLIST` | Variable | paper.yml | Stock watchlist (Alpaca tickers) |

@@ -29,6 +29,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+# Load .env so OPENROUTER_MODEL / OPENROUTER_API_KEY are visible to the dashboard.
+# Every other script in the project does this; app.py was the odd one out, which
+# is why the model badge in the UI showed the hardcoded default instead of
+# whatever the user set in .env.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "web" / "index.html"
 def _results_path() -> Path:
@@ -89,9 +99,9 @@ def _safe_floats(values: Any) -> list[float | None]:
 
 
 def _active_model() -> str:
-    """Read CLAUDE_MODEL env override; else regex DEFAULT_MODEL out of loop.py.
+    """Read OPENROUTER_MODEL env override; else regex DEFAULT_MODEL out of loop.py.
     Avoids importing loop (which has init-time side effects)."""
-    if env := os.environ.get("CLAUDE_MODEL"):
+    if env := os.environ.get("OPENROUTER_MODEL"):
         return env
     try:
         text = (ROOT / "loop.py").read_text(encoding="utf-8")
@@ -312,9 +322,9 @@ def equity_curve():
 
 @app.get("/api/setup")
 def setup_status() -> dict:
-    env_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    env_key = bool(os.environ.get("OPENROUTER_API_KEY"))
     if not env_key and (ROOT / ".env").exists():
-        env_key = "ANTHROPIC_API_KEY" in (ROOT / ".env").read_text()
+        env_key = "OPENROUTER_API_KEY" in (ROOT / ".env").read_text()
 
     files: list[dict] = []
     if DATA_DIR.exists():
@@ -341,7 +351,7 @@ def setup_status() -> dict:
 
     return {
         "checks": {
-            "anthropic_api_key": env_key,
+            "openrouter_api_key": env_key,
             "btc_data": (DATA_DIR / "crypto" / "BTC_USDT_4h.parquet").exists(),
             "venv_python": PYTHON.exists(),
             "strategy_py": STRATEGY.exists(),

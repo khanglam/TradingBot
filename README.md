@@ -38,13 +38,14 @@ TradingBot/
 ```bash
 # 1. Install Python dependencies
 .venv/Scripts/python.exe -m pip install \
-    backtesting ccxt yfinance anthropic pyarrow scipy python-dotenv \
+    backtesting ccxt yfinance openai pyarrow scipy python-dotenv \
     fastapi "uvicorn[standard]" sse-starlette
 
 # 2. Download historical data (4h BTC for the default loop)
 .venv/Scripts/python.exe data_fetch.py --asset crypto --symbol BTC/USDT --timeframe 4h --start 2019-01-01
 
-# 3. Copy .env.example → .env and fill in ANTHROPIC_API_KEY
+# 3. Copy .env.example → .env and fill in OPENROUTER_API_KEY
+#    Get a key at https://openrouter.ai/keys (one key, any model)
 cp .env.example .env
 # Then edit .env
 
@@ -165,11 +166,11 @@ Settings → Secrets and variables → Actions:
 
 | Type | Name | Used by | Purpose |
 |---|---|---|---|
-| Secret | `ANTHROPIC_API_KEY` | `loop.yml` | Claude API key |
+| Secret | `OPENROUTER_API_KEY` | `loop.yml` | OpenRouter API key (one key, any model — https://openrouter.ai/keys) |
 | Secret | `SCAN_WEBHOOK_URL` | `scan.yml` | Discord/Slack webhook for alerts |
 | Secret | `ALPACA_API_KEY` | `paper.yml` | Alpaca paper API key |
 | Secret | `ALPACA_API_SECRET` | `paper.yml` | Alpaca paper API secret |
-| Variable | `CLAUDE_MODEL` | `loop.yml` | (optional) override model; default `claude-haiku-4-5` |
+| Variable | `OPENROUTER_MODEL` | `loop.yml` | (optional) override model; any slug from https://openrouter.ai/models. Default `anthropic/claude-haiku-4-5` |
 | Variable | `SCAN_WATCHLIST` | `scan.yml` | stocks, e.g. `SPY,QQQ,TSLA,NVDA` |
 | Variable | `SCAN_WATCHLIST_CRYPTO` | `scan.yml` | crypto via yfinance, e.g. `BTC-USD,ETH-USD` |
 | Variable | `PAPER_WATCHLIST` | `paper.yml` | stocks, Alpaca tickers |

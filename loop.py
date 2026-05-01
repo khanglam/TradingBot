@@ -16,7 +16,7 @@ Each iteration:
   8. Repeat until --iters reached (or human interrupt; karpathy-style)
 
 Requires:
-    ANTHROPIC_API_KEY in env (or .env file)
+    OPENROUTER_API_KEY in env (or .env file). Get one at https://openrouter.ai/keys
     A clean git working tree on entry (so we can reset cleanly)
 
 Environment knobs (all optional):
@@ -25,8 +25,12 @@ Environment knobs (all optional):
     SYMBOLS                comma-sep parquet stems under data/ (e.g.
                            "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d").
                            N=1 → single mode; N≥2 → basket mode with overfit penalty.
-    CLAUDE_MODEL           override the default Haiku model
-    OPENAI_*  / similar    not used; this loop only calls Anthropic
+    OPENROUTER_MODEL       any model slug from openrouter.ai/models. Defaults to
+                           anthropic/claude-haiku-4-5. Examples:
+                             anthropic/claude-sonnet-4-6
+                             openai/gpt-5
+                             deepseek/deepseek-r1
+                             google/gemini-2.5-pro
 
 Usage:
     python loop.py --iters 50
@@ -120,24 +124,6 @@ def _git(*args: str) -> str:
 
 def git_dirty() -> bool:
     return bool(_git("status", "--porcelain"))
-
-
-def git_commit_results() -> None:
-    """Checkpoint any un-committed experiment rows in results/*.tsv.
-
-    The loop never commits the tsv during a session — only strategy.py is
-    committed per iteration. After a session ends the tsv has new rows on
-    disk but no git commit. On the next startup those rows make the working
-    tree dirty and the dirty-check fires.
-
-    Fix: stage and commit whatever tsv rows have accumulated before the
-    dirty-check runs. This mirrors exactly what CI does at the end of each
-    GitHub Actions run, keeps history in git, and leaves a clean tree.
-    """
-    _git("add", "results/*.tsv")
-    if _git("diff", "--cached", "--name-only").strip():
-        _git("commit", "-m", "chore: checkpoint experiment log", "--no-verify")
-        print("[loop] committed pending results.tsv rows")
 
 
 def git_short_sha() -> str:
@@ -598,7 +584,7 @@ def main() -> int:
     p.add_argument("--iters", type=int, default=50)
     args = p.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not os.environ.get("OPENROUTER_API_KEY"):
         try:
             from dotenv import load_dotenv
 
@@ -606,12 +592,12 @@ def main() -> int:
         except ImportError:
             pass
     if not os.environ.get("OPENROUTER_API_KEY"):
-        print("ERROR: OPENROUTER_API_KEY not set (env or .env file)", file=sys.stderr)
+        print(
+            "ERROR: OPENROUTER_API_KEY not set. Get a key at https://openrouter.ai/keys "
+            "and add it to .env (see .env.example).",
+            file=sys.stderr,
+        )
         return 2
-
-    # Auto-commit any experiment rows accumulated since the last session.
-    # This must run before git_dirty() so the tsv is no longer untracked.
-    git_commit_results()
 
     if git_dirty():
         print("ERROR: git working tree is dirty. Commit or stash first.", file=sys.stderr)
