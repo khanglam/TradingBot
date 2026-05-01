@@ -68,7 +68,8 @@ PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PYTHON).exists():
     PYTHON = sys.executable
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_MODEL = "anthropic/claude-haiku-4-5"  # any model slug from openrouter.ai/models
 MAX_OUTPUT_TOKENS = 8000
 
 KEEP_THRESHOLD = float(os.environ.get("KEEP_THRESHOLD", "0.0"))  # strictly > best
@@ -413,7 +414,7 @@ def compute_dsr_benchmark() -> float:
     return math.sqrt(var_sharpe) * expected_max
 
 
-# ──────────────────────────── Claude call ──────────────────────────────
+# ──────────────────────────── LLM call (OpenRouter) ──────────────────────────────
 
 DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL)
 CODE_RE = re.compile(r"##\s*strategy\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
@@ -422,13 +423,19 @@ CODE_RE = re.compile(r"##\s*strategy\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTA
 def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
     """Returns (description, new_strategy_source).
 
+    Uses OpenRouter (https://openrouter.ai) as the LLM backend. Any model
+    available on OpenRouter can be selected via OPENROUTER_MODEL in .env.
+
     If the most recent history row is a crash, the crashed strategy.py source
     (recovered from git via the row's commit SHA) and the traceback (tail of
-    run.log) are injected into the prompt so Claude can fix the actual bug
+    run.log) are injected into the prompt so the LLM can fix the actual bug
     instead of guessing from `status=crash`."""
-    import anthropic
+    import openai
 
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    client = openai.OpenAI(
+        api_key=os.environ.get("OPENROUTER_API_KEY"),
+        base_url=OPENROUTER_BASE_URL,
+    )
 
     history_block = "(no prior experiments)"
     if history:
@@ -469,19 +476,21 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
 
     user_msg += "Propose ONE change. Reply with the two required sections only."
 
-    model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
-    resp = client.messages.create(
+    model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
+    resp = client.chat.completions.create(
         model=model,
         max_tokens=MAX_OUTPUT_TOKENS,
-        system=program_src,
-        messages=[{"role": "user", "content": user_msg}],
+        messages=[
+            {"role": "system", "content": program_src},
+            {"role": "user", "content": user_msg},
+        ],
     )
-    text = "".join(b.text for b in resp.content if hasattr(b, "text"))
+    text = resp.choices[0].message.content or ""
 
     desc_m = DESCRIPTION_RE.search(text)
     code_m = CODE_RE.search(text)
     if not desc_m or not code_m:
-        raise ValueError(f"could not parse Claude response:\n{text[:1000]}")
+        raise ValueError(f"could not parse LLM response:\n{text[:1000]}")
 
     description = desc_m.group(1).strip().splitlines()[0][:200]
     new_code = code_m.group(1)
@@ -578,8 +587,8 @@ def main() -> int:
             load_dotenv()
         except ImportError:
             pass
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ERROR: ANTHROPIC_API_KEY not set (env or .env file)", file=sys.stderr)
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        print("ERROR: OPENROUTER_API_KEY not set (env or .env file)", file=sys.stderr)
         return 2
 
     if git_dirty():
