@@ -1,13 +1,7 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: Fixed 3% trailing stop to balance locking in gains with trend following.
-
-Constraints (also enforced by program.md):
-    - Class must be named `Strategy` and importable as `from strategy import Strategy`
-    - Must subclass backtesting.Strategy
-    - No look-ahead: only use indicator values up to and including the current bar
-    - Must define `init` (per-bar decision)
+Exit: ATR-based trailing stop (1.0 × ATR) to adapt exit width to volatility.
 """
 from __future__ import annotations
 
@@ -63,6 +57,17 @@ def _rsi(series: pd.Series, n: int = 14) -> np.ndarray:
     return rsi.fillna(50).to_numpy()
 
 
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
+    """Average True Range. Use for ATR-multiple stops, position sizing,
+    and Keltner channels. Rising ATR = expanding volatility."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(n).mean().bfill().to_numpy()
+
+
 class Strategy(_BTStrategy):
     fast = 15
     slow = 45
@@ -70,7 +75,8 @@ class Strategy(_BTStrategy):
     adx_threshold = 25
     rsi_period = 14
     rsi_oversold_threshold = 30
-    trailing_stop_pct = 0.03  # 3% trailing stop
+    atr_period = 14
+    atr_multiplier = 1.0  # ATR multiplier for trailing stop
 
     def init(self) -> None:
         close = self.data.Close
@@ -81,6 +87,7 @@ class Strategy(_BTStrategy):
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.rsi = self.I(_rsi, close, self.rsi_period)
+        self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.highest_price = None  # Track highest price since entry for trailing stop
 
     def next(self) -> None:
@@ -96,7 +103,7 @@ class Strategy(_BTStrategy):
             # Update highest price since entry
             self.highest_price = max(self.highest_price, self.data.Close[-1])
             
-            # Exit if price drops 3% below highest price since entry
-            trailing_stop_level = self.highest_price * (1 - self.trailing_stop_pct)
+            # Exit if price drops ATR multiplier below highest price since entry
+            trailing_stop_level = self.highest_price - self.atr[-1] * self.atr_multiplier
             if self.data.Close[-1] <= trailing_stop_level:
                 self.position.close()
