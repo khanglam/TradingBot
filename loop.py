@@ -456,12 +456,15 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
             crashed_src = "(commit not retrievable — likely git-gc'd)"
         crashed_stderr = _read_stderr_tail()[-2000:]
         user_msg += (
-            "# LAST ITERATION CRASHED — your previous mutation broke. "
-            "It has already been reverted. Diagnose and fix the bug; "
-            "do not repropose the same code.\n\n"
+            "# CRITICAL CONTEXT: YOUR LAST EXPERIMENT CRASHED!\n"
+            "Below is the strategy.py that broke and the Python traceback.\n"
+            "Your primary goal right now is to diagnose and fix this error — "
+            "do not propose new features until the bug is gone. "
+            "If the traceback is empty, the crash was a 0-trade run "
+            "(filters too strict): relax or remove a condition.\n\n"
             f"## Crashed strategy.py (commit {sha or '?'})\n"
             f"```python\n{crashed_src}\n```\n\n"
-            f"## Traceback / stderr (tail)\n```\n{crashed_stderr}\n```\n\n"
+            f"## Traceback / stderr (tail)\n```text\n{crashed_stderr}\n```\n\n"
         )
 
     user_msg += "Propose ONE change. Reply with the two required sections only."
