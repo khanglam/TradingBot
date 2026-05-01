@@ -1,7 +1,7 @@
 """Mutable strategy file — the autoresearch agent edits this and only this.
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: RSI(14) < 28 (oversold) to lock in gains on strong trends without EMA whipsaws.
+Exit: Fixed 3% trailing stop to balance locking in gains with trend following.
 
 Constraints (also enforced by program.md):
     - Class must be named `Strategy` and importable as `from strategy import Strategy`
@@ -50,28 +50,12 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.n
     return adx.fillna(0).to_numpy()
 
 
-def _rsi(series: pd.Series, n: int = 14) -> np.ndarray:
-    """Compute Relative Strength Index."""
-    series = pd.Series(series)
-    delta = series.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    
-    avg_gain = pd.Series(gain).rolling(n).mean()
-    avg_loss = pd.Series(loss).rolling(n).mean()
-    
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50).to_numpy()
-
-
 class Strategy(_BTStrategy):
     fast = 15
     slow = 45
     adx_period = 14
     adx_threshold = 25
-    rsi_period = 14
-    rsi_oversold = 28
+    trailing_stop_pct = 0.03  # 3% trailing stop
 
     def init(self) -> None:
         close = self.data.Close
@@ -81,7 +65,7 @@ class Strategy(_BTStrategy):
         self.ema_fast = self.I(_ema, close, self.fast)
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
-        self.rsi = self.I(_rsi, close, self.rsi_period)
+        self.highest_price = None  # Track highest price since entry for trailing stop
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -91,6 +75,12 @@ class Strategy(_BTStrategy):
 
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold:
             self.buy(size=0.95)
+            self.highest_price = self.data.Close[-1]
         elif self.position:
-            if self.rsi[-1] < self.rsi_oversold:
+            # Update highest price since entry
+            self.highest_price = max(self.highest_price, self.data.Close[-1])
+            
+            # Exit if price drops 3% below highest price since entry
+            trailing_stop_level = self.highest_price * (1 - self.trailing_stop_pct)
+            if self.data.Close[-1] <= trailing_stop_level:
                 self.position.close()
