@@ -361,6 +361,7 @@ def get_equity():
     load_dotenv(override=True)
     importlib.reload(bt_module)
     from backtesting import Backtest
+    from backtesting.lib import FractionalBacktest
     UserStrategy = bt_module.load_strategy_class(bt_module.STRATEGY_FILE)
 
     # Equity curve is single-asset by definition: pick the first symbol
@@ -374,7 +375,9 @@ def get_equity():
     if len(df) < 100:
         raise HTTPException(400, "validation window has too few candles")
 
-    bt = Backtest(
+    is_crypto = "crypto" in str(resolved[0][1])
+    BacktestClass = FractionalBacktest if is_crypto else Backtest
+    bt = BacktestClass(
         df, UserStrategy,
         cash=bt_module.STARTING_CASH,
         commission=bt_module.COMMISSION,
