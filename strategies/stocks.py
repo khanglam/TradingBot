@@ -2,7 +2,7 @@
 STRATEGY_FILE points here (default for the stocks matrix shard).
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: Trailing stop at 1.5-ATR to capture extended trends while protecting gains.
+Exit: Fixed 2R take-profit (2× ATR above entry) to capture extended trends while protecting gains.
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class Strategy(_BTStrategy):
     rsi_period = 14
     rsi_overbought_threshold = 70
     atr_period = 14
-    trailing_atr_multiplier = 1.5  # Trailing stop at 1.5 ATR below entry high
+    take_profit_atr_multiplier = 2.0  # Fixed 2R take-profit at 2× ATR above entry
 
     def init(self) -> None:
         close = self.data.Close
@@ -90,7 +90,7 @@ class Strategy(_BTStrategy):
         self.rsi = self.I(_rsi, close, self.rsi_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.entry_price = None
-        self.peak_price = None  # Track highest price since entry for trailing stop
+        self.take_profit_level = None
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -101,15 +101,10 @@ class Strategy(_BTStrategy):
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold:
             self.buy(size=0.95)
             self.entry_price = self.data.Close[-1]
-            self.peak_price = self.data.Close[-1]
+            self.take_profit_level = self.entry_price + self.atr[-1] * self.take_profit_atr_multiplier
         elif self.position:
-            # Update peak price for trailing stop
-            if self.data.Close[-1] > self.peak_price:
-                self.peak_price = self.data.Close[-1]
-            
-            # Exit conditions: trailing stop at 1.5-ATR below peak, or RSI overbought
-            trailing_stop_level = self.peak_price - self.atr[-1] * self.trailing_atr_multiplier
+            # Exit conditions: fixed 2R take-profit or RSI overbought
             rsi_overbought = self.rsi[-1] > self.rsi_overbought_threshold
             
-            if self.data.Close[-1] <= trailing_stop_level or rsi_overbought:
+            if self.data.Close[-1] >= self.take_profit_level or rsi_overbought:
                 self.position.close()
