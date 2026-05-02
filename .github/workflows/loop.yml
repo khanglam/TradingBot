@@ -119,16 +119,16 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: |
           python - <<'EOF'
-          import tomllib, os, sys
+          import os, sys
+          sys.path.insert(0, ".")
+          from campaigns import CAMPAIGNS
           campaign = os.environ["CAMPAIGN"]
-          with open("campaigns.toml", "rb") as f:
-              cfg = tomllib.load(f)
-          if campaign not in cfg:
-              sys.exit(f"CAMPAIGN={campaign!r} not in campaigns.toml")
+          if campaign not in CAMPAIGNS:
+              sys.exit(f"CAMPAIGN={campaign!r} not in campaigns.py")
           with open(os.environ["GITHUB_ENV"], "a") as gh_env:
-              for key, val in cfg[campaign].items():
+              for key, val in CAMPAIGNS[campaign].items():
                   gh_env.write(f"{key.upper()}={val}\n")
-          print(f"Exported {len(cfg[campaign])} vars for campaign={campaign!r}")
+          print(f"Exported {len(CAMPAIGNS[campaign])} vars for campaign={campaign!r}")
           EOF
 
       - name: Cache OHLCV parquet data

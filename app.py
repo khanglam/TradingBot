@@ -354,11 +354,11 @@ def get_equity():
     # We must run it in a subprocess or a separate thread, but backtesting.py is fast enough
     # for 2-3 assets to just block for 100ms.
     
-    # Reload bt_module and environment to pick up any changes if the user edited STRATEGY_FILE or .env
+    # Reload bt_module to pick up any campaign switch or env change.
+    # Do NOT load_dotenv(override=True) here — that would clobber env vars
+    # set by /api/campaign (campaign switch would reset on every equity call).
     import importlib
-    from dotenv import load_dotenv
     import backtest as bt_module
-    load_dotenv(override=True)
     importlib.reload(bt_module)
     from backtesting import Backtest
     from backtesting.lib import FractionalBacktest
@@ -404,6 +404,37 @@ def get_equity():
             "buy_and_hold_return": _safe_float(stats.get("Buy & Hold Return [%]")),
         },
     }
+
+
+@app.get("/api/campaigns")
+def get_campaigns() -> dict:
+    """Return available campaigns and which is currently active."""
+    try:
+        from campaigns import CAMPAIGNS
+        available = list(CAMPAIGNS.keys())
+    except ImportError:
+        available = ["stocks", "crypto"]
+    active = os.environ.get("CAMPAIGN", "stocks")
+    return {"active": active, "available": available}
+
+
+@app.post("/api/campaign/{name}")
+def set_campaign(name: str) -> dict:
+    """Switch the active campaign: updates env vars and reloads backtest module."""
+    try:
+        from campaigns import CAMPAIGNS
+    except ImportError:
+        raise HTTPException(500, "campaigns.py not found")
+    if name not in CAMPAIGNS:
+        raise HTTPException(400, f"Unknown campaign: {name!r}. Available: {list(CAMPAIGNS)}")
+    cfg = CAMPAIGNS[name]
+    os.environ["CAMPAIGN"] = name
+    for key, val in cfg.items():
+        os.environ[key.upper()] = str(val)
+    import importlib
+    import backtest as _bt
+    importlib.reload(_bt)
+    return {"ok": True, "campaign": name}
 
 
 @app.get("/api/setup")

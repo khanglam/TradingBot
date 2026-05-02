@@ -69,7 +69,22 @@
           <div class="w-8 h-8 rounded-md bg-gradient-to-br from-emerald-500 to-blue-500 flex items-center justify-center font-mono font-bold text-ink-950">A</div>
           <div>
             <div class="font-semibold tracking-tight">TradingBot</div>
-            <div class="text-xs text-ink-300 font-mono" x-text="'autoresearch · ' + (summary.symbols || '...')"></div>
+            <div class="text-xs text-ink-300 font-mono" x-text="activeCampaign + ' · ' + (summary.symbols || '...')"></div>
+          </div>
+          <!-- Campaign selector -->
+          <div class="flex items-center rounded-md overflow-hidden border border-ink-700 ml-1"
+               :class="campaignLoading ? 'opacity-40 pointer-events-none' : ''">
+            <button @click="switchCampaign('crypto')"
+                    class="px-3 py-1.5 text-xs font-mono transition-colors"
+                    :class="activeCampaign==='crypto' ? 'bg-blue-500/20 text-blue-300' : 'text-ink-400 hover:text-ink-200'">
+              ₿ Crypto
+            </button>
+            <div class="w-px bg-ink-700 self-stretch"></div>
+            <button @click="switchCampaign('stocks')"
+                    class="px-3 py-1.5 text-xs font-mono transition-colors"
+                    :class="activeCampaign==='stocks' ? 'bg-emerald-500/20 text-emerald-300' : 'text-ink-400 hover:text-ink-200'">
+              📈 Stocks
+            </button>
           </div>
         </div>
         <div class="ml-auto flex items-center gap-6">
@@ -251,7 +266,7 @@
       <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
           <div class="px-5 py-3 border-b border-ink-800 flex items-center">
-            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">strategy.py</div>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono" x-text="strategyPath || 'strategy.py'"></div>
             <button @click="runBacktest()" class="ml-auto text-xs px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 border border-ink-700 font-mono">▶ run backtest</button>
           </div>
           <pre class="p-5 max-h-[500px] overflow-auto custom-scroll text-xs leading-relaxed"><code class="language-python" x-text="strategySource"></code></pre>
@@ -536,8 +551,9 @@
         summary: { best_sharpe: 0, total: 0, keeps: 0, discards: 0, crashes: 0, keep_rate: 0, latest: null },
         results: [],
         setup: { checks: {}, data_files: [] },
-        strategySource: '',
+        strategySource: '', strategyPath: '',
         gitLog: [],
+        activeCampaign: 'stocks', campaignLoading: false,
         equity: { metrics: {}, timestamps: [], equity: [], buy_and_hold: [], drawdown: [] },
         equityLoading: false,
         loop: { running: false, lines: 0 },
@@ -599,6 +615,8 @@
           this.$watch('strategySource', () => this.highlightStrategy());
           this.$watch('results', () => this.renderProgression());
 
+          // Sync active campaign from server before fetching any campaign-scoped data.
+          await this.fetchCampaigns();
           await Promise.all([this.fetchSummary(), this.fetchResults(), this.fetchSetup(), this.fetchStrategy(), this.fetchGitLog()]);
           await Promise.all([this.fetchTradeLog(), this.fetchAlpacaPositions()]);
           // Defer first chart paint by one rAF so Tailwind's CDN has time to
@@ -618,8 +636,35 @@
         async fetchSummary()  { try { this.summary  = await fetch('/api/summary').then(r => r.json()); } catch {} },
         async fetchResults()  { try { this.results  = await fetch('/api/results').then(r => r.json()); } catch {} },
         async fetchSetup()    { try { this.setup    = await fetch('/api/setup').then(r => r.json()); } catch {} },
-        async fetchStrategy() { try { const r = await fetch('/api/strategy').then(r => r.json()); this.strategySource = r.source || ''; } catch {} },
+        async fetchStrategy() { try { const r = await fetch('/api/strategy').then(r => r.json()); this.strategySource = r.source || ''; this.strategyPath = r.path || 'strategy.py'; } catch {} },
         async fetchGitLog()   { try { const r = await fetch('/api/git-log?n=30').then(r => r.json()); this.gitLog = r.commits || []; } catch {} },
+
+        async fetchCampaigns() {
+          try {
+            const r = await fetch('/api/campaigns').then(r => r.json());
+            this.activeCampaign = r.active || 'stocks';
+          } catch {}
+        },
+
+        async switchCampaign(name) {
+          if (name === this.activeCampaign || this.campaignLoading) return;
+          this.campaignLoading = true;
+          try {
+            const r = await fetch('/api/campaign/' + name, { method: 'POST' }).then(r => r.json());
+            if (r.ok) {
+              this.activeCampaign = name;
+              // Auto-sync paper trader asset selector to the active campaign
+              this.tradeAsset = name === 'crypto' ? 'crypto' : 'stock';
+              // Reload all campaign-scoped data
+              await Promise.all([
+                this.fetchSummary(), this.fetchResults(),
+                this.fetchStrategy(), this.fetchGitLog(),
+              ]);
+              this.reloadEquity();
+            }
+          } catch (e) { console.warn('campaign switch failed:', e); }
+          finally { this.campaignLoading = false; }
+        },
 
         async reloadEquity() {
           this.equityLoading = true;

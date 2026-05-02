@@ -81,37 +81,36 @@ ROOT = Path(__file__).parent
 # ───────────────────────── Campaign config ────────────────────────
 # Resolution order (highest wins):
 #   1. Individual env var  (SYMBOLS=..., VAL_START=..., etc.)
-#   2. campaigns.toml profile  (loaded when CAMPAIGN=crypto / CAMPAIGN=stocks)
+#   2. campaigns.py profile  (loaded when CAMPAIGN=crypto / CAMPAIGN=stocks)
 #   3. Hardcoded fallback below
 #
 # Typical usage:
-#   CAMPAIGN=crypto python loop.py          # all settings from campaigns.toml
+#   CAMPAIGN=crypto python loop.py          # all settings from campaigns.py
 #   CAMPAIGN=crypto VAL_START=2021-01-01 python loop.py  # one-off override
 
 def _load_campaign_config() -> dict:
     campaign = os.environ.get("CAMPAIGN", "").strip()
     if not campaign:
         return {}
+    # Ensure ROOT is on sys.path so campaigns.py is importable regardless of CWD
+    _root_str = str(ROOT)
+    if _root_str not in sys.path:
+        sys.path.insert(0, _root_str)
     try:
-        import tomllib
+        from campaigns import CAMPAIGNS
     except ImportError:
         return {}
-    config_path = ROOT / "campaigns.toml"
-    if not config_path.exists():
-        return {}
-    with open(config_path, "rb") as f:
-        all_cfg = tomllib.load(f)
-    if campaign not in all_cfg:
-        available = list(all_cfg)
-        raise ValueError(f"CAMPAIGN={campaign!r} not found in campaigns.toml; available: {available}")
-    return all_cfg[campaign]
+    if campaign not in CAMPAIGNS:
+        available = list(CAMPAIGNS)
+        raise ValueError(f"CAMPAIGN={campaign!r} not found in campaigns.py; available: {available}")
+    return CAMPAIGNS[campaign]
 
 
 _CAMPAIGN_CFG = _load_campaign_config()
 
 
 def _cfg(env_key: str, default: str) -> str:
-    """env var > campaigns.toml value > hardcoded default. Always returns str."""
+    """env var > campaigns.py value > hardcoded default. Always returns str."""
     env_val = os.environ.get(env_key)
     if env_val:
         return env_val
