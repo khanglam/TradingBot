@@ -183,10 +183,15 @@ def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: floa
 
     try:
         from backtesting import Backtest
-        from backtest import load_strategy_class, STRATEGY_FILE
-        UserStrategy = load_strategy_class(STRATEGY_FILE)
-        bt = Backtest(df, UserStrategy, cash=cash, commission=0.0,
-                      exclusive_orders=True, finalize_trades=True)
+        from backtesting.lib import FractionalBacktest
+        from backtest import load_strategy_class
+        
+        strategy_file = "strategies/crypto.py" if asset == "crypto" else "strategies/stocks.py"
+        UserStrategy = load_strategy_class(strategy_file)
+        
+        BacktestClass = FractionalBacktest if asset == "crypto" else Backtest
+        bt = BacktestClass(df, UserStrategy, cash=cash, commission=0.0,
+                           exclusive_orders=True, finalize_trades=True)
         stats = bt.run()
     except Exception as e:
         out["error"] = f"backtest failed: {e}\n{traceback.format_exc()}"
@@ -423,10 +428,11 @@ def main() -> int:
 
     mode = "DRY" if args.dry else ("PAPER" if paper else "LIVE")
     print(f"[paper] mode={mode}  asset={args.asset}  symbols={','.join(symbols)}")
-    from backtest import STRATEGY_FILE
-    strat_path = (ROOT / STRATEGY_FILE)
+    
+    strategy_file = "strategies/crypto.py" if args.asset == "crypto" else "strategies/stocks.py"
+    strat_path = (ROOT / strategy_file)
     head = strat_path.read_text(encoding="utf-8").splitlines()[0] if strat_path.exists() else "(missing)"
-    print(f"[paper] strategy file: {STRATEGY_FILE}  | first line: {head}")
+    print(f"[paper] strategy file: {strategy_file}  | first line: {head}")
     print(f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={args.days}d  fresh={args.fresh}")
 
     # If we're going to actually submit, fail fast on missing creds — the user

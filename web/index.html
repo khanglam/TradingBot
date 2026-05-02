@@ -55,6 +55,7 @@
     th { user-select: none; }
     th:hover { color: #f4f4f5; }
     pre[x-ref="console"] { white-space: pre; }
+    [x-cloak] { display: none !important; }
   </style>
 </head>
 
@@ -95,7 +96,23 @@
       </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+    <!-- TAB NAV -->
+    <nav class="sticky z-20 border-b border-ink-800 bg-ink-950/80 backdrop-blur-sm" style="top:57px">
+      <div class="max-w-7xl mx-auto px-6 flex gap-1 pt-1">
+        <button @click="activeTab='trading'"
+                class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+                :class="activeTab==='trading' ? 'border-emerald-500 text-ink-100' : 'border-transparent text-ink-300 hover:text-ink-100'">
+          📊 Trading
+        </button>
+        <button @click="activeTab='autoresearch'"
+                class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors"
+                :class="activeTab==='autoresearch' ? 'border-emerald-500 text-ink-100' : 'border-transparent text-ink-300 hover:text-ink-100'">
+          🔬 Autoresearch
+        </button>
+      </div>
+    </nav>
+
+    <main x-show="activeTab==='autoresearch'" x-cloak class="max-w-7xl mx-auto px-6 py-8 space-y-8">
 
       <!-- KPI cards -->
       <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -282,6 +299,190 @@
       </section>
     </main>
 
+    <!-- ═══════════════ TRADING TAB ═══════════════ -->
+    <main x-show="activeTab==='trading'" class="max-w-7xl mx-auto px-6 py-8 space-y-6">
+
+      <!-- KPI cards -->
+      <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Orders Fired</div>
+          <div class="text-2xl font-semibold mt-2 text-emerald-400" x-text="tradeSummary.ordersFired"></div>
+          <div class="text-xs text-ink-300 mt-1" x-text="tradeSummary.lastRunAgo"></div>
+        </div>
+        <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Open Positions</div>
+          <div class="text-2xl font-semibold mt-2 text-ink-100" x-text="alpaca.error ? '—' : (alpaca.positions?.length ?? 0)"></div>
+          <div class="text-xs text-ink-300 mt-1" x-text="alpaca.error ? 'Alpaca not connected' : (alpaca.account?.paper ? 'paper account' : 'live account')"></div>
+        </div>
+        <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Account Equity</div>
+          <div class="text-2xl font-semibold mt-2" :class="alpaca.account ? 'text-emerald-400' : 'text-ink-300'"
+               x-text="alpaca.account ? '$' + Number(alpaca.account.equity).toLocaleString(undefined,{maximumFractionDigits:0}) : '—'"></div>
+          <div class="text-xs text-ink-300 mt-1" x-text="alpaca.account ? 'BP $' + Number(alpaca.account.buying_power).toLocaleString(undefined,{maximumFractionDigits:0}) : ''"></div>
+        </div>
+        <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Mode</div>
+          <div class="text-2xl font-semibold mt-2 font-mono"
+               :class="tradeSummary.lastMode==='LIVE' ? 'text-accent-discard' : tradeSummary.lastMode==='PAPER' ? 'text-accent-run' : 'text-ink-300'"
+               x-text="tradeSummary.lastMode || '—'"></div>
+          <div class="text-xs text-ink-300 mt-1" x-text="tradeSummary.totalSymbols + ' symbols tracked'"></div>
+        </div>
+      </section>
+
+      <!-- Positions + Trade Log -->
+      <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- Open Positions -->
+        <div class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+          <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Open Positions</div>
+            <div x-show="alpaca.account" class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full" :class="alpaca.account?.paper ? 'bg-accent-run' : 'bg-accent-discard'"></span>
+              <span class="text-xs font-mono text-ink-300" x-text="alpaca.account?.paper ? 'PAPER' : 'LIVE'"></span>
+            </div>
+            <button @click="fetchAlpacaPositions()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+          </div>
+          <div x-show="alpaca.error" class="p-8 text-center">
+            <div class="text-4xl mb-3">🔑</div>
+            <div class="text-sm text-ink-300 font-mono" x-text="alpaca.error"></div>
+            <div class="text-xs text-ink-300 mt-2">Add ALPACA_API_KEY + ALPACA_API_SECRET to .env</div>
+          </div>
+          <div x-show="!alpaca.error">
+            <table class="w-full text-sm" x-show="alpaca.positions?.length">
+              <thead class="border-b border-ink-800">
+                <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider">
+                  <th class="px-4 py-2">Symbol</th>
+                  <th class="px-4 py-2 text-right">Qty</th>
+                  <th class="px-4 py-2 text-right">Avg Cost</th>
+                  <th class="px-4 py-2 text-right">Mkt Val</th>
+                  <th class="px-4 py-2 text-right">P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="pos in alpaca.positions" :key="pos.symbol">
+                  <tr class="border-b border-ink-800/50 hover:bg-ink-800/40 transition-colors">
+                    <td class="px-4 py-2 font-mono font-semibold" x-text="pos.symbol"></td>
+                    <td class="px-4 py-2 font-mono text-right" x-text="pos.qty"></td>
+                    <td class="px-4 py-2 font-mono text-right" x-text="'$' + (pos.avg_entry_price ?? 0).toFixed(2)"></td>
+                    <td class="px-4 py-2 font-mono text-right" x-text="'$' + (pos.market_value ?? 0).toLocaleString(undefined,{maximumFractionDigits:0})"></td>
+                    <td class="px-4 py-2 font-mono text-right text-sm"
+                        :class="(pos.unrealized_pl ?? 0) >= 0 ? 'text-emerald-400' : 'text-accent-discard'"
+                        x-text="((pos.unrealized_pl ?? 0) >= 0 ? '+' : '') + '$' + (pos.unrealized_pl ?? 0).toFixed(2) + ' (' + (((pos.unrealized_plpc ?? 0)*100).toFixed(2)) + '%)'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="!alpaca.positions?.length" class="p-8 text-center text-ink-300 text-sm">No open positions</div>
+          </div>
+        </div>
+
+        <!-- Trade Log -->
+        <div class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+          <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Trade Log</div>
+            <span class="text-xs text-ink-300 font-mono" x-text="tradeLog.length + ' entries'"></span>
+            <button @click="fetchTradeLog()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+          </div>
+          <div class="overflow-auto max-h-80 custom-scroll">
+            <table class="w-full" x-show="tradeLog.length">
+              <thead class="bg-ink-900 sticky top-0 border-b border-ink-800">
+                <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider">
+                  <th class="px-4 py-2">Time</th>
+                  <th class="px-4 py-2">Mode</th>
+                  <th class="px-4 py-2">Symbol</th>
+                  <th class="px-4 py-2">Signal</th>
+                  <th class="px-4 py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(entry, i) in tradeLog" :key="i">
+                  <tr class="border-b border-ink-800/50 hover:bg-ink-800/40 transition-colors">
+                    <td class="px-4 py-1.5 font-mono text-xs text-ink-300" x-text="entry.ts?.slice(0,16).replace('T',' ')"></td>
+                    <td class="px-4 py-1.5">
+                      <span class="px-1.5 py-0.5 rounded text-xs font-mono uppercase"
+                            :class="entry.mode==='LIVE' ? 'bg-red-500/20 text-accent-discard' : entry.mode==='PAPER' ? 'bg-blue-500/20 text-accent-run' : 'bg-ink-700 text-ink-300'"
+                            x-text="entry.mode"></span>
+                    </td>
+                    <td class="px-4 py-1.5 font-mono text-xs font-semibold" x-text="entry.symbol"></td>
+                    <td class="px-4 py-1.5">
+                      <span x-show="entry.scan?.signal"
+                            class="px-1.5 py-0.5 rounded text-xs font-mono uppercase"
+                            :class="entry.scan?.signal==='BUY' ? 'bg-emerald-500/20 text-accent-keep' : 'bg-red-500/20 text-accent-discard'"
+                            x-text="entry.scan?.signal"></span>
+                      <span x-show="!entry.scan?.signal" class="text-ink-500 text-xs">—</span>
+                    </td>
+                    <td class="px-4 py-1.5">
+                      <span class="px-1.5 py-0.5 rounded text-xs font-mono"
+                            :class="{
+                              'bg-emerald-500/20 text-accent-keep': entry.execution?.action?.includes('buy'),
+                              'bg-red-500/20 text-accent-discard': entry.execution?.action?.includes('sell'),
+                              'bg-amber-500/20 text-accent-crash': entry.execution?.action==='error',
+                              'bg-ink-700 text-ink-300': ['noop','skip'].includes(entry.execution?.action),
+                            }"
+                            x-text="entry.execution?.action || '—'"></span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="!tradeLog.length" class="p-8 text-center text-ink-300 text-sm">No trade log entries yet.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Run Paper Trader -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg p-5">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Run Paper Trader</div>
+          <div class="flex items-center gap-2 ml-auto">
+            <span class="relative flex h-2 w-2">
+              <span class="absolute inline-flex h-full w-full rounded-full opacity-75" :class="tradeProc.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2" :class="tradeProc.running ? 'bg-accent-run' : 'bg-ink-500'"></span>
+            </span>
+            <span class="text-xs font-mono text-ink-300" x-text="tradeProc.running ? 'running…' : 'idle'"></span>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <div>
+            <label class="block text-xs text-ink-300 font-mono mb-1">Asset</label>
+            <select x-model="tradeAsset" class="w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500">
+              <option value="stock">Stock</option>
+              <option value="crypto">Crypto</option>
+            </select>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-xs text-ink-300 font-mono mb-1">Symbols <span class="text-ink-500">(blank = watchlist)</span></label>
+            <input type="text" x-model="tradeSymbols" placeholder="SPY,TSLA,NVDA"
+                   class="w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500" />
+          </div>
+          <div class="flex flex-col gap-2">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" x-model="tradeDry" class="rounded accent-emerald-500" />
+              <span class="font-mono text-xs text-ink-300">Dry run (no orders)</span>
+            </label>
+            <button @click="tradeProc.running ? stopTrader() : startTrader()"
+                    class="w-full px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                    :class="tradeProc.running
+                      ? 'bg-accent-discard/20 text-accent-discard hover:bg-accent-discard/30 border border-accent-discard/40'
+                      : 'bg-emerald-500/20 text-accent-keep hover:bg-emerald-500/30 border border-emerald-500/40'">
+              <span x-show="!tradeProc.running">▶ Run Trader</span>
+              <span x-show="tradeProc.running">■ Stop</span>
+            </button>
+          </div>
+        </div>
+        <div x-show="tradeConsoleLines.length" class="mt-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-xs font-mono text-ink-300 uppercase tracking-wider">Output</span>
+            <button @click="tradeConsoleLines=[]" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">clear</button>
+          </div>
+          <pre class="bg-ink-950 border border-ink-800 rounded-md p-3 font-mono text-xs leading-relaxed h-48 overflow-y-auto custom-scroll"
+          ><template x-for="line in tradeConsoleLines" :key="line.id"><span :class="tradeLineClass(line.text)" x-text="line.text + '\n'"></span></template></pre>
+        </div>
+      </section>
+
+    </main>
+    <!-- ═══════════════ END TRADING TAB ═══════════════ -->
+
     <!-- Launch modal -->
     <div x-show="showLaunch" x-transition.opacity
          class="fixed inset-0 z-40 bg-ink-950/70 backdrop-blur-sm flex items-center justify-center p-4"
@@ -345,6 +546,14 @@
         sortKey: '', sortDir: 'desc', filter: ['keep', 'discard', 'crash'],
         charts: { equity: null, progression: null, drawdown: null },
 
+        // ── Trading tab state ──
+        activeTab: 'trading',
+        tradeLog: [],
+        alpaca: { account: null, positions: [], error: null },
+        tradeProc: { running: false },
+        tradeConsoleLines: [], tradeConsoleId: 0, tradeSse: null,
+        tradeAsset: 'stock', tradeSymbols: '', tradeDry: true,
+
         get kpiCards() {
           const total = this.summary.total || 0;
           const keeps = this.summary.keeps || 0;
@@ -358,6 +567,19 @@
         },
 
         get keepCount() { return this.results.filter(r => r.status === 'keep').length; },
+
+        get tradeSummary() {
+          const log = this.tradeLog;
+          const fired = log.filter(e => !['noop','skip','error'].includes(e.execution?.action)).length;
+          const syms = new Set(log.map(e => e.symbol));
+          const last = log[0];
+          return {
+            ordersFired: fired,
+            lastMode: last?.mode || null,
+            totalSymbols: syms.size,
+            lastRunAgo: last ? this.timeAgo(last.ts) : 'no runs yet',
+          };
+        },
 
         get filteredResults() {
           let rows = this.results.filter(r => this.filter.includes(r.status));
@@ -378,6 +600,7 @@
           this.$watch('results', () => this.renderProgression());
 
           await Promise.all([this.fetchSummary(), this.fetchResults(), this.fetchSetup(), this.fetchStrategy(), this.fetchGitLog()]);
+          await Promise.all([this.fetchTradeLog(), this.fetchAlpacaPositions()]);
           // Defer first chart paint by one rAF so Tailwind's CDN has time to
           // inject styles. Otherwise parent height is 0 and Chart.js renders blank.
           requestAnimationFrame(() => {
@@ -387,6 +610,9 @@
           this.connectSSE();
           setInterval(() => { this.fetchSummary(); this.fetchResults(); }, 4000);
           setInterval(() => { this.fetchSetup(); }, 15000);
+          setInterval(() => { if (this.activeTab==='trading') this.fetchTradeLog(); }, 15000);
+          setInterval(() => { if (this.activeTab==='trading') this.fetchAlpacaPositions(); }, 30000);
+          this.connectTradeSse();
         },
 
         async fetchSummary()  { try { this.summary  = await fetch('/api/summary').then(r => r.json()); } catch {} },
@@ -454,6 +680,69 @@
           if (text.includes('crash') || text.includes('ERROR') || text.includes('Traceback')) return 'text-accent-crash';
           if (text.startsWith('[loop]')) return 'text-ink-200';
           if (text.startsWith('[ui]')) return 'text-accent-run';
+          return 'text-ink-300';
+        },
+
+        // ── Trading tab methods ──
+        timeAgo(ts) {
+          if (!ts) return '';
+          const m = Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
+          if (m < 1) return 'just now';
+          if (m < 60) return `${m}m ago`;
+          const h = Math.floor(m / 60);
+          return h < 24 ? `${h}h ago` : `${Math.floor(h/24)}d ago`;
+        },
+
+        async fetchTradeLog() {
+          try { this.tradeLog = await fetch('/api/paper-log?limit=100').then(r => r.json()); } catch {}
+        },
+
+        async fetchAlpacaPositions() {
+          try {
+            const r = await fetch('/api/alpaca/positions').then(r => r.json());
+            if (r.error) this.alpaca = { account: null, positions: [], error: r.error };
+            else this.alpaca = { account: r.account, positions: r.positions, error: null };
+          } catch {}
+        },
+
+        async startTrader() {
+          try {
+            const res = await fetch('/api/paper-trade/start', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ asset: this.tradeAsset, symbols: this.tradeSymbols, dry: this.tradeDry, live: false }),
+            });
+            if (!res.ok) throw new Error(await res.text());
+          } catch(e) {
+            this.tradeConsoleLines.push({ id: this.tradeConsoleId++, text: '[ui] start failed: ' + e });
+          }
+        },
+
+        async stopTrader() {
+          try { await fetch('/api/paper-trade/stop', { method: 'POST' }); } catch {}
+        },
+
+        connectTradeSse() {
+          if (this.tradeSse) { try { this.tradeSse.close(); } catch {} }
+          this.tradeSse = new EventSource('/api/paper-trade/stream');
+          this.tradeSse.addEventListener('line', e => {
+            const { line } = JSON.parse(e.data);
+            this.tradeConsoleLines.push({ id: this.tradeConsoleId++, text: line });
+            if (this.tradeConsoleLines.length > 500) this.tradeConsoleLines = this.tradeConsoleLines.slice(-400);
+          });
+          this.tradeSse.addEventListener('status', e => {
+            const s = JSON.parse(e.data);
+            const wasRunning = this.tradeProc.running;
+            this.tradeProc = s;
+            if (wasRunning && !s.running) { this.fetchTradeLog(); this.fetchAlpacaPositions(); }
+          });
+        },
+
+        tradeLineClass(text) {
+          if (!text) return 'text-ink-300';
+          if (text.includes('BUY')) return 'text-accent-keep';
+          if (text.includes('SELL')) return 'text-accent-discard';
+          if (text.includes('ERROR') || text.includes('error') || text.includes('Traceback')) return 'text-accent-crash';
+          if (text.startsWith('[trade]')) return 'text-ink-200';
           return 'text-ink-300';
         },
 

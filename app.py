@@ -187,6 +187,79 @@ class LoopProc:
 loop_proc = LoopProc()
 
 
+class PaperTradeProc:
+    """Thin wrapper to run live_trade.py as a supervised subprocess.
+    Mirrors LoopProc so the same SSE pattern can serve both."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.buffer: deque[tuple[int, str]] = deque(maxlen=2000)
+        self.next_id: int = 0
+        self.lock = threading.Lock()
+        self.reader: threading.Thread | None = None
+
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def _append(self, line: str) -> None:
+        self.buffer.append((self.next_id, line))
+        self.next_id += 1
+
+    def start(self, asset: str, symbols: str | None, dry: bool, live: bool) -> None:
+        with self.lock:
+            if self.is_running():
+                raise RuntimeError("Paper trader already running.")
+            self.buffer.clear()
+            args = [str(PYTHON), "live_trade.py", "--asset", asset]
+            if symbols:
+                args += ["--symbols", symbols]
+            if dry:
+                args.append("--dry")
+            if live:
+                args.append("--live")
+            self._append(f"[trade] starting: {' '.join(args[2:])}")
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+            self.proc = subprocess.Popen(
+                args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, creationflags=flags,
+                encoding="utf-8", errors="replace", env=env,
+            )
+            self.reader = threading.Thread(target=self._drain, daemon=True)
+            self.reader.start()
+
+    def _drain(self) -> None:
+        assert self.proc is not None and self.proc.stdout is not None
+        for line in iter(self.proc.stdout.readline, ""):
+            self._append(line.rstrip("\n"))
+        rc = self.proc.wait()
+        self._append(f"[trade] exited with code {rc}")
+
+    def stop(self) -> bool:
+        with self.lock:
+            if not self.is_running():
+                return False
+            assert self.proc is not None
+            try:
+                if sys.platform == "win32":
+                    self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    self.proc.terminate()
+            except Exception:
+                self.proc.kill()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self._append("[trade] stopped by user")
+            return True
+
+
+paper_proc = PaperTradeProc()
+
+
 # ───────────────────────────── routes ────────────────────────────────
 
 @app.get("/")
@@ -276,59 +349,58 @@ def git_log(n: int = 20) -> dict:
 
 
 @app.get("/api/equity")
-def equity_curve():
-    """Run strategy.py in-process to produce equity + drawdown for charting."""
-    try:
-        import importlib
+def get_equity():
+    """Run a fast backtest on the best strategy to get the equity curve."""
+    # We must run it in a subprocess or a separate thread, but backtesting.py is fast enough
+    # for 2-3 assets to just block for 100ms.
+    
+    # Reload bt_module and environment to pick up any changes if the user edited STRATEGY_FILE or .env
+    import importlib
+    from dotenv import load_dotenv
+    import backtest as bt_module
+    load_dotenv(override=True)
+    importlib.reload(bt_module)
+    from backtesting import Backtest
+    UserStrategy = bt_module.load_strategy_class(bt_module.STRATEGY_FILE)
 
-        sys.path.insert(0, str(ROOT))
-        import backtest as bt_module
-        importlib.reload(bt_module)
-        from backtesting import Backtest
-        UserStrategy = bt_module.load_strategy_class(bt_module.STRATEGY_FILE)
+    # Equity curve is single-asset by definition: pick the first symbol
+    # the harness would resolve from $SYMBOLS (or DEFAULT_SYMBOLS).
+    spec = os.environ.get("SYMBOLS") or bt_module.DEFAULT_SYMBOLS
+    resolved = bt_module._resolve_symbols(spec)
+    if not resolved:
+        raise HTTPException(400, "no symbols resolved from $SYMBOLS")
+    df = pd.read_parquet(resolved[0][1])
+    df = df.loc[bt_module.VAL_START:bt_module.VAL_END]
+    if len(df) < 100:
+        raise HTTPException(400, "validation window has too few candles")
 
-        # Equity curve is single-asset by definition: pick the first symbol
-        # the harness would resolve from $SYMBOLS (or DEFAULT_SYMBOLS).
-        spec = os.environ.get("SYMBOLS") or bt_module.DEFAULT_SYMBOLS
-        resolved = bt_module._resolve_symbols(spec)
-        if not resolved:
-            raise HTTPException(400, "no symbols resolved from $SYMBOLS")
-        df = pd.read_parquet(resolved[0][1])
-        df = df.loc[bt_module.VAL_START:bt_module.VAL_END]
-        if len(df) < 100:
-            raise HTTPException(400, "validation window has too few candles")
-
-        bt = Backtest(
-            df, UserStrategy,
-            cash=bt_module.STARTING_CASH,
-            commission=bt_module.COMMISSION,
-            exclusive_orders=True,
-            finalize_trades=True,
-        )
-        stats = bt.run()
-        eq = stats._equity_curve
-        bh_series = df["Close"] / df["Close"].iloc[0] * float(eq["Equity"].iloc[0])
-        max_dd = _safe_float(stats.get("Max. Drawdown [%]"))
-        win_rate = _safe_float(stats.get("Win Rate [%]"))
-        return {
-            "timestamps": [t.isoformat() for t in eq.index],
-            "equity": _safe_floats(eq["Equity"].astype(float).tolist()),
-            "buy_and_hold": _safe_floats(bh_series.astype(float).tolist()),
-            "drawdown": _safe_floats((-eq["DrawdownPct"].astype(float) * 100).tolist()),
-            "metrics": {
-                "sharpe": _safe_float(stats.get("Sharpe Ratio")),
-                "sortino": _safe_float(stats.get("Sortino Ratio")),
-                "max_drawdown": abs(max_dd) if max_dd is not None else None,
-                "win_rate": (win_rate / 100.0) if win_rate is not None else None,
-                "total_trades": int(stats.get("# Trades", 0) or 0),
-                "total_return": _safe_float(stats.get("Return [%]")),
-                "buy_and_hold_return": _safe_float(stats.get("Buy & Hold Return [%]")),
-            },
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    bt = Backtest(
+        df, UserStrategy,
+        cash=bt_module.STARTING_CASH,
+        commission=bt_module.COMMISSION,
+        exclusive_orders=True,
+        finalize_trades=True,
+    )
+    stats = bt.run()
+    eq = stats._equity_curve
+    bh_series = df["Close"] / df["Close"].iloc[0] * float(eq["Equity"].iloc[0])
+    max_dd = _safe_float(stats.get("Max. Drawdown [%]"))
+    win_rate = _safe_float(stats.get("Win Rate [%]"))
+    return {
+        "timestamps": [t.isoformat() for t in eq.index],
+        "equity": _safe_floats(eq["Equity"].astype(float).tolist()),
+        "buy_and_hold": _safe_floats(bh_series.astype(float).tolist()),
+        "drawdown": _safe_floats((-eq["DrawdownPct"].astype(float) * 100).tolist()),
+        "metrics": {
+            "sharpe": _safe_float(stats.get("Sharpe Ratio")),
+            "sortino": _safe_float(stats.get("Sortino Ratio")),
+            "max_drawdown": abs(max_dd) if max_dd is not None else None,
+            "win_rate": (win_rate / 100.0) if win_rate is not None else None,
+            "total_trades": int(stats.get("# Trades", 0) or 0),
+            "total_return": _safe_float(stats.get("Return [%]")),
+            "buy_and_hold_return": _safe_float(stats.get("Buy & Hold Return [%]")),
+        },
+    }
 
 
 @app.get("/api/setup")
@@ -439,6 +511,129 @@ async def loop_stream():
             yield {"event": "status", "data": json.dumps({
                 "running": loop_proc.is_running(),
                 "lines": loop_proc.next_id,
+            })}
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(event_gen())
+
+
+# ───────────────────── paper-log / alpaca routes ─────────────────────
+
+PAPER_LOG = ROOT / "results" / "paper.log"
+
+
+@app.get("/api/paper-log")
+def paper_log_route(limit: int = 200) -> list[dict]:
+    """Return the last `limit` records from results/paper.log, newest first."""
+    if not PAPER_LOG.exists():
+        return []
+    records: list[dict] = []
+    try:
+        with PAPER_LOG.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    except Exception:
+        return []
+    return list(reversed(records[-limit:]))
+
+
+@app.get("/api/alpaca/positions")
+def alpaca_positions() -> dict:
+    """Fetch open positions + account equity from Alpaca.
+    Returns {"error": "..."} if credentials are missing or alpaca-py not installed."""
+    api_key = os.environ.get("ALPACA_API_KEY", "").strip()
+    api_secret = os.environ.get("ALPACA_API_SECRET", "").strip()
+    if not api_key or not api_secret:
+        return {"error": "ALPACA_API_KEY / ALPACA_API_SECRET not set in .env"}
+    paper = os.environ.get("ALPACA_PAPER", "True").lower() != "false"
+    try:
+        from alpaca.trading.client import TradingClient
+    except ImportError:
+        return {"error": "alpaca-py not installed (pip install alpaca-py)"}
+    try:
+        client = TradingClient(api_key, api_secret, paper=paper)
+        account = client.get_account()
+        raw_positions = client.get_all_positions()
+        positions = []
+        for p in raw_positions:
+            positions.append({
+                "symbol": p.symbol,
+                "qty": float(p.qty),
+                "avg_entry_price": float(p.avg_entry_price),
+                "current_price": float(p.current_price) if p.current_price else None,
+                "market_value": float(p.market_value) if p.market_value else None,
+                "unrealized_pl": float(p.unrealized_pl) if p.unrealized_pl else None,
+                "unrealized_plpc": float(p.unrealized_plpc) if p.unrealized_plpc else None,
+                "side": str(p.side),
+            })
+        return {
+            "account": {
+                "equity": float(account.equity),
+                "buying_power": float(account.buying_power),
+                "cash": float(account.cash),
+                "paper": paper,
+                "status": str(account.status),
+            },
+            "positions": positions,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class PaperTradeRequest(BaseModel):
+    asset: str = "stock"
+    symbols: str = ""
+    dry: bool = True
+    live: bool = False
+
+
+@app.post("/api/paper-trade/start")
+def paper_trade_start(req: PaperTradeRequest) -> dict:
+    if req.asset not in ("stock", "crypto"):
+        raise HTTPException(400, "asset must be 'stock' or 'crypto'")
+    try:
+        paper_proc.start(
+            asset=req.asset,
+            symbols=req.symbols.strip() or None,
+            dry=req.dry,
+            live=req.live,
+        )
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return {"started": True}
+
+
+@app.post("/api/paper-trade/stop")
+def paper_trade_stop() -> dict:
+    return {"stopped": paper_proc.stop()}
+
+
+@app.get("/api/paper-trade/status")
+def paper_trade_status() -> dict:
+    return {"running": paper_proc.is_running(), "buffered_lines": len(paper_proc.buffer)}
+
+
+@app.get("/api/paper-trade/stream")
+async def paper_trade_stream():
+    async def event_gen():
+        last_id = paper_proc.next_id - 1
+        while True:
+            new_lines = [(lid, txt) for lid, txt in list(paper_proc.buffer) if lid > last_id]
+            if new_lines:
+                for lid, line in new_lines:
+                    yield {"event": "line", "data": json.dumps({"line": line})}
+                last_id = new_lines[-1][0]
+            yield {"event": "status", "data": json.dumps({
+                "running": paper_proc.is_running(),
+                "lines": paper_proc.next_id,
             })}
             await asyncio.sleep(0.5)
 

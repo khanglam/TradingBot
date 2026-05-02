@@ -304,6 +304,7 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
     Does not print; printing is handled at the caller level."""
     try:
         from backtesting import Backtest
+        from backtesting.lib import FractionalBacktest
         UserStrategy = load_strategy_class(STRATEGY_FILE)
     except Exception as e:
         print(f"# import error: {e}", file=sys.stderr)
@@ -322,7 +323,9 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
         return None
 
     try:
-        bt = Backtest(
+        is_crypto = "crypto" in str(data_path)
+        BacktestClass = FractionalBacktest if is_crypto else Backtest
+        bt = BacktestClass(
             df,
             UserStrategy,
             cash=STARTING_CASH,
