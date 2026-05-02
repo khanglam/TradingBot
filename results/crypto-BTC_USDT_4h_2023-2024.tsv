@@ -1,2 +1,0 @@
-commit	val_sharpe	sortino	sharpe_ann_4h	calmar	psr	dsr	skew	kurtosis	max_drawdown	win_rate	total_trades	status	description
-f2bee84	1.302946	4.346890	1.979834	7.254287	0.997653	0.997653	0.755	30.256	26.43	0.383	60	keep	Baseline: Donchian-breakout Turtle System One (20-bar entry, 10-bar exit, 2.5xATR trailing stop) -- replaces EMA strategy; proper crypto baseline for 4h bars.
