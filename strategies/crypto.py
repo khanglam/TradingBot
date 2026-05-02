@@ -69,12 +69,12 @@ class Strategy(_BTStrategy):
     atr_multiplier = 3.5
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
-    # above 1.2x the 50-bar moving average of ATR. Filters out breakfakes
+    # above 1.1x the 50-bar moving average of ATR. Filters out breakfakes
     # in ranging regimes where volatility is suppressed and price motion
-    # lacks persistence. Threshold 1.2x is empirically the inflection point
-    # where trend-following Sharpe begins to improve on crypto 4h bars.
+    # lacks persistence. Threshold lowered from 1.2x to widen entry set
+    # after 0-trade crashes from over-constrained filter stack.
     atr_ma_period = 50
-    atr_vol_threshold = 1.2
+    atr_vol_threshold = 1.1
 
     def init(self) -> None:
         high = self.data.High
