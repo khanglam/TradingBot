@@ -58,11 +58,12 @@ class Strategy(_BTStrategy):
     breakout_period = 20
     exit_period = 10
 
-    # ATR trailing stop — volatility-aware hard exit. 2.5*ATR is wide enough
-    # for crypto's normal swings to not stop out, narrow enough to cap a
-    # flash-crash drawdown to roughly 7-12% of the peak.
+    # ATR trailing stop — volatility-aware hard exit. 3.5*ATR is wider than
+    # the prior 2.5*ATR, allowing trending moves to run longer and capture
+    # more of the upside before volatility-triggered exits, improving
+    # compounding on sustained trends without dramatically increasing drawdown.
     atr_period = 14
-    atr_multiplier = 2.5
+    atr_multiplier = 3.5
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 1.2x the 50-bar moving average of ATR. Filters out breakfakes
