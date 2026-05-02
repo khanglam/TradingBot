@@ -45,19 +45,6 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.n
     return adx.fillna(0).to_numpy()
 
 
-def _rsi(series: pd.Series, n: int = 14) -> np.ndarray:
-    """Compute RSI (Relative Strength Index) momentum oscillator."""
-    series = pd.Series(series)
-    delta = series.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(n).mean()
-    avg_loss = pd.Series(loss).rolling(n).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50).to_numpy()
-
-
 def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
     """Average True Range. Use for ATR-multiple stops, position sizing,
     and Keltner channels. Rising ATR = expanding volatility."""
@@ -74,8 +61,6 @@ class Strategy(_BTStrategy):
     slow = 45
     adx_period = 14
     adx_threshold = 25
-    rsi_period = 14
-    rsi_overbought_threshold = 70
     atr_period = 14
     take_profit_atr_multiplier = 2.0  # Fixed 2R take-profit at 2× ATR above entry
 
@@ -87,7 +72,6 @@ class Strategy(_BTStrategy):
         self.ema_fast = self.I(_ema, close, self.fast)
         self.ema_slow = self.I(_ema, close, self.slow)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
-        self.rsi = self.I(_rsi, close, self.rsi_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.entry_price = None
         self.take_profit_level = None
@@ -103,8 +87,5 @@ class Strategy(_BTStrategy):
             self.entry_price = self.data.Close[-1]
             self.take_profit_level = self.entry_price + self.atr[-1] * self.take_profit_atr_multiplier
         elif self.position:
-            # Exit conditions: fixed 2R take-profit or RSI overbought
-            rsi_overbought = self.rsi[-1] > self.rsi_overbought_threshold
-            
-            if self.data.Close[-1] >= self.take_profit_level or rsi_overbought:
+            if self.data.Close[-1] >= self.take_profit_level:
                 self.position.close()
