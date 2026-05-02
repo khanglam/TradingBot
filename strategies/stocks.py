@@ -2,8 +2,8 @@
 STRATEGY_FILE points here (default for the stocks matrix shard).
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.
-Exit: ATR-based trailing stop (1.0 × ATR) to adapt exit width to volatility,
-plus RSI>70 overbought exit to take profits at overbought levels.
+Exit: 2-ATR fixed take-profit to lock in gains fast, plus RSI>70 overbought exit
+to take profits at momentum peaks.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ class Strategy(_BTStrategy):
     rsi_oversold_threshold = 30
     rsi_overbought_threshold = 70
     atr_period = 14
-    atr_multiplier = 1.0  # ATR multiplier for trailing stop
+    tp_atr_multiplier = 2.0  # Fixed take-profit at 2 ATR above entry
 
     def init(self) -> None:
         close = self.data.Close
@@ -91,7 +91,7 @@ class Strategy(_BTStrategy):
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.rsi = self.I(_rsi, close, self.rsi_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
-        self.highest_price = None  # Track highest price since entry for trailing stop
+        self.entry_price = None  # Track entry price for fixed take-profit
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -101,13 +101,10 @@ class Strategy(_BTStrategy):
 
         if crossed_up and not self.position and self.adx[-1] > self.adx_threshold and self.rsi[-1] > self.rsi_oversold_threshold:
             self.buy(size=0.95)
-            self.highest_price = self.data.Close[-1]
+            self.entry_price = self.data.Close[-1]
         elif self.position:
-            # Update highest price since entry
-            self.highest_price = max(self.highest_price, self.data.Close[-1])
-            
-            # Exit conditions: ATR trailing stop or RSI overbought
-            trailing_stop_level = self.highest_price - self.atr[-1] * self.atr_multiplier
+            # Exit conditions: fixed take-profit at 2-ATR above entry, or RSI overbought
+            tp_level = self.entry_price + self.atr[-1] * self.tp_atr_multiplier
             rsi_overbought = self.rsi[-1] > self.rsi_overbought_threshold
-            if self.data.Close[-1] <= trailing_stop_level or rsi_overbought:
+            if self.data.Close[-1] >= tp_level or rsi_overbought:
                 self.position.close()
