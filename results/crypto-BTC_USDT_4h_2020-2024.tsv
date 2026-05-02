@@ -1,6 +1,0 @@
-commit	val_sharpe	sortino	sharpe_ann_4h	calmar	psr	dsr	skew	kurtosis	max_drawdown	win_rate	total_trades	status	description
-0389e3c	0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0.000	0.000	0.00	0.000	0	crash	Replace EMA cross-over entry with a Bollinger band breakout.
-e77b24d	0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0.000	0.000	0.00	0.000	0	crash	Replace Bollinger band entry with an RSI overbought filter.
-592cd50	0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0.000	0.000	0.00	0.000	0	crash	Diagnose and fix the crash caused by the _adx function returning None.
-f845d24	0.000000	0.000000	0.000000	0.000000	0.000000	0.000000	0.000	0.000	0.00	0.000	0	crash	Diagnose and fix the crash caused by the `_rsi` function returning `None`.
-fae2f62	-0.077140	-0.118148	0.006536	-0.171513	0.505833	0.505833	-0.270	121.802	36.06	0.330	106	discard	Relax the ADX threshold from 25 to 20 to widen the entry conditions and avoid recent 0-trade crashes.
