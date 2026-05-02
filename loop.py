@@ -499,7 +499,7 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
     # code that broke and the traceback. Without this, the loop wastes
     # iterations re-proposing the same broken pattern.
     # However, if the LLM repeatedly fails to fix the crash (e.g., due to laziness),
-    # we stop feeding the crash back after 2 attempts to break the infinite loop.
+    # we stop feeding the crash back after 3 attempts to break the infinite loop.
     consecutive_crashes = 0
     for r in reversed(history):
         if r.get("status") == "crash":
@@ -507,7 +507,7 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
         else:
             break
 
-    if consecutive_crashes > 0 and consecutive_crashes <= 2:
+    if consecutive_crashes > 0 and consecutive_crashes <= 3:
         sha = history[-1].get("commit", "")
         crashed_src = ""
         if sha:
