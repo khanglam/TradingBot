@@ -298,6 +298,8 @@ When the loop calls you, respond with **exactly two sections**, nothing else:
 ```
 ````
 
+**CRITICAL WARNING:** Do NOT be lazy. You MUST output the ENTIRE file verbatim, including all imports and helper functions, even if you did not change them. Do NOT use placeholders like `# ... (existing code)` or `# ... rest of file`. If you omit code, Python will throw an `IndentationError` or `NameError`, causing an immediate crash and discard.
+
 `<path>` should match the path you were shown at the top of the prompt
 (e.g. `## strategies/stocks.py`). The loop will overwrite that file
 verbatim with your code block, commit with the description, and run the
