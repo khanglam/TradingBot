@@ -12,7 +12,7 @@ Why this and not the stocks EMA crossover:
   - Two exits in parallel — short-Donchian band break (recent weakness) AND
     ATR trailing stop (volatility-aware hard stop) — handle the two ways a
     crypto trend dies: slow rollover vs flash crash.
-  - 20/10-bar Donchian (~3.3-day entry, ~1.7-day exit) trades often enough
+  - 20/15-bar Donchian (~3.3-day entry, ~2.5-day exit) trades often enough
     to clear MIN_TRADES on a 2-year val window without becoming pure noise.
 
 The agent is free to replace any of this. This is a starting point with
@@ -53,10 +53,13 @@ def _atr_ma(high: pd.Series, low: pd.Series, close: pd.Series, atr_n: int = 14, 
 
 
 class Strategy(_BTStrategy):
-    # Turtle System One: 20-bar breakout entry, 10-bar opposite exit.
-    # On 4h bars this is ~3.3-day entry confirmation, ~1.7-day exit signal.
+    # Turtle System One: 20-bar breakout entry, 15-bar opposite exit.
+    # On 4h bars this is ~3.3-day entry confirmation, ~2.5-day exit signal.
+    # Wider exit window (15 vs 10) allows more trending captures before
+    # Donchian-break exits trigger, increasing trade count while preserving
+    # the proven volatility-adaptive entry gate (ATR > 1.2x MA).
     breakout_period = 20
-    exit_period = 10
+    exit_period = 15
 
     # ATR trailing stop — volatility-aware hard exit. 3.5*ATR is wider than
     # the prior 2.5*ATR, allowing trending moves to run longer and capture
