@@ -78,33 +78,54 @@ except Exception:
 
 ROOT = Path(__file__).parent
 
-# ───────────────────────── Configuration ──────────────────────────
-# Defaults below; ALL overridable via env vars so the same harness can run
-# multiple campaigns side-by-side. Each (symbols × val-window) combination
-# writes to its own results file so histories never collide — see
-# results_path() further down.
+# ───────────────────────── Campaign config ────────────────────────
+# Resolution order (highest wins):
+#   1. Individual env var  (SYMBOLS=..., VAL_START=..., etc.)
+#   2. campaigns.toml profile  (loaded when CAMPAIGN=crypto / CAMPAIGN=stocks)
+#   3. Hardcoded fallback below
 #
-# Env vars read at module load:
-#   SYMBOLS              comma-sep parquet stems (e.g. "stocks/TSLA_1d,stocks/NVDA_1d")
-#   STARTING_CASH        int (default 1_000_000)
-#   COMMISSION           float, e.g. 0.0006 for crypto, 0.0 for equities
-#   TRAIN_START/END      ISO dates
-#   VAL_START/END        ISO dates  (the loop optimizes against this window)
-#   LOCKBOX_START        ISO date — held-out; loop never touches
-#   MIN_TRADES           single-symbol min trade count (below → val_sharpe forced to 0)
-#   MIN_BASKET_TRADES    per-symbol min in basket mode
-#   BASKET_PENALTY       stdev penalty in basket scoring (read at use site)
-#   DSR_BENCHMARK        per-bar SR benchmark for DSR (loop sets per-iter)
-#   OPTIMIZE_METRIC      val_sharpe | calmar | dsr (read by loop.py)
+# Typical usage:
+#   CAMPAIGN=crypto python loop.py          # all settings from campaigns.toml
+#   CAMPAIGN=crypto VAL_START=2021-01-01 python loop.py  # one-off override
 
-DEFAULT_SYMBOLS = os.environ.get("SYMBOLS") or "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d"
+def _load_campaign_config() -> dict:
+    campaign = os.environ.get("CAMPAIGN", "").strip()
+    if not campaign:
+        return {}
+    try:
+        import tomllib
+    except ImportError:
+        return {}
+    config_path = ROOT / "campaigns.toml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "rb") as f:
+        all_cfg = tomllib.load(f)
+    if campaign not in all_cfg:
+        available = list(all_cfg)
+        raise ValueError(f"CAMPAIGN={campaign!r} not found in campaigns.toml; available: {available}")
+    return all_cfg[campaign]
 
-# STRATEGY_FILE = path (relative to repo root or absolute) of the strategy
-# file the backtest harness, loop, scanner, and paper executor should load.
-# Different campaigns use different files (strategies/stocks.py vs
-# strategies/crypto.py) so they can evolve independently without overwriting
-# each other's keeps. If unset, default is derived from SYMBOLS prefix
-# (crypto/* → strategies/crypto.py, anything else → strategies/stocks.py).
+
+_CAMPAIGN_CFG = _load_campaign_config()
+
+
+def _cfg(env_key: str, default: str) -> str:
+    """env var > campaigns.toml value > hardcoded default. Always returns str."""
+    env_val = os.environ.get(env_key)
+    if env_val:
+        return env_val
+    toml_val = _CAMPAIGN_CFG.get(env_key.lower())
+    if toml_val is not None:
+        return str(toml_val)
+    return default
+
+
+# ───────────────────────── Configuration ──────────────────────────
+DEFAULT_SYMBOLS = _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
+
+# STRATEGY_FILE: each campaign owns its own file so stocks and crypto evolve
+# independently. Derived from SYMBOLS prefix if not explicitly set.
 def _default_strategy_file(symbols_spec: str) -> str:
     parts = [p.strip() for p in symbols_spec.split(",") if p.strip()]
     if parts and all(p.startswith("crypto/") for p in parts):
@@ -112,7 +133,11 @@ def _default_strategy_file(symbols_spec: str) -> str:
     return "strategies/stocks.py"
 
 
-STRATEGY_FILE = os.environ.get("STRATEGY_FILE") or _default_strategy_file(DEFAULT_SYMBOLS)
+STRATEGY_FILE = (
+    os.environ.get("STRATEGY_FILE")
+    or _CAMPAIGN_CFG.get("strategy_file")
+    or _default_strategy_file(DEFAULT_SYMBOLS)
+)
 
 
 def load_strategy_class(path: str | Path) -> type:
@@ -135,7 +160,7 @@ def load_strategy_class(path: str | Path) -> type:
     return mod.Strategy
 
 
-STARTING_CASH = int(os.environ.get("STARTING_CASH", "1000000"))
+STARTING_CASH = int(_cfg("STARTING_CASH", "1000000"))
 # COMMISSION is applied per side in backtesting.py (entry + exit each pay it),
 # so 0.001 = 10 bps round-trip. This is a conservative slippage-and-spread
 # proxy for liquid US large-caps (real spread ~2-5 bps for SPY/TSLA/NVDA,
@@ -143,16 +168,16 @@ STARTING_CASH = int(os.environ.get("STARTING_CASH", "1000000"))
 # ~0.1% — 0.001 is similar to taker + thin spread padding.
 # The point is to kill "scalp the noise" overfits — strategies that capture
 # 0.1% moves look great with commission=0 and bleed money in production.
-COMMISSION = float(os.environ.get("COMMISSION", "0.001"))
+COMMISSION = float(_cfg("COMMISSION", "0.001"))
 
-TRAIN_START = os.environ.get("TRAIN_START", "2018-01-01")
-TRAIN_END = os.environ.get("TRAIN_END", "2019-12-31")
-VAL_START = os.environ.get("VAL_START", "2020-01-01")
-VAL_END = os.environ.get("VAL_END", "2024-12-31")
-LOCKBOX_START = os.environ.get("LOCKBOX_START", "2025-01-01")
+TRAIN_START = _cfg("TRAIN_START", "2018-01-01")
+TRAIN_END   = _cfg("TRAIN_END",   "2019-12-31")
+VAL_START   = _cfg("VAL_START",   "2020-01-01")
+VAL_END     = _cfg("VAL_END",     "2024-12-31")
+LOCKBOX_START = _cfg("LOCKBOX_START", "2025-01-01")
 
-MIN_TRADES = int(os.environ.get("MIN_TRADES", "20"))
-MIN_BASKET_TRADES = int(os.environ.get("MIN_BASKET_TRADES", "5"))
+MIN_TRADES        = int(_cfg("MIN_TRADES",        "20"))
+MIN_BASKET_TRADES = int(_cfg("MIN_BASKET_TRADES", "5"))
 
 
 def _slug_for_symbols(spec: str) -> str:

@@ -71,29 +71,12 @@ jobs:
       matrix:
         campaign:
           - name: stocks
-            strategy_file: 'strategies/stocks.py'
-            symbols: 'stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d'
-            # 0.001 per side (10 bps round-trip) — slippage + spread proxy.
-            # See backtest.py:COMMISSION for rationale.
-            commission: '0.001'
-            val_start: '2020-01-01'
-            val_end: '2024-12-31'
           - name: crypto
-            strategy_file: 'strategies/crypto.py'
-            symbols: 'crypto/BTC_USDT_4h'
-            # 0.001 per side — KuCoin taker (~0.1%) + thin spread padding.
-            commission: '0.001'
-            val_start: '2023-01-01'
-            val_end: '2024-12-31'
 
     env:
       ITERS: ${{ github.event.inputs.iters || '8' }}
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
-      STRATEGY_FILE: ${{ matrix.campaign.strategy_file }}
-      SYMBOLS: ${{ matrix.campaign.symbols }}
-      COMMISSION: ${{ matrix.campaign.commission }}
-      VAL_START: ${{ matrix.campaign.val_start }}
-      VAL_END: ${{ matrix.campaign.val_end }}
+      CAMPAIGN: ${{ matrix.campaign.name }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5' }}
       PYTHONUTF8: '1'
@@ -131,6 +114,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install backtesting ccxt yfinance openai pyarrow scipy python-dotenv
+
+      - name: Export campaign config to environment
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          python - <<'EOF'
+          import tomllib, os, sys
+          campaign = os.environ["CAMPAIGN"]
+          with open("campaigns.toml", "rb") as f:
+              cfg = tomllib.load(f)
+          if campaign not in cfg:
+              sys.exit(f"CAMPAIGN={campaign!r} not in campaigns.toml")
+          with open(os.environ["GITHUB_ENV"], "a") as gh_env:
+              for key, val in cfg[campaign].items():
+                  gh_env.write(f"{key.upper()}={val}\n")
+          print(f"Exported {len(cfg[campaign])} vars for campaign={campaign!r}")
+          EOF
 
       - name: Cache OHLCV parquet data
         if: steps.gate.outputs.skip != 'true'

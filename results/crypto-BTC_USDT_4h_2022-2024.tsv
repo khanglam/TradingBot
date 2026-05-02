@@ -1,0 +1,2 @@
+commit	val_sharpe	sortino	sharpe_ann_4h	calmar	psr	dsr	skew	kurtosis	max_drawdown	win_rate	total_trades	status	description
+f2bee84	0.657731	1.409012	0.928207	2.831462	0.946068	0.946068	0.134	31.132	34.37	0.344	90	keep	Baseline: Donchian-breakout Turtle System One on 2022-2024 window (covers 2022 bear + 2023-2024 bull). Starting point for regime-aware mutations.

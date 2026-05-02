@@ -83,8 +83,8 @@ DEFAULT_MODEL = "anthropic/claude-haiku-4-5"  # any model slug from openrouter.a
 MAX_OUTPUT_TOKENS = 8000
 
 KEEP_THRESHOLD = float(os.environ.get("KEEP_THRESHOLD", "0.0"))  # strictly > best
-MAX_DRAWDOWN_LIMIT = float(os.environ.get("MAX_DRAWDOWN_LIMIT", "30.0"))
-MIN_TRADES = int(os.environ.get("MIN_TRADES", "20"))
+MAX_DRAWDOWN_LIMIT = float(_bt_module._cfg("MAX_DRAWDOWN_LIMIT", "30.0"))
+MIN_TRADES = int(_bt_module._cfg("MIN_TRADES", "20"))
 # Karpathy autoresearch runs until --iters or human interrupt — no strike-out.
 # Failure is the steady state at ~25% keep rate. Set MAX_REGRESSIONS>0 in env
 # to re-enable a brake for unattended runs.
