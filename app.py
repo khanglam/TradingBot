@@ -130,6 +130,8 @@ class LoopProc:
         self.next_id: int = 0
         self.lock = threading.Lock()
         self.reader: threading.Thread | None = None
+        self.current_iter: int = 0
+        self.total_iters: int = 0
 
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -143,6 +145,8 @@ class LoopProc:
             if self.is_running():
                 raise RuntimeError("Loop already running.")
             self.buffer.clear()
+            self.current_iter = 0
+            self.total_iters = iters
             self._append(f"[ui] starting loop.py --iters {iters}")
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
             env = os.environ.copy()
@@ -159,8 +163,14 @@ class LoopProc:
 
     def _drain(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
+        _iter_re = re.compile(r"iteration\s+(\d+)/(\d+)")
         for line in iter(self.proc.stdout.readline, ""):
-            self._append(line.rstrip("\n"))
+            line = line.rstrip("\n")
+            m = _iter_re.search(line)
+            if m:
+                self.current_iter = int(m.group(1))
+                self.total_iters = int(m.group(2))
+            self._append(line)
         rc = self.proc.wait()
         self._append(f"[ui] loop exited with code {rc}")
 
@@ -545,6 +555,8 @@ async def loop_stream():
             yield {"event": "status", "data": json.dumps({
                 "running": loop_proc.is_running(),
                 "lines": loop_proc.next_id,
+                "current_iter": loop_proc.current_iter,
+                "total_iters": loop_proc.total_iters,
             })}
             await asyncio.sleep(0.5)
 
