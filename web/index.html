@@ -99,7 +99,7 @@
               <span class="absolute inline-flex h-full w-full rounded-full opacity-75" :class="loop.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
               <span class="relative inline-flex rounded-full h-2 w-2" :class="loop.running ? 'bg-accent-run' : 'bg-ink-500'"></span>
             </span>
-            <span class="text-ink-300" x-text="loop.running ? 'loop running' : 'idle'"></span>
+            <span class="text-ink-300" x-text="loop.running ? (loopProgress.total ? loopProgress.current + '/' + loopProgress.total : 'running') : 'idle'"></span>
           </div>
           <button @click="loop.running ? stopLoop() : (showLaunch = true)"
                   class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors"
@@ -557,6 +557,7 @@
         equity: { metrics: {}, timestamps: [], equity: [], buy_and_hold: [], drawdown: [] },
         equityLoading: false,
         loop: { running: false, lines: 0 },
+        loopProgress: { current: 0, total: 0 },
         consoleLines: [], consoleOpen: true, consoleId: 0, sse: null,
         showLaunch: false, launchIters: 5,
         sortKey: '', sortDir: 'desc', filter: ['keep', 'discard', 'crash'],
@@ -703,6 +704,7 @@
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ iters: this.launchIters }),
             }).then(r => { if (!r.ok) throw new Error('failed to start'); });
+            this.loopProgress = { current: 0, total: this.launchIters };
             this.consoleOpen = true;
           } catch (e) { this.pushConsole('[ui] start failed: ' + e); }
         },
@@ -797,6 +799,9 @@
             this.sse.addEventListener('line', e => {
               const { line } = JSON.parse(e.data);
               this.pushConsole(line);
+              // Parse "========== iteration 57/100 ==========" → loopProgress
+              const m = line.match(/iteration\s+(\d+)\/(\d+)/);
+              if (m) this.loopProgress = { current: parseInt(m[1]), total: parseInt(m[2]) };
               if (line.startsWith('[loop] KEEP')) {
                 this.fetchSummary(); this.fetchResults(); this.fetchStrategy(); this.fetchGitLog();
                 this.reloadEquity();
@@ -807,6 +812,7 @@
               if (this.loop.running !== s.running) {
                 this.loop = s;
                 if (!s.running) {
+                  this.loopProgress = { current: 0, total: 0 };
                   this.fetchSummary(); this.fetchResults(); this.fetchStrategy(); this.fetchGitLog();
                   this.reloadEquity();
                 }
