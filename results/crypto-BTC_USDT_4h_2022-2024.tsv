@@ -37,3 +37,4 @@ d0ba78f	1.062820	2.742664	1.431675	7.597733	0.993464	0.822779	0.238	26.631	25.31
 a191ed1	1.052974	2.421262	1.249294	6.230625	0.986711	0.667895	2.225	67.473	15.73	0.500	48	discard	Most recent keep followed by discard from Donchian exit period nudge; add 24-bar (4-day) time-based exit to capture stagnant positions.
 b1069c1	0.875650	2.153620	1.243906	5.184727	0.984464	0.667004	0.184	22.471	35.14	0.346	78	discard	Replace ATR volatility entry gate with MACD momentum filter (bullish cross), structural shift from prior entry filter experiments (ADX, SMA200).
 8f6b298	1.118959	2.665448	1.421059	6.247228	0.992783	0.773463	-0.127	39.490	20.34	0.462	39	discard	Recent discards after keep indicate orbiting sharpe baseline; switch to volatility-adjusted position sizing using ATR MA ratio.
+c8196fe	0.875650	2.153620	1.243906	5.184727	0.984464	0.674574	0.184	22.471	35.14	0.346	78	discard	Remove ATR MA volatility entry filter to widen entry set, retaining all exit parameters.
