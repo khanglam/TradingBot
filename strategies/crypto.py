@@ -88,14 +88,16 @@ class Strategy(_BTStrategy):
     # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
     vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
     
-    # Base fraction reduced from 0.75 to 0.70 to further compress maximum
+    # Base fraction reduced from 0.70 to 0.65 to further compress maximum
     # drawdown and smooth equity curve via conservative capital deployment.
-    # Fractional downsizing (not entry/exit mutations) is the proven lever:
-    # recent discards from base_fraction mutations (0.75–0.85) all held sharpe
-    # 1.24–1.60, confirming that sizing tuning preserves trade count while
-    # dampening volatility. Further reduction to 0.70 trades a small amount
-    # less capital per entry without new signal logic or risk of 0-trade crashes.
-    base_fraction = 0.70
+    # Recent keeps (3520d7b, 84b35bf) plateau at sharpe 1.625–1.673 with DD
+    # 7.04–7.58%. All entry/exit logic has been exhausted (breakout_period,
+    # exit_period, time-decay, regime gates all optimal). The remaining lever
+    # is sizing: fractional reduction from 0.70 to 0.65 trades ~7% less capital
+    # per entry without mutating signal logic or risking 0-trade crashes. This
+    # preserves trade count (~50 trades in val window) while dampening peak
+    # drawdown and volatility, targeting higher Sharpe via capital conservation.
+    base_fraction = 0.65
 
     # Time-decay exit: close position after N bars in trade, regardless of
     # price action. On 4h bars, 40 bars ≈ 6.7 days. Complements ATR trailing
