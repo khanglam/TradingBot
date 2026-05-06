@@ -86,13 +86,14 @@ class Strategy(_BTStrategy):
     # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
     vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
     
-    # Base fraction reduced from 0.80 to 0.75 to further compress maximum
-    # drawdown and smoothen equity curve. Recent best keeps (be1c4a6 sharpe
-    # 1.46 DD 7.76%, 3312101 sharpe 1.36 DD 10.74%) all used 0.80–0.85 with
-    # stable Sharpe; fractional downsizing has proven more effective than
-    # 10+ entry/exit mutations. Reducing to 0.75 trades slightly less capital
-    # per trade, dampening volatility spikes without new signal logic.
-    base_fraction = 0.75
+    # Base fraction reduced from 0.75 to 0.70 to further compress maximum
+    # drawdown and smooth equity curve via conservative capital deployment.
+    # Fractional downsizing (not entry/exit mutations) is the proven lever:
+    # recent discards from base_fraction mutations (0.75–0.85) all held sharpe
+    # 1.24–1.60, confirming that sizing tuning preserves trade count while
+    # dampening volatility. Further reduction to 0.70 trades a small amount
+    # less capital per entry without new signal logic or risk of 0-trade crashes.
+    base_fraction = 0.70
 
     # Time-decay exit: close position after N bars in trade, regardless of
     # price action. On 4h bars, 40 bars ≈ 6.7 days. Complements ATR trailing
