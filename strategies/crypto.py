@@ -57,7 +57,7 @@ class Strategy(_BTStrategy):
     # On 4h bars this is ~3.3-day entry confirmation, ~2.5-day exit signal.
     # Wider exit window (15 vs 10) allows more trending captures before
     # Donchian-break exits trigger, increasing trade count while preserving
-    # the proven volatility-adaptive entry gate (ATR > 1.1x MA).
+    # the proven volatility-adaptive entry gate (ATR > 1.0x MA).
     breakout_period = 20
     exit_period = 15
 
@@ -70,12 +70,12 @@ class Strategy(_BTStrategy):
     atr_multiplier = 2.5
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
-    # above 1.1x the 50-bar moving average of ATR. Filters out breakfakes
+    # above 1.0x the 50-bar moving average of ATR. Filters out breakfakes
     # in ranging regimes where volatility is suppressed and price motion
-    # lacks persistence. Threshold lowered from 1.2x to widen entry set
-    # after 0-trade crashes from over-constrained filter stack.
+    # lacks persistence. Threshold relaxed from 1.1x to 1.0x to widen entry 
+    # set after repeated 0-trade crashes from over-constrained filter stack.
     atr_ma_period = 50
-    atr_vol_threshold = 1.1
+    atr_vol_threshold = 1.0
     
     # Volatility-scaled position sizing: cap size inversely proportional to
     # realized volatility ratio. When ATR is 2x the MA (panic), halve the
@@ -83,7 +83,7 @@ class Strategy(_BTStrategy):
     # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
     vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
     
-    # Base fraction reduced from 0.85 to 0.75 to further compress maximum
+    # Base fraction reduced from 0.80 to 0.75 to further compress maximum
     # drawdown and smoothen equity curve. Recent best keeps (be1c4a6 sharpe
     # 1.46 DD 7.76%, 3312101 sharpe 1.36 DD 10.74%) all used 0.80–0.85 with
     # stable Sharpe; fractional downsizing has proven more effective than
