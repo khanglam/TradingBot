@@ -82,13 +82,13 @@ class Strategy(_BTStrategy):
     # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
     vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
     
-    # Base fraction reduced from 0.95 to 0.85 to lower absolute dollar
-    # exposure and further compress maximum drawdown while maintaining
-    # sharpe via smoother equity curves. Previous 10 mutations explored
-    # entry/exit signal changes; this conservative position-sizing tweak
-    # preserves the winning entry/exit logic from last keep (b34396a)
-    # while reducing leverage.
-    base_fraction = 0.85
+    # Base fraction reduced from 0.85 to 0.80 to further compress maximum
+    # drawdown while maintaining Sharpe via even smoother equity curves.
+    # Last two keeps (b34396a, f748364) both achieved sharpe 1.33–1.35 with
+    # 11–13% DD at 0.85 fraction. Reducing to 0.80 lowers absolute exposure
+    # per trade, dampening volatility peaks without requiring new entry/exit
+    # signals that recent 10+ mutations have failed to improve upon.
+    base_fraction = 0.80
 
     def init(self) -> None:
         high = self.data.High
