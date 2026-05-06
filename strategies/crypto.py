@@ -52,26 +52,16 @@ def _atr_ma(high: pd.Series, low: pd.Series, close: pd.Series, atr_n: int = 14, 
     return pd.Series(atr).rolling(ma_n).mean().bfill().to_numpy()
 
 
-def _rsi(close: pd.Series, n: int = 14) -> np.ndarray:
-    """Relative Strength Index — momentum oscillator in range [0, 100].
-    > 70 = overbought (exhaustion); < 30 = oversold (capitulation).
-    Used here to filter out exhaustion breakouts that reverse quickly."""
-    close = pd.Series(close)
-    delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=n).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=n).mean()
-    rs = gain / loss.replace(0, np.nan)
-    rsi = (100 - (100 / (1 + rs))).fillna(50)
-    return rsi.to_numpy()
-
-
 class Strategy(_BTStrategy):
-    # Turtle System One: 20-bar breakout entry, 15-bar opposite exit.
-    # On 4h bars this is ~3.3-day entry confirmation, ~2.5-day exit signal.
-    # Wider exit window (15 vs 10) allows more trending captures before
-    # Donchian-break exits trigger, increasing trade count while preserving
-    # the proven volatility-adaptive entry gate (ATR > 1.0x MA).
-    breakout_period = 20
+    # Turtle System One: 28-bar breakout entry, 15-bar opposite exit.
+    # On 4h bars this is ~4.7-day entry confirmation, ~2.5-day exit signal.
+    # Widened from 20 to 28 bars to capture multi-day trends that self-filter
+    # via the volatility regime gate (ATR > 1.0x MA), avoiding the need for
+    # stacked entry filters (RSI, Stochastic) which collapse the trade set
+    # to 0 when combined with narrow windows. Wider window allows legitimate
+    # trends to emerge cleanly, reducing false breakouts and eliminating the
+    # need for exhaustion-avoidance gates that were causing repeated crashes.
+    breakout_period = 28
     exit_period = 15
 
     # ATR trailing stop — volatility-aware hard exit. 2.5*ATR is the proven
@@ -89,12 +79,6 @@ class Strategy(_BTStrategy):
     # set after repeated 0-trade crashes from over-constrained filter stack.
     atr_ma_period = 50
     atr_vol_threshold = 1.0
-    
-    # RSI overbought filter: reject entry if RSI > 70, indicating exhaustion.
-    # Crypto breakouts near RSI extremes often fail to sustain; this filter
-    # avoids chasing exhaustion spikes. RSI period = 14 (standard); threshold = 70.
-    rsi_period = 14
-    rsi_entry_threshold = 70
     
     # Volatility-scaled position sizing: cap size inversely proportional to
     # realized volatility ratio. When ATR is 2x the MA (panic), halve the
@@ -129,7 +113,6 @@ class Strategy(_BTStrategy):
         _, self.exit_lower = self.I(_donchian, high, low, self.exit_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
-        self.rsi = self.I(_rsi, close, self.rsi_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -145,15 +128,17 @@ class Strategy(_BTStrategy):
         close = self.data.Close[-1]
 
         # Entry: close breaks above the prior bar's N-bar high AND
-        # current volatility (ATR) is elevated vs its 50-bar MA AND
-        # RSI is not overbought (< 70), to avoid exhaustion reversals.
+        # current volatility (ATR) is elevated vs its 50-bar MA.
+        # Removed RSI overbought filter (was causing 0-trade crashes when
+        # stacked with narrow Donchian windows). Wider breakout window (28 bars)
+        # self-filters via vol regime gate; legitimate multi-day trends emerge
+        # cleanly without additional exhaustion gates.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
-        rsi_not_exhausted = self.rsi[-1] < self.rsi_entry_threshold
 
-        if breakout and vol_regime_high and rsi_not_exhausted and not self.position:
+        if breakout and vol_regime_high and not self.position:
             # Volatility-scaled position sizing: reduce size when ATR spikes.
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size shrinks.
             # Low vol (ATR < MA) → ratio > 1, but cap at 1.0 for conservatism.
