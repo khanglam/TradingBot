@@ -11,6 +11,7 @@ Two files, no build step:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import math
 import os
@@ -68,8 +69,96 @@ app = FastAPI(title="TradingBot Autoresearch UI")
 _NEW_SCHEMA_COLS = [
     "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
     "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
-    "status", "description",
+    "status", "timestamp", "description",
 ]
+
+# commit sha -> formatted time (dashboard only); avoids repeated git lookups.
+_COMMIT_TS_CACHE: dict[str, str | None] = {}
+
+
+def _format_ts_no_seconds(s: str) -> str:
+    """Normalize to YYYY-MM-DD HH:mm (drop seconds / timezone noise)."""
+    s = s.strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", s):
+        return s
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})", s)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    return s
+
+
+def _git_commit_time_display(sha: str) -> str | None:
+    sha = sha.strip()
+    if len(sha) < 7:
+        return None
+    if sha in _COMMIT_TS_CACHE:
+        return _COMMIT_TS_CACHE[sha]
+    try:
+        r = subprocess.run(
+            ["git", "show", "-s", "--format=%cI", sha],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _COMMIT_TS_CACHE[sha] = None
+        return None
+    if r.returncode != 0:
+        _COMMIT_TS_CACHE[sha] = None
+        return None
+    raw = r.stdout.strip()
+    try:
+        disp = datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+    except ValueError:
+        disp = None
+    _COMMIT_TS_CACHE[sha] = disp
+    # Rows use 7-char shas — cache resolves full hashes from batched preload.
+    if len(sha) > 7:
+        _COMMIT_TS_CACHE[sha[:7]] = disp
+    return disp
+
+
+def _warm_git_commit_cache(shas: list[str]) -> None:
+    """Fill _COMMIT_TS_CACHE in a few subprocess calls instead of one per row."""
+    to_fetch = sorted({s for s in shas if len(s.strip()) >= 7 and s not in _COMMIT_TS_CACHE})
+    if not to_fetch:
+        return
+    step = 50
+    for i in range(0, len(to_fetch), step):
+        chunk = to_fetch[i : i + step]
+        try:
+            proc = subprocess.run(
+                ["git", "log", "--no-walk=sorted", *chunk, "--pretty=format:%H%n%cI%n"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0:
+            continue
+        lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+        for j in range(0, len(lines) - 1, 2):
+            full_hash, iso_raw = lines[j], lines[j + 1]
+            try:
+                disp = datetime.fromisoformat(
+                    iso_raw.replace("Z", "+00:00")
+                ).strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+            _COMMIT_TS_CACHE[full_hash] = disp
+            if len(full_hash) >= 7:
+                _COMMIT_TS_CACHE[full_hash[:7]] = disp
+
+
+def _row_timestamp(commit: Any, logged: Any) -> str | None:
+    if logged is not None and str(logged).strip():
+        return _format_ts_no_seconds(str(logged))
+    return _git_commit_time_display(str(commit or "").strip()) or None
 
 
 def _load_results() -> pd.DataFrame:
@@ -317,7 +406,19 @@ def summary() -> dict:
 
 @app.get("/api/results")
 def results() -> list[dict[str, Any]]:
-    return _df_to_records(_load_results())
+    rows = _df_to_records(_load_results())
+    need_git_ts = sorted(
+        {
+            str(r["commit"]).strip()
+            for r in rows
+            if not str(r.get("timestamp") or "").strip()
+            and len(str(r.get("commit") or "").strip()) >= 7
+        }
+    )
+    _warm_git_commit_cache(need_git_ts)
+    for r in rows:
+        r["timestamp"] = _row_timestamp(r.get("commit"), r.get("timestamp"))
+    return rows
 
 
 @app.get("/api/strategy")

@@ -47,6 +47,7 @@ import statistics
 import subprocess
 import sys
 import time
+import datetime
 from pathlib import Path
 
 # Windows console defaults to cp1252; force UTF-8 so unicode prints never crash.
@@ -194,7 +195,7 @@ def git_reset_last() -> None:
 RESULTS_COLS = [
     "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
     "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
-    "status", "description",
+    "status", "timestamp", "description",
 ]
 RESULTS_HEADER = "\t".join(RESULTS_COLS) + "\n"
 
@@ -208,6 +209,12 @@ LEGACY_SCHEMAS = [
     # v1 — added sortino/sharpe_ann_4h/calmar/psr/skew/kurtosis (no dsr)
     [
         "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr",
+        "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+        "status", "description",
+    ],
+    # v2 - added dsr
+    [
+        "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
         "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
         "status", "description",
     ],
@@ -276,6 +283,7 @@ def append_result(sha: str, metrics: dict, status: str, description: str) -> Non
         f"{metrics.get('win_rate', 0.0):.3f}",
         f"{metrics.get('total_trades', 0)}",
         status,
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         description,
     ]
     with RESULTS.open("a", encoding="utf-8") as f:

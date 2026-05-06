@@ -232,6 +232,7 @@
                 <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('win_rate')">Win Rate</th>
                 <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('total_trades')">Trades</th>
                 <th class="px-5 py-2 cursor-pointer" @click="sortBy('status')">Status</th>
+                <th class="px-5 py-2 cursor-pointer" @click="sortBy('timestamp')">Timestamp</th>
                 <th class="px-5 py-2">Description</th>
               </tr>
             </thead>
@@ -251,11 +252,12 @@
                             'bg-amber-500/20 text-accent-crash': row.status === 'crash',
                           }" x-text="row.status"></span>
                   </td>
+                  <td class="px-5 py-2 font-mono text-ink-300 text-xs whitespace-nowrap" x-text="row.timestamp ?? '—'"></td>
                   <td class="px-5 py-2 text-ink-200 max-w-md truncate" :title="row.description" x-text="row.description"></td>
                 </tr>
               </template>
               <tr x-show="!filteredResults.length">
-                <td colspan="7" class="text-center text-ink-300 py-8">No experiments yet — launch the loop above.</td>
+                <td colspan="8" class="text-center text-ink-300 py-8">No experiments yet — launch the loop above.</td>
               </tr>
             </tbody>
           </table>
@@ -809,6 +811,9 @@
             });
             this.sse.addEventListener('status', e => {
               const s = JSON.parse(e.data);
+              if (s.total_iters) {
+                this.loopProgress = { current: s.current_iter, total: s.total_iters };
+              }
               if (this.loop.running !== s.running) {
                 this.loop = s;
                 if (!s.running) {
