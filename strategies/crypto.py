@@ -81,6 +81,14 @@ class Strategy(_BTStrategy):
     # position. When ATR is 0.5x the MA (calm), keep full size. Smooths
     # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
     vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
+    
+    # Base fraction reduced from 0.95 to 0.85 to lower absolute dollar
+    # exposure and further compress maximum drawdown while maintaining
+    # sharpe via smoother equity curves. Previous 10 mutations explored
+    # entry/exit signal changes; this conservative position-sizing tweak
+    # preserves the winning entry/exit logic from last keep (b34396a)
+    # while reducing leverage.
+    base_fraction = 0.85
 
     def init(self) -> None:
         high = self.data.High
@@ -119,7 +127,7 @@ class Strategy(_BTStrategy):
             # Minimum is vol_scale_cap (0.5) to never go below half-size.
             vol_ratio = self.atr_ma[-1] / max(self.atr[-1], 0.0001)
             size_multiplier = max(self.vol_scale_cap, min(1.0, vol_ratio))
-            size = 0.95 * size_multiplier
+            size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
         elif self.position:
