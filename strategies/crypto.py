@@ -64,13 +64,15 @@ class Strategy(_BTStrategy):
     breakout_period = 28
     exit_period = 15
 
-    # ATR trailing stop — volatility-aware hard exit. 2.5*ATR is the proven
-    # baseline from the last stable keep (9401fc2, sharpe 1.47, DD 7.29%, 44 trades).
-    # Recent mutations to 3.5*ATR oscillated sharpe 0.45–1.35 with repeated
-    # 0-trade crashes, suggesting the wider trailing stop allowed too much
-    # drawdown volatility. Reverting to 2.5*ATR to lock in the known good state.
+    # ATR trailing stop — volatility-aware hard exit. Now regime-adaptive:
+    # use 2.5x ATR in low-vol regimes (ATR < MA) to protect capital aggressively,
+    # and 3.0x ATR in high-vol regimes (ATR > MA) to avoid whipsaws in volatile
+    # breakouts. This reduces false exits during volatility spikes while keeping
+    # tight stops in calm regimes, respecting the market regime without stacking
+    # new entry filters.
     atr_period = 14
-    atr_multiplier = 2.5
+    atr_multiplier_low_vol = 2.5   # tight stop in calm markets
+    atr_multiplier_high_vol = 3.0  # loose stop in trending volatility
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 1.0x the 50-bar moving average of ATR. Filters out breakfakes
@@ -163,8 +165,14 @@ class Strategy(_BTStrategy):
             #   3. Time-decay exit — close after N bars (edge degradation).
             # First one to trigger wins.
             short_break = close < self.exit_lower[-2]
-            trailing_stop = self.highest_price - self.atr[-1] * self.atr_multiplier
+            
+            # Regime-adaptive ATR trailing stop: tighter (2.5x) in low-vol,
+            # looser (3.0x) in high-vol to avoid whipsaws during volatility spikes.
+            is_high_vol = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
+            atr_mult = self.atr_multiplier_high_vol if is_high_vol else self.atr_multiplier_low_vol
+            trailing_stop = self.highest_price - self.atr[-1] * atr_mult
             stop_hit = close <= trailing_stop
+            
             time_decay = self.bars_in_trade >= self.max_bars_in_trade
 
             if short_break or stop_hit or time_decay:
