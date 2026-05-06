@@ -57,7 +57,7 @@ class Strategy(_BTStrategy):
     # On 4h bars this is ~3.3-day entry confirmation, ~2.5-day exit signal.
     # Wider exit window (15 vs 10) allows more trending captures before
     # Donchian-break exits trigger, increasing trade count while preserving
-    # the proven volatility-adaptive entry gate (ATR > 1.2x MA).
+    # the proven volatility-adaptive entry gate (ATR > 1.1x MA).
     breakout_period = 20
     exit_period = 15
 
@@ -75,6 +75,12 @@ class Strategy(_BTStrategy):
     # after 0-trade crashes from over-constrained filter stack.
     atr_ma_period = 50
     atr_vol_threshold = 1.1
+    
+    # Volatility-scaled position sizing: cap size inversely proportional to
+    # realized volatility ratio. When ATR is 2x the MA (panic), halve the
+    # position. When ATR is 0.5x the MA (calm), keep full size. Smooths
+    # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
+    vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
 
     def init(self) -> None:
         high = self.data.High
@@ -107,7 +113,14 @@ class Strategy(_BTStrategy):
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
 
         if breakout and vol_regime_high and not self.position:
-            self.buy(size=0.95)
+            # Volatility-scaled position sizing: reduce size when ATR spikes.
+            # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size shrinks.
+            # Low vol (ATR < MA) → ratio > 1, but cap at 1.0 for conservatism.
+            # Minimum is vol_scale_cap (0.5) to never go below half-size.
+            vol_ratio = self.atr_ma[-1] / max(self.atr[-1], 0.0001)
+            size_multiplier = max(self.vol_scale_cap, min(1.0, vol_ratio))
+            size = 0.95 * size_multiplier
+            self.buy(size=size)
             self.highest_price = close
         elif self.position:
             # Track running peak since entry
