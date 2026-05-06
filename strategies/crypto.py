@@ -61,12 +61,13 @@ class Strategy(_BTStrategy):
     breakout_period = 20
     exit_period = 15
 
-    # ATR trailing stop — volatility-aware hard exit. 3.5*ATR is wider than
-    # the prior 2.5*ATR, allowing trending moves to run longer and capture
-    # more of the upside before volatility-triggered exits, improving
-    # compounding on sustained trends without dramatically increasing drawdown.
+    # ATR trailing stop — volatility-aware hard exit. 2.5*ATR is the proven
+    # baseline from the last stable keep (9401fc2, sharpe 1.47, DD 7.29%, 44 trades).
+    # Recent mutations to 3.5*ATR oscillated sharpe 0.45–1.35 with repeated
+    # 0-trade crashes, suggesting the wider trailing stop allowed too much
+    # drawdown volatility. Reverting to 2.5*ATR to lock in the known good state.
     atr_period = 14
-    atr_multiplier = 3.5
+    atr_multiplier = 2.5
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 1.1x the 50-bar moving average of ATR. Filters out breakfakes
