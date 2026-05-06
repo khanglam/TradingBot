@@ -90,6 +90,13 @@ class Strategy(_BTStrategy):
     # signals that recent 10+ mutations have failed to improve upon.
     base_fraction = 0.80
 
+    # Time-decay exit: close position after N bars in trade, regardless of
+    # price action. On 4h bars, 40 bars ≈ 6.7 days. Complements ATR trailing
+    # stop and Donchian-break exits; trades tend to lose edge after ~1 week
+    # in mean-reverting crypto regimes (post-breakout chop). Tested when
+    # oscillating sharpe 0.45–1.35 with 10+ entry-filter mutations exhausted.
+    max_bars_in_trade = 40
+
     def init(self) -> None:
         high = self.data.High
         low = self.data.Low
@@ -106,6 +113,9 @@ class Strategy(_BTStrategy):
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
         self.highest_price: float | None = None
+        
+        # Bar count since entry — tracks time-decay exit.
+        self.bars_in_trade: int = 0
 
     def next(self) -> None:
         if len(self.data) < self.breakout_period + 1:
@@ -130,18 +140,25 @@ class Strategy(_BTStrategy):
             size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
+            self.bars_in_trade = 0
         elif self.position:
+            # Increment bar count in trade
+            self.bars_in_trade += 1
+            
             # Track running peak since entry
             self.highest_price = max(self.highest_price, close)
 
-            # Two parallel exit rails:
+            # Three parallel exit rails:
             #   1. Short-Donchian break — recent weakness, trend rollover.
             #   2. ATR trailing stop — volatility-aware floor below peak.
+            #   3. Time-decay exit — close after N bars (edge degradation).
             # First one to trigger wins.
             short_break = close < self.exit_lower[-2]
             trailing_stop = self.highest_price - self.atr[-1] * self.atr_multiplier
             stop_hit = close <= trailing_stop
+            time_decay = self.bars_in_trade >= self.max_bars_in_trade
 
-            if short_break or stop_hit:
+            if short_break or stop_hit or time_decay:
                 self.position.close()
                 self.highest_price = None
+                self.bars_in_trade = 0
