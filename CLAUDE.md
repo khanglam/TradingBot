@@ -37,8 +37,12 @@ Rules:
 - `promote.py` is the only path between candidate and frozen. It runs a
   validation gauntlet (val window must beat frozen by margin; lockbox
   must clear sanity floors) before overwriting the frozen file on main.
-- Local research: `git checkout autoresearch/stocks` (or `crypto`) before
-  running `python loop.py`. Locally promote via `python promote.py --campaign stocks`.
+- Local research: each campaign has a persistent **git worktree** at
+  `.worktrees/<campaign>` checked out to `autoresearch/<campaign>`. The
+  dashboard (`app.py`) launches `loop.py` inside that worktree; main stays
+  on `main` so paper/scan are never disturbed. See `MIGRATION.md` for
+  one-time worktree setup. Locally promote via
+  `python promote.py --campaign stocks` from the main checkout.
 
 ## The Stack (chosen 2026-04-28 after `/research`)
 

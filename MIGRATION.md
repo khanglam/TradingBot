@@ -62,16 +62,51 @@ problem, just clutter.
   Confirm it either promotes (commit on main) or logs "candidate does
   not beat frozen" and exits cleanly.
 
-## 5. Local workflow
+## 5. Local worktrees (one-time)
+
+The dashboard (`app.py`) and the loop subprocess always operate inside a
+**git worktree** for the active campaign. That keeps your main checkout
+on `main` (where paper/scan run) while each campaign branch has its own
+persistent working tree.
 
 ```bash
-# Research a campaign:
-git checkout autoresearch/stocks
-CAMPAIGN=stocks python loop.py --iters 5
+# From the main checkout:
+git worktree add .worktrees/stocks autoresearch/stocks
+git worktree add .worktrees/crypto autoresearch/crypto
 
-# Manually validate + promote:
-git checkout main
-git fetch origin "autoresearch/stocks:autoresearch/stocks"
+# Each worktree needs the cached OHLCV data; symlink to main's data/:
+ln -s "$PWD/data" .worktrees/stocks/data
+ln -s "$PWD/data" .worktrees/crypto/data
+```
+
+`.worktrees/` should already be excluded from git automatically (each entry
+is a separate working tree). Confirm with `git status` — nothing new should
+appear in main.
+
+After this, `app.py` will spawn `loop.py` inside `.worktrees/<campaign>/`
+when you click Launch loop. Mutations land on `autoresearch/<campaign>`;
+your main checkout never changes. You can run two loops in parallel by
+opening two browser tabs (one Stocks, one Crypto) — they touch different
+worktrees and different branches, no contention.
+
+## 6. Local workflow
+
+Most of the time you just use the dashboard:
+
+```bash
+.venv/Scripts/python.exe app.py
+# open http://127.0.0.1:8000, toggle Crypto/Stocks, click Launch loop
+```
+
+CLI alternative (bypasses dashboard):
+
+```bash
+# Research stocks:
+cd .worktrees/stocks
+CAMPAIGN=stocks ../../.venv/Scripts/python.exe ../../loop.py --iters 5
+
+# Manually validate + promote (run from main):
+cd ../..
 python promote.py --campaign stocks
 # If exit 0: review the diff, commit the strategies/stocks.py change yourself.
 ```
