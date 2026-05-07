@@ -1,33 +1,41 @@
 name: Autoresearch loop
 
-# Runs the loop on a schedule and commits any kept mutations + updated
-# results.tsv back to main. Manual trigger via workflow_dispatch is also
-# supported for ad-hoc runs.
+# Runs the autoresearch loop on dedicated campaign branches:
+#   - stocks → autoresearch/stocks  (one writer = this workflow)
+#   - crypto → autoresearch/crypto  (one writer = this workflow)
 #
-# Schedule: every 6 hours (00:00, 06:00, 12:00, 18:00 UTC). Each cron tick
-# spawns a matrix of TWO campaigns that run in parallel — one for stocks,
-# one for crypto — so both research tracks advance simultaneously.
-# Adjust the cron string below to change cadence — every 4h is `0 */4 * * *`.
+# Main is NEVER touched here — promotion to main happens via promote.yml.
+# That isolation means each branch has exactly one writer, so there are no
+# push races and no rebase-retry dance.
 #
-# Cost estimate (GitHub Actions free tier):
-#   4 ticks/day x 2 matrix shards x ~25 min avg runtime = ~200 min/day
-#   ~6,000 min/month. Public repo: $0. Private repo: exceeds the 2,000
-#   min/month free tier — this workflow assumes a public repo. If the
-#   repo is private, drop the cadence to `0 */12 * * *` (~2,000 min/mo).
+# Schedules (UTC):
+#   - stocks: 04:00 daily        (= 21:00 PST previous day, well outside US
+#                                  market hours so paper executor never sees
+#                                  a strategy file mid-mutation)
+#   - crypto: every 6h           (24/7 markets; paper crypto reads main, so
+#                                  no contention with this branch)
 #
 # Required repo secrets:
-#   OPENROUTER_API_KEY  — used by loop.py to call the LLM (https://openrouter.ai/keys)
+#   OPENROUTER_API_KEY  — used by loop.py to call the LLM
 # Optional repo variables:
 #   OPENROUTER_MODEL    — any model slug from https://openrouter.ai/models
-#                         (default: anthropic/claude-haiku-4-5)
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # every 6h: 00:00, 06:00, 12:00, 18:00 UTC
+    - cron: '0 4 * * *'      # stocks: 04:00 UTC daily
+    - cron: '0 */6 * * *'    # crypto: every 6h
   workflow_dispatch:
     inputs:
+      campaign:
+        description: 'Which campaign to run'
+        required: true
+        default: 'stocks'
+        type: choice
+        options:
+          - stocks
+          - crypto
       iters:
-        description: 'Number of mutations to attempt per shard'
+        description: 'Number of mutations to attempt'
         required: false
         default: '8'
         type: string
@@ -40,83 +48,76 @@ on:
           - val_sharpe
           - calmar
           - dsr
-      campaign:
-        description: 'Which campaign to run on manual dispatch (both/stocks/crypto)'
-        required: false
-        default: 'both'
-        type: choice
-        options:
-          - both
-          - stocks
-          - crypto
 
 permissions:
-  contents: write   # needed to push the commits the loop produces
+  contents: write   # push commits the loop produces (campaign branch only)
 
 jobs:
-  run-loop:
+  # Single job, parameterized by campaign. The campaign is decided from the
+  # cron string (or the dispatch input). Wrong-campaign-for-this-cron fires
+  # are filtered out in the gate step rather than at the cron level so we
+  # keep one job definition.
+  loop:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    # Per-job concurrency keyed on campaign name. Stocks and crypto run
-    # concurrently (different keys → different queues, different results
-    # files). A second tick for the SAME campaign queues behind the first
-    # to avoid racing pushes against itself.
+    # Per-branch concurrency. A second tick for the same campaign queues
+    # behind the first; different campaigns run in parallel.
     concurrency:
-      group: autoresearch-loop-${{ matrix.campaign.name }}
+      group: autoresearch-loop-${{ github.event.schedule || github.event.inputs.campaign }}
       cancel-in-progress: false
-
-    strategy:
-      fail-fast: false   # one campaign crashing must not kill the other
-      matrix:
-        campaign:
-          - name: stocks
-          - name: crypto
 
     env:
       ITERS: ${{ github.event.inputs.iters || '8' }}
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
-      CAMPAIGN: ${{ matrix.campaign.name }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5' }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
     steps:
-      - name: Skip if dispatch selected a different campaign
-        id: gate
+      - name: Decide campaign + branch from trigger
+        id: route
+        env:
+          DISPATCH_CAMPAIGN: ${{ github.event.inputs.campaign }}
+          TRIGGER_CRON: ${{ github.event.schedule }}
         run: |
-          REQUESTED='${{ github.event.inputs.campaign }}'
-          CAMPAIGN='${{ matrix.campaign.name }}'
-          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != "both" ] && [ "$REQUESTED" != "$CAMPAIGN" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Manual dispatch requested '$REQUESTED'; skipping '$CAMPAIGN' shard."
+          if [ -n "$DISPATCH_CAMPAIGN" ]; then
+            CAMPAIGN="$DISPATCH_CAMPAIGN"
+          elif [ "$TRIGGER_CRON" = "0 4 * * *" ]; then
+            CAMPAIGN="stocks"
+          elif [ "$TRIGGER_CRON" = "0 */6 * * *" ]; then
+            CAMPAIGN="crypto"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::error ::Unrecognized trigger; refusing to guess a campaign."
+            exit 1
           fi
+          BRANCH="autoresearch/$CAMPAIGN"
+          echo "campaign=$CAMPAIGN" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH"     >> "$GITHUB_OUTPUT"
+          echo "Routed to campaign='$CAMPAIGN' branch='$BRANCH'"
 
-      - name: Checkout (full history so loop can reset cleanly)
-        if: steps.gate.outputs.skip != 'true'
+      - name: Checkout campaign branch (full history for resets)
         uses: actions/checkout@v4
         with:
+          ref: ${{ steps.route.outputs.branch }}
           fetch-depth: 0
           persist-credentials: true
 
       - name: Setup Python
-        if: steps.gate.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
-        if: steps.gate.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install backtesting ccxt yfinance openai pyarrow scipy python-dotenv
 
       - name: Export campaign config to environment
-        if: steps.gate.outputs.skip != 'true'
+        env:
+          CAMPAIGN: ${{ steps.route.outputs.campaign }}
         run: |
           python - <<'EOF'
           import os, sys
@@ -126,27 +127,24 @@ jobs:
           if campaign not in CAMPAIGNS:
               sys.exit(f"CAMPAIGN={campaign!r} not in campaigns.py")
           with open(os.environ["GITHUB_ENV"], "a") as gh_env:
+              gh_env.write(f"CAMPAIGN={campaign}\n")
               for key, val in CAMPAIGNS[campaign].items():
                   gh_env.write(f"{key.upper()}={val}\n")
           print(f"Exported {len(CAMPAIGNS[campaign])} vars for campaign={campaign!r}")
           EOF
 
       - name: Cache OHLCV parquet data
-        if: steps.gate.outputs.skip != 'true'
-        id: cache-data
         uses: actions/cache@v4
         with:
           path: data/
-          key: ohlcv-${{ runner.os }}-${{ matrix.campaign.name }}-v1
+          key: ohlcv-${{ runner.os }}-${{ steps.route.outputs.campaign }}-v1
           restore-keys: |
-            ohlcv-${{ runner.os }}-${{ matrix.campaign.name }}-
+            ohlcv-${{ runner.os }}-${{ steps.route.outputs.campaign }}-
             ohlcv-${{ runner.os }}-
 
       - name: Fetch OHLCV data for each entry in SYMBOLS
-        if: steps.gate.outputs.skip != 'true'
         run: |
           # Each entry is "{asset}/{NAME}_{tf}" — e.g. crypto/BTC_USDT_4h, stocks/TSLA_1d.
-          # Resolve to data_fetch.py args; for crypto, restore "/" inside the pair name.
           echo "$SYMBOLS" | tr ',' '\n' | while read -r entry; do
             entry=$(echo "$entry" | xargs)
             [ -z "$entry" ] && continue
@@ -171,13 +169,11 @@ jobs:
           done
 
       - name: Configure git for commits the loop makes
-        if: steps.gate.outputs.skip != 'true'
         run: |
           git config user.name 'autoresearch-bot'
           git config user.email 'autoresearch-bot@users.noreply.github.com'
 
-      - name: Sanity check secrets
-        if: steps.gate.outputs.skip != 'true'
+      - name: Sanity check secret
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
             echo "::error ::OPENROUTER_API_KEY secret is not set on this repo"
@@ -185,49 +181,26 @@ jobs:
           fi
 
       - name: Run autoresearch loop
-        if: steps.gate.outputs.skip != 'true'
         run: python loop.py --iters "$ITERS"
 
-      - name: Push kept mutations + tsv back to main
-        if: steps.gate.outputs.skip != 'true'
+      - name: Push back to campaign branch
+        env:
+          BRANCH: ${{ steps.route.outputs.branch }}
         run: |
-          # loop.py is now responsible for ALL commits in the session:
-          #   - per-iteration `experiment (strategies/<campaign>.py): ...` (kept)
-          #   - end-of-session `chore: checkpoint experiment log` (tsv rows)
-          # Each matrix shard now edits a DIFFERENT strategy file — stocks
-          # writes strategies/stocks.py, crypto writes strategies/crypto.py
-          # — so kept commits never conflict. Tsvs are per-campaign too.
-          # All this step has to do is rebase + push, with retry.
-          MAX_RETRIES=5
-          for i in $(seq 1 $MAX_RETRIES); do
-            git fetch origin "${GITHUB_REF_NAME}"
-            if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/${GITHUB_REF_NAME})" ]; then
-              echo "No new commits from loop; nothing to push"
-              exit 0
-            fi
-            # Plain rebase — disjoint files between shards means real
-            # conflicts should be vanishingly rare.
-            if ! git pull --rebase origin "${GITHUB_REF_NAME}"; then
-              echo "Rebase failed; aborting and retrying ($i/$MAX_RETRIES)"
-              git rebase --abort || true
-              sleep 5
-              continue
-            fi
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "Pushed ${{ matrix.campaign.name }} loop output to ${GITHUB_REF_NAME}"
-              exit 0
-            fi
-            echo "Push rejected (likely concurrent shard); retrying ($i/$MAX_RETRIES)"
-            sleep 5
-          done
-          echo "::error ::Failed to push after $MAX_RETRIES attempts"
-          exit 1
+          # Single-writer branch — no rebase needed. If push fails it means
+          # someone pushed to this branch manually; surface that as an error
+          # rather than silently rebasing over their work.
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then
+            echo "No new commits from loop; nothing to push"
+            exit 0
+          fi
+          git push origin "HEAD:$BRANCH"
 
       - name: Upload run.log artifact
-        if: always() && steps.gate.outputs.skip != 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: run-log-${{ matrix.campaign.name }}-${{ github.run_id }}
+          name: run-log-${{ steps.route.outputs.campaign }}-${{ github.run_id }}
           path: |
             results/run.log
             results/*.tsv

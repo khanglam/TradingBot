@@ -1,0 +1,172 @@
+name: Promote candidate to main
+
+# Daily validation gate. For each campaign:
+#   1. Fetch autoresearch/<campaign>
+#   2. promote.py: backtest candidate vs frozen on val window, then lockbox.
+#   3. If it clears the gauntlet, promote.py overwrites strategies/<campaign>.py
+#      in the working tree on main; this workflow commits + pushes.
+#
+# Schedule: 12:00 UTC daily (= 04:00 PST / 05:00 PDT). Runs after the
+# overnight stocks loop tick at 04:00 UTC and before the stocks paper run
+# at 13:35 UTC. Crypto promotions land on the same cadence; the running
+# crypto loop (every 6h on its own branch) is unaffected.
+#
+# Required repo secrets: none beyond GITHUB_TOKEN.
+# Optional env knobs: PROMOTION_MARGIN, LOCKBOX_MIN_SHARPE, LOCKBOX_MAX_DD.
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: 'Campaign to consider for promotion'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - stocks
+          - crypto
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        campaign: [stocks, crypto]
+
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+
+    steps:
+      - name: Skip if dispatch selected a different campaign
+        id: gate
+        run: |
+          REQ='${{ github.event.inputs.campaign }}'
+          THIS='${{ matrix.campaign }}'
+          if [ -n "$REQ" ] && [ "$REQ" != "both" ] && [ "$REQ" != "$THIS" ]; then
+            echo "skip=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout main
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch campaign branch
+        if: steps.gate.outputs.skip != 'true'
+        run: git fetch origin "autoresearch/${{ matrix.campaign }}:autoresearch/${{ matrix.campaign }}"
+
+      - name: Setup Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install backtesting yfinance pyarrow scipy python-dotenv
+
+      - name: Cache OHLCV parquet data
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: ohlcv-${{ runner.os }}-${{ matrix.campaign }}-v1
+          restore-keys: |
+            ohlcv-${{ runner.os }}-${{ matrix.campaign }}-
+            ohlcv-${{ runner.os }}-
+
+      - name: Fetch OHLCV data (lockbox needs current data)
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          CAMPAIGN: ${{ matrix.campaign }}
+        run: |
+          python - <<'EOF'
+          import os, sys, subprocess
+          sys.path.insert(0, ".")
+          from campaigns import CAMPAIGNS
+          cfg = CAMPAIGNS[os.environ["CAMPAIGN"]]
+          symbols = cfg["symbols"]
+          start = cfg["data_fetch_start"]
+          for entry in symbols.split(","):
+              entry = entry.strip()
+              if not entry:
+                  continue
+              parquet = f"data/{entry}.parquet"
+              if os.path.exists(parquet):
+                  print(f"have {parquet}, skipping")
+                  continue
+              asset, rest = entry.split("/", 1)
+              name, tf = rest.rsplit("_", 1)
+              if asset == "crypto":
+                  name = name.replace("_", "/")
+              os.makedirs(f"data/{asset}", exist_ok=True)
+              subprocess.check_call([
+                  sys.executable, "data_fetch.py",
+                  "--asset", asset, "--symbol", name, "--timeframe", tf,
+                  "--start", start,
+              ])
+          EOF
+
+      - name: Configure git
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          git config user.name 'autoresearch-bot'
+          git config user.email 'autoresearch-bot@users.noreply.github.com'
+
+      - name: Run promotion gauntlet
+        if: steps.gate.outputs.skip != 'true'
+        id: promote
+        env:
+          CAMPAIGN: ${{ matrix.campaign }}
+        run: |
+          set +e
+          python promote.py --campaign "$CAMPAIGN"
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" = "0" ]; then
+            echo "promoted=true"  >> "$GITHUB_OUTPUT"
+          elif [ "$rc" = "1" ]; then
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+          else
+            exit "$rc"
+          fi
+
+      - name: Commit + push promotion
+        if: steps.gate.outputs.skip != 'true' && steps.promote.outputs.promoted == 'true'
+        env:
+          CAMPAIGN: ${{ matrix.campaign }}
+        run: |
+          SHA=$(git rev-parse --short=7 "autoresearch/$CAMPAIGN")
+          git add "strategies/${CAMPAIGN}.py"
+          git commit -m "promote ${CAMPAIGN} ${SHA}" --no-verify
+          # main has many readers (paper/scan workflows). Rebase + retry
+          # in case a parallel manual change landed.
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin main && exit 0
+            sleep 5
+          done
+          echo "::error ::Failed to push promotion after 3 attempts"
+          exit 1

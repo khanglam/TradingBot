@@ -1,0 +1,16 @@
+# Core trading / data / loop (see README "First-time setup")
+alpaca-py
+backtesting
+ccxt
+numpy
+openai
+pandas
+pyarrow
+python-dotenv
+scipy
+yfinance
+
+# Dashboard (app.py)
+fastapi
+sse-starlette
+uvicorn[standard]

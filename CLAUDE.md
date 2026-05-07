@@ -11,7 +11,34 @@ A **daily signal scanner** (`scan.py`) deploys the latest strategy.py against
 a watchlist and pings a webhook when a buy/sell signal triggers — the
 "alert me, I'll execute manually" workflow.
 
-Reference: `karpathy-auto-research/program.md` for the original loop pattern.
+Reference: https://github.com/karpathy/autoresearch for the original loop pattern.
+
+## Branching model (the load-bearing design choice)
+
+The project diverges from karpathy in one critical way: there's a live
+consumer of the strategy file (`scan.py`, `live_trade.py`, paper trading)
+that must NOT see mid-mutation state. We use branches to enforce that:
+
+```
+main                    ← FROZEN. scan.py + live_trade.py read this.
+                          Updated only by promote.py (daily, validated).
+  ↑ (promotion gate, single-file copy)
+autoresearch/stocks     ← stocks loop owns this. Mutates strategies/stocks.py
+                          + writes results/<slug>.tsv. Single writer
+                          (loop.yml). git reset --hard happens here.
+autoresearch/crypto     ← same shape, for crypto.
+```
+
+Rules:
+- The loop NEVER commits to main. It refuses to start if HEAD is on main
+  (override: `ALLOW_LOOP_ON_MAIN=1`).
+- Each campaign branch has exactly one writer (its CI workflow), so there
+  are no push races and no rebase-retry dance.
+- `promote.py` is the only path between candidate and frozen. It runs a
+  validation gauntlet (val window must beat frozen by margin; lockbox
+  must clear sanity floors) before overwriting the frozen file on main.
+- Local research: `git checkout autoresearch/stocks` (or `crypto`) before
+  running `python loop.py`. Locally promote via `python promote.py --campaign stocks`.
 
 ## The Stack (chosen 2026-04-28 after `/research`)
 
@@ -24,7 +51,7 @@ Reference: `karpathy-auto-research/program.md` for the original loop pattern.
 | Stock data | `yfinance` | Free, daily back to 1990 |
 | Storage | Parquet (pyarrow) | 40× faster reads than CSV for backtest loops |
 | LLM agent | OpenRouter via `openai` SDK; default `anthropic/claude-haiku-4-5`, any model slug works | Drives mutation prompts |
-| Scheduler | GitHub Actions cron | Loop every 6h matrix (stocks + crypto), scanner stocks pre-market + crypto every 4h, paper executor mirrors |
+| Scheduler | GitHub Actions cron | Stocks loop daily overnight, crypto loop every 6h, daily promotion gate, scanner + paper on their own cadences |
 
 Jesse was evaluated and archived to `archive/` — too heavy for the tight loop.
 Lumibot was tried and dropped — its strategy class hard-coded an EMA crossover
@@ -85,11 +112,12 @@ TradingBot/
 │   └── paper.log              paper-trade execution history (gitignored)
 ├── data/                      cached OHLCV (gitignored)
 ├── .github/workflows/
-│   ├── loop.yml               autoresearch every 6h, matrix(stocks, crypto)
+│   ├── loop.yml               autoresearch — stocks daily 04:00 UTC, crypto every 6h
+│   ├── promote.yml            daily promotion gate (12:00 UTC)
 │   ├── scan.yml               stocks pre-market + crypto every 4h
 │   └── paper.yml              Alpaca paper-trade executor (mirrors scan)
-├── archive/                   old Jesse + Lumibot code
-└── karpathy-auto-research/    reference, read-only
+├── promote.py                 candidate → frozen validation gate
+└── archive/                   old Jesse + Lumibot code
 ```
 
 ## Backtest Configuration
@@ -205,9 +233,10 @@ Mode is auto-selected by count — no separate basket flag. Empty/unset →
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `.github/workflows/loop.yml` | Every 6h (`0 */6 * * *`) + dispatch. Matrix: `stocks` (TSLA/NVDA/PYPL basket) + `crypto` (BTC_USDT_4h). Both shards advance every tick; per-campaign concurrency keys; push step rebases + retries to survive shard races. ~6,000 min/mo (public repo $0). | Two parallel autoresearch tracks; commits keeps + per-campaign tsv back to `main` |
-| `.github/workflows/scan.yml` | Stocks: weekdays 13:30 UTC (05:30 PST). Crypto: every 4h, every day (`0 */4 * * *`). Mode resolved per cron string; per-mode concurrency keys; ~605 min/mo. | Signal alerts to webhook (Discord/Slack format) |
-| `.github/workflows/paper.yml` | Stocks: weekdays 13:35 UTC (5 min after scan). Crypto: every 4h. Reuses `scan.py`'s logic via `live_trade.py`; submits Alpaca paper orders for fresh BUY/SELL signals; idempotent re-runs. | Paper-trade the latest `strategy.py` against the watchlists |
+| `.github/workflows/loop.yml` | Stocks: 04:00 UTC daily (= 21:00 PST prior day, well outside US market hours). Crypto: every 6h (`0 */6 * * *`). Each campaign runs on its own branch (`autoresearch/<campaign>`) — single writer per branch, no push races. | Two parallel autoresearch tracks; commits land on the campaign branch only — never on main |
+| `.github/workflows/promote.yml` | Daily 12:00 UTC (~04:00 PST / 05:00 PDT, before stocks paper at 13:35 UTC). For each campaign, fetches `autoresearch/<campaign>`, runs `promote.py` (val-window beat + lockbox sanity floors), and if it passes, commits the new frozen `strategies/<campaign>.py` to main. | The only path from candidate → frozen |
+| `.github/workflows/scan.yml` | Stocks: weekdays 13:30 UTC (05:30 PST). Crypto: every 4h, every day (`0 */4 * * *`). Reads `strategies/<campaign>.py` from main (frozen). | Signal alerts to webhook (Discord/Slack format) |
+| `.github/workflows/paper.yml` | Stocks: weekdays 13:35 UTC (5 min after scan). Crypto: every 4h. Reuses `scan.py`'s logic via `live_trade.py`; reads frozen strategies from main. | Paper-trade the latest promoted strategy against the watchlists |
 
 Required repo secrets / variables:
 
@@ -273,7 +302,8 @@ Use `/scout` before adopting any new framework or major architectural change.
 - [x] Basket-mode optimization for stocks
 - [x] Daily signal scanner + Discord/Slack webhook
 - [x] Scheduled GitHub Actions for loop, scanner, and paper trader
-- [x] Loop runs every 6h with parallel stocks + crypto matrix shards
+- [x] Branch-per-campaign: stocks/crypto loops isolated on `autoresearch/*` branches, main reserved for promoted strategies
+- [x] Promotion gate (`promote.py` + `promote.yml`): val-window beat + lockbox sanity floors before main moves
 - [x] Paper trading (`live_trade.py`) rewritten on `alpaca-py` — reuses `scan.py`'s strategy harness so it always tracks the latest `strategy.py`
 - [x] $10K per-symbol cash default, idempotent re-runs, JSONL `paper.log`
 - [ ] User signs up for Alpaca paper keys + sets `ALPACA_API_KEY`/`ALPACA_API_SECRET` repo secrets

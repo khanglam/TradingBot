@@ -33,3 +33,6 @@ results/scan.log
 /run.log
 trades.log
 logs/
+
+# promote.py scratch dir — holds candidate strategy file during validation
+_promote_tmp/

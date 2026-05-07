@@ -31,7 +31,8 @@ TradingBot/
 ├── data/                   ← Cached parquet OHLCV (gitignored)
 ├── archive/                ← Old code retained for reference
 └── .github/workflows/
-    ├── loop.yml            ← Autoresearch every 6h, matrix(stocks, crypto)
+    ├── loop.yml            ← Autoresearch (stocks daily 04 UTC; crypto every 6h)
+    ├── promote.yml         ← Daily promotion gate — candidate → main
     ├── scan.yml            ← Stocks pre-market + crypto every 4h
     └── paper.yml           ← Alpaca paper executor (mirrors scan)
 ```
@@ -152,13 +153,14 @@ I execute manually" workflow.
 
 ## GitHub Actions (scheduled runs)
 
-Three workflows ship in `.github/workflows/`:
+Four workflows ship in `.github/workflows/`:
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `loop.yml` | Every 6h, matrix(stocks, crypto) | Runs the autoresearch loop for both campaigns in parallel; commits keeps + per-campaign tsv back to `main` |
-| `scan.yml` | Stocks weekdays 13:30 UTC; crypto every 4h | Signal scanner posts to webhook |
-| `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | Alpaca paper executor — runs `live_trade.py` against the latest `strategy.py` |
+| `loop.yml` | Stocks 04:00 UTC daily; crypto every 6h | Runs the autoresearch loop on the campaign branch (`autoresearch/stocks` or `autoresearch/crypto`). Never touches main. |
+| `promote.yml` | Daily 12:00 UTC | Validation gauntlet (`promote.py`): if a campaign's candidate beats the frozen strategy on val + clears lockbox sanity, commit the new frozen `strategies/<campaign>.py` to main |
+| `scan.yml` | Stocks weekdays 13:30 UTC; crypto every 4h | Signal scanner — reads frozen strategies from main, posts to webhook |
+| `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | Alpaca paper executor — `live_trade.py` against frozen strategies on main |
 
 All three have `workflow_dispatch` triggers, so you can also fire them
 on-demand from the GitHub Actions tab.
@@ -183,8 +185,9 @@ Settings → Secrets and variables → Actions:
 ## Paper trading (Alpaca, $10k per symbol)
 
 The executor in `live_trade.py` reuses the same `backtesting.py` harness as
-`scan.py`, so it automatically picks up whatever the autoresearch loop just
-optimized. No hand-coded mirror of the strategy — there is one strategy.
+`scan.py`, so it automatically picks up whatever the promotion gate last
+released to main. No hand-coded mirror of the strategy — there is one
+strategy file per campaign, and paper only ever sees the frozen version.
 
 ```bash
 # 1. Get free paper keys at https://app.alpaca.markets/paper/dashboard/overview

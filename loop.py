@@ -1,5 +1,10 @@
 """Autoresearch orchestrator — the karpathy-style loop.
 
+The loop ALWAYS runs on a campaign-specific branch (autoresearch/<campaign>),
+never on main. main carries only the frozen, promoted strategy files that
+scan.py / live_trade.py read; the loop's mutations and git resets stay
+quarantined on the campaign branch and only land on main via promote.py.
+
 Each iteration:
   1. Read STRATEGY_FILE + last 10 rows of per-campaign results.tsv + program.md
   2. Ask Claude for a single mutation (returns description + new strategy file)
@@ -19,6 +24,7 @@ Each iteration:
 Requires:
     OPENROUTER_API_KEY in env (or .env file). Get one at https://openrouter.ai/keys
     A clean git working tree on entry (so we can reset cleanly)
+    HEAD on an autoresearch/<campaign> branch (set ALLOW_LOOP_ON_MAIN=1 to override)
 
 Environment knobs (all optional):
     OPTIMIZE_METRIC        val_sharpe (default) | calmar | dsr
@@ -131,6 +137,26 @@ def _git(*args: str) -> str:
 
 def git_dirty() -> bool:
     return bool(_git("status", "--porcelain"))
+
+
+def git_current_branch() -> str:
+    return _git("rev-parse", "--abbrev-ref", "HEAD")
+
+
+def assert_research_branch() -> None:
+    """The loop mutates and resets HEAD; it must run on a campaign branch
+    (autoresearch/<name>), never on main. Set ALLOW_LOOP_ON_MAIN=1 to override
+    for one-off local experiments where you intentionally want to commit to
+    whatever branch you're on."""
+    if os.environ.get("ALLOW_LOOP_ON_MAIN") == "1":
+        return
+    branch = git_current_branch()
+    if branch in ("main", "master") or not branch.startswith("autoresearch/"):
+        raise SystemExit(
+            f"ERROR: loop.py refuses to run on branch {branch!r}. Switch to an "
+            f"autoresearch/<campaign> branch (e.g. `git checkout autoresearch/stocks`) "
+            f"or set ALLOW_LOOP_ON_MAIN=1 to override."
+        )
 
 
 def git_commit_results() -> bool:
@@ -662,6 +688,9 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Refuse to mutate main — loop runs on autoresearch/<campaign> only.
+    assert_research_branch()
 
     # Layer 1 — checkpoint anything left dirty by a prior aborted session
     # so the dirty-check below sees a clean tree.
