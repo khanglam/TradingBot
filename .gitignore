@@ -36,3 +36,9 @@ logs/
 
 # promote.py scratch dir — holds candidate strategy file during validation
 _promote_tmp/
+
+# Local-only campaign worktrees (`git worktree add .worktrees/<campaign> ...`).
+# Each developer creates these themselves via /init-local-dev. They must
+# never be tracked — git would otherwise record them as broken submodule
+# gitlinks, which is what happened once already.
+.worktrees/
