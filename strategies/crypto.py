@@ -52,6 +52,11 @@ def _atr_ma(high: pd.Series, low: pd.Series, close: pd.Series, atr_n: int = 14, 
     return pd.Series(atr).rolling(ma_n).mean().bfill().to_numpy()
 
 
+def _sma(series: pd.Series, n: int) -> np.ndarray:
+    """Simple moving average."""
+    return pd.Series(series).rolling(n).mean().to_numpy()
+
+
 class Strategy(_BTStrategy):
     # Turtle System One: 28-bar breakout entry, 15-bar opposite exit.
     # On 4h bars this is ~4.7-day entry confirmation, ~2.5-day exit signal.
@@ -106,6 +111,13 @@ class Strategy(_BTStrategy):
     # oscillating sharpe 0.45–1.35 with 10+ entry-filter mutations exhausted.
     max_bars_in_trade = 40
 
+    # Volume confirmation: require today's volume to exceed its 20-bar SMA
+    # on breakout bars. Filters out low-participation breakouts where price
+    # moves without real market participation — a primary failure mode of
+    # breakout systems in crypto. Structurally different from all prior
+    # mutations (which targeted price/volatility filters only).
+    volume_ma_period = 20
+
     def init(self) -> None:
         high = self.data.High
         low = self.data.Low
@@ -118,6 +130,7 @@ class Strategy(_BTStrategy):
         _, self.exit_lower = self.I(_donchian, high, low, self.exit_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
+        self.volume_ma = self.I(_sma, pd.Series(self.data.Volume), self.volume_ma_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -134,16 +147,17 @@ class Strategy(_BTStrategy):
 
         # Entry: close breaks above the prior bar's N-bar high AND
         # current volatility (ATR) is elevated vs its 50-bar MA.
-        # Removed RSI overbought filter (was causing 0-trade crashes when
-        # stacked with narrow Donchian windows). Wider breakout window (28 bars)
-        # self-filters via vol regime gate; legitimate multi-day trends emerge
-        # cleanly without additional exhaustion gates.
+        # Also require volume confirmation: today's volume must exceed
+        # its 20-bar moving average. Volume confirmation filters out
+        # false breakouts where price moves without real participation,
+        # reducing whipsaws and improving trend persistence.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
+        volume_confirm = self.data.Volume[-1] > self.volume_ma[-1]
 
-        if breakout and vol_regime_high and not self.position:
+        if breakout and vol_regime_high and volume_confirm and not self.position:
             # Volatility-scaled position sizing: reduce size when ATR spikes.
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size shrinks.
             # Low vol (ATR < MA) → ratio > 1, but cap at 1.0 for conservatism.
