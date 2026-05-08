@@ -87,22 +87,23 @@ class Strategy(_BTStrategy):
     atr_ma_period = 50
     atr_vol_threshold = 1.0
     
-    # Volatility-scaled position sizing: cap size inversely proportional to
-    # realized volatility ratio. When ATR is 2x the MA (panic), halve the
-    # position. When ATR is 0.5x the MA (calm), keep full size. Smooths
-    # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
-    vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
+    # Volatility-scaled position sizing: size inversely proportional to
+    # realized volatility ratio. Now REVERSED from prior logic:
+    # - High ATR (high-vol regime) → strong momentum, trends extend further → size UP
+    # - Low ATR (low-vol regime) → weak chop, reversals common → size DOWN
+    # This flips the prior vol_ratio = atr_ma/atr pattern which paradoxically
+    # reduced size during strong momentum (high ATR) and increased size during
+    # chop (low ATR). The new logic better aligns position sizing with edge:
+    # more capital when the trend is powerful, less when it's tenuous.
+    vol_scale_floor = 0.35  # minimum size when ATR spikes (extreme vol)
+    vol_scale_ceil = 1.05   # maximum size in calm regimes
     
-    # Base fraction reduced from 0.70 to 0.65 to further compress maximum
-    # drawdown and smooth equity curve via conservative capital deployment.
-    # Recent keeps (3520d7b, 84b35bf) plateau at sharpe 1.625–1.673 with DD
-    # 7.04–7.58%. All entry/exit logic has been exhausted (breakout_period,
-    # exit_period, time-decay, regime gates all optimal). The remaining lever
-    # is sizing: fractional reduction from 0.70 to 0.65 trades ~7% less capital
-    # per entry without mutating signal logic or risking 0-trade crashes. This
-    # preserves trade count (~50 trades in val window) while dampening peak
-    # drawdown and volatility, targeting higher Sharpe via capital conservation.
-    base_fraction = 0.65
+    # Base fraction reduced from 0.65 to 0.55 to compensate for higher avg
+    # position sizes when ATR is elevated (strong trends → larger size).
+    # The reversed scaling means high-vol breakouts (which tend to be the
+    # biggest winners) will be sized closer to 1.0, so the base must be
+    # lower to keep peak drawdown bounded.
+    base_fraction = 0.55
 
     # Time-decay exit: close position after N bars in trade, regardless of
     # price action. On 4h bars, 40 bars ≈ 6.7 days. Complements ATR trailing
@@ -158,12 +159,14 @@ class Strategy(_BTStrategy):
         volume_confirm = self.data.Volume[-1] > self.volume_ma[-1]
 
         if breakout and vol_regime_high and volume_confirm and not self.position:
-            # Volatility-scaled position sizing: reduce size when ATR spikes.
-            # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size shrinks.
-            # Low vol (ATR < MA) → ratio > 1, but cap at 1.0 for conservatism.
-            # Minimum is vol_scale_cap (0.5) to never go below half-size.
-            vol_ratio = self.atr_ma[-1] / max(self.atr[-1], 0.0001)
-            size_multiplier = max(self.vol_scale_cap, min(1.0, vol_ratio))
+            # REVERSED volatility scaling: size UP when ATR is high (strong momentum).
+            # Ratio = ATR / ATR_MA: high vol (ATR > MA) → ratio > 1 → size increases.
+            # Low vol (ATR < MA) → ratio < 1, size decreases. Caps at floor/ceiling.
+            # Rationale: high-vol breakouts tend to be the biggest winners in crypto
+            # (sharp, sustained trends); sizing up captures more of these moves.
+            # Low-vol breakouts are chop; sizing down limits exposure to weak edges.
+            vol_ratio = self.atr[-1] / max(self.atr_ma[-1], 0.0001)
+            size_multiplier = max(self.vol_scale_floor, min(self.vol_scale_ceil, vol_ratio))
             size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
