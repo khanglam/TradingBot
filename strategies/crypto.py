@@ -52,6 +52,24 @@ def _atr_ma(high: pd.Series, low: pd.Series, close: pd.Series, atr_n: int = 14, 
     return pd.Series(atr).rolling(ma_n).mean().bfill().to_numpy()
 
 
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
+    """Average Directional Index — measures trend strength.
+    Returns ADX values. ADX > 25 indicates a strong trend (directional movement
+    is well-established). Used as momentum confirmation on entry: only take
+    breakouts when ADX confirms the market is trending, not ranging."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+    atr = _atr(high, low, close, n)
+    plus_di = 100 * (plus_dm.rolling(n).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(n).mean() / atr)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    adx = dx.rolling(n).mean()
+    return adx.fillna(0).bfill().to_numpy()
+
+
 def _sma(series: pd.Series, n: int) -> np.ndarray:
     """Simple moving average."""
     return pd.Series(series).rolling(n).mean().to_numpy()
@@ -83,6 +101,15 @@ class Strategy(_BTStrategy):
     # set after repeated 0-trade crashes from over-constrained filter stack.
     atr_ma_period = 50
     atr_vol_threshold = 1.0
+    
+    # ADX momentum confirmation: require ADX > 25 on entry bars to confirm
+    # the market is trending. Unlike the 200-bar SMA regime filter which
+    # crashed with 0 trades (too restrictive for 4h crypto data), ADX is
+    # a momentum indicator that filters out ranging chop at the bar level
+    # without blocking entire regime windows. This strengthens the entry
+    # signal by requiring trend strength, not trend direction.
+    adx_period = 14
+    adx_threshold = 25.0
     
     # Volatility-scaled position sizing: size inversely proportional to
     # realized volatility ratio. Now REVERSED from prior logic:
@@ -128,6 +155,7 @@ class Strategy(_BTStrategy):
         _, self.exit_lower = self.I(_donchian, high, low, self.exit_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
+        self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.volume_ma = self.I(_sma, pd.Series(self.data.Volume), self.volume_ma_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
@@ -149,13 +177,18 @@ class Strategy(_BTStrategy):
         # its 20-bar moving average. Volume confirmation filters out
         # false breakouts where price moves without real participation,
         # reducing whipsaws and improving trend persistence.
+        # And require ADX momentum confirmation: ADX > 25 confirms the
+        # market is trending, not ranging. Unlike the 200-bar SMA filter
+        # which crashed (too restrictive on 4h crypto), ADX filters at
+        # the bar level without blocking regime participation.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         volume_confirm = self.data.Volume[-1] > self.volume_ma[-1]
+        momentum_confirm = self.adx[-1] > self.adx_threshold
 
-        if breakout and vol_regime_high and volume_confirm and not self.position:
+        if breakout and vol_regime_high and volume_confirm and momentum_confirm and not self.position:
             # REVERSED volatility scaling: size UP when ATR is high (strong momentum).
             # Ratio = ATR / ATR_MA: high vol (ATR > MA) → ratio > 1 → size increases.
             # Low vol (ATR < MA) → ratio < 1, size decreases. Caps at floor/ceiling.
