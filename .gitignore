@@ -13,9 +13,6 @@ __pycache__/
 # Virtual environment
 .venv/
 
-# Cached OHLCV data (large, refetchable, never committed)
-data/
-
 # Per-run artifacts inside results/ — keep per-campaign *.tsv files (and
 # .gitkeep) so experiment logs persist in git and across CI runs; ignore
 # logs and one-time backups.
