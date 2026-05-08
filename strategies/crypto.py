@@ -58,15 +58,12 @@ def _sma(series: pd.Series, n: int) -> np.ndarray:
 
 
 class Strategy(_BTStrategy):
-    # Turtle System One: 28-bar breakout entry, 15-bar opposite exit.
-    # On 4h bars this is ~4.7-day entry confirmation, ~2.5-day exit signal.
-    # Widened from 20 to 28 bars to capture multi-day trends that self-filter
-    # via the volatility regime gate (ATR > 1.0x MA), avoiding the need for
-    # stacked entry filters (RSI, Stochastic) which collapse the trade set
-    # to 0 when combined with narrow windows. Wider window allows legitimate
-    # trends to emerge cleanly, reducing false breakouts and eliminating the
-    # need for exhaustion-avoidance gates that were causing repeated crashes.
-    breakout_period = 28
+    # Turtle System One: 24-bar breakout entry, 15-bar opposite exit.
+    # On 4h bars this is ~4-day entry confirmation, ~2.5-day exit signal.
+    # Tightened from 28 to 24 bars to capture shorter-term momentum breakouts
+    # while retaining the volatility regime and volume confirmation filters
+    # that have proven essential for eliminating false breakouts.
+    breakout_period = 24
     exit_period = 15
 
     # ATR trailing stop — volatility-aware hard exit. Now regime-adaptive:
