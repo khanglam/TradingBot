@@ -75,6 +75,17 @@ def _sma(series: pd.Series, n: int) -> np.ndarray:
     return pd.Series(series).rolling(n).mean().to_numpy()
 
 
+def _volume_roc(volume: pd.Series, n: int = 10) -> np.ndarray:
+    """Volume Rate-of-Change: percentage change in volume over N bars.
+    Positive ROC = volume expanding (momentum building). Used to confirm
+    breakouts — sudden volume surges distinguish real breakouts from
+    slow grindouts that reverse quickly. Returns ROC values; positive ROC
+    indicates accelerating participation."""
+    vol = pd.Series(volume)
+    roc = vol.pct_change(periods=n) * 100
+    return roc.fillna(0).replace([np.inf, -np.inf], 0).to_numpy()
+
+
 class Strategy(_BTStrategy):
     # Turtle System One: 24-bar breakout entry, 15-bar opposite exit.
     # On 4h bars this is ~4-day entry confirmation, ~2.5-day exit signal.
@@ -136,12 +147,14 @@ class Strategy(_BTStrategy):
     # oscillating sharpe 0.45–1.35 with 10+ entry-filter mutations exhausted.
     max_bars_in_trade = 40
 
-    # Volume confirmation: require today's volume to exceed its 20-bar SMA
-    # on breakout bars. Filters out low-participation breakouts where price
-    # moves without real market participation — a primary failure mode of
-    # breakout systems in crypto. Structurally different from all prior
-    # mutations (which targeted price/volatility filters only).
-    volume_ma_period = 20
+    # Volume momentum confirmation: require 10-bar Rate-of-Change in volume
+    # to be positive (> 0%) — i.e., today's volume exceeds the volume from
+    # 10 bars ago. This fires on sudden volume surges rather than static MA
+    # crossing, capturing momentum acceleration rather than just participation.
+    # Structurally different from the prior volume SMA filter (which compared
+    # to a rolling 20-bar average), and from the ATR/ADX filters (which measure
+    # price momentum, not volume momentum).
+    volume_roc_period = 10
 
     def init(self) -> None:
         high = self.data.High
@@ -156,7 +169,7 @@ class Strategy(_BTStrategy):
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
-        self.volume_ma = self.I(_sma, pd.Series(self.data.Volume), self.volume_ma_period)
+        self.volume_roc = self.I(_volume_roc, pd.Series(self.data.Volume), self.volume_roc_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -173,10 +186,10 @@ class Strategy(_BTStrategy):
 
         # Entry: close breaks above the prior bar's N-bar high AND
         # current volatility (ATR) is elevated vs its 50-bar MA.
-        # Also require volume confirmation: today's volume must exceed
-        # its 20-bar moving average. Volume confirmation filters out
-        # false breakouts where price moves without real participation,
-        # reducing whipsaws and improving trend persistence.
+        # Also require volume momentum confirmation: today's volume must
+        # exceed the volume from 10 bars ago (positive ROC). This fires on
+        # sudden volume surges rather than static threshold crossing,
+        # capturing momentum acceleration rather than just participation.
         # And require ADX momentum confirmation: ADX > 25 confirms the
         # market is trending, not ranging. Unlike the 200-bar SMA filter
         # which crashed (too restrictive on 4h crypto), ADX filters at
@@ -185,10 +198,10 @@ class Strategy(_BTStrategy):
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
-        volume_confirm = self.data.Volume[-1] > self.volume_ma[-1]
+        volume_momentum = self.volume_roc[-1] > 0  # positive ROC = volume expanding
         momentum_confirm = self.adx[-1] > self.adx_threshold
 
-        if breakout and vol_regime_high and volume_confirm and momentum_confirm and not self.position:
+        if breakout and vol_regime_high and volume_momentum and momentum_confirm and not self.position:
             # REVERSED volatility scaling: size UP when ATR is high (strong momentum).
             # Ratio = ATR / ATR_MA: high vol (ATR > MA) → ratio > 1 → size increases.
             # Low vol (ATR < MA) → ratio < 1, size decreases. Caps at floor/ceiling.
