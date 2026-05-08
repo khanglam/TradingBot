@@ -336,6 +336,10 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
         return None
 
     try:
+        # Fetch on first miss so a fresh checkout doesn't crash the loop
+        # with a bare FileNotFoundError. Subsequent reads hit the cache.
+        import data_fetch
+        data_fetch.fetch_if_missing(data_path)
         df = pd.read_parquet(data_path)
     except Exception as e:
         print(f"# data load: {e}", file=sys.stderr)

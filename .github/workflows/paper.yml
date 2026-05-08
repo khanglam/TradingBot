@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         type: boolean
+      timeframe:
+        description: 'Crypto bar timeframe (e.g. 4h, 1h, 1d). Blank = use PAPER_CRYPTO_TIMEFRAME var or default 4h.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -62,6 +67,7 @@ jobs:
       PAPER_WATCHLIST: ${{ vars.PAPER_WATCHLIST || 'SPY,QQQ,TSLA,NVDA' }}
       PAPER_CRYPTO_WATCHLIST: ${{ vars.PAPER_CRYPTO_WATCHLIST || 'BTC/USD,ETH/USD' }}
       PAPER_PER_SYMBOL_CASH: ${{ vars.PAPER_PER_SYMBOL_CASH || '10000' }}
+      PAPER_CRYPTO_TIMEFRAME: ${{ vars.PAPER_CRYPTO_TIMEFRAME || '4h' }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
@@ -110,6 +116,9 @@ jobs:
           fi
           if [ "${{ github.event.inputs.dry }}" = "true" ]; then
             ARGS="$ARGS --dry"
+          fi
+          if [ -n "${{ github.event.inputs.timeframe }}" ]; then
+            ARGS="$ARGS --timeframe ${{ github.event.inputs.timeframe }}"
           fi
           # Exit 1 means "no fresh signals" — that's fine, not a failure.
           python live_trade.py $ARGS || code=$?

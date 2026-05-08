@@ -97,6 +97,8 @@ def _campaign_or_400() -> str:
     return name
 
 
+
+
 # ───────────────────────────── helpers ───────────────────────────────
 
 _NEW_SCHEMA_COLS = [
@@ -526,6 +528,13 @@ def get_equity():
     resolved = bt_module._resolve_symbols(spec)
     if not resolved:
         raise HTTPException(400, "no symbols resolved from $SYMBOLS")
+    import data_fetch
+    try:
+        data_fetch.fetch_if_missing(resolved[0][1])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"auto-fetch failed: {e}")
     df = pd.read_parquet(resolved[0][1])
     df = df.loc[bt_module.VAL_START:bt_module.VAL_END]
     if len(df) < 100:
@@ -726,6 +735,441 @@ async def loop_stream():
 # ───────────────────── paper-log / alpaca routes ─────────────────────
 
 PAPER_LOG = ROOT / "results" / "paper.log"
+
+
+# ── strategy version tracking (Trading tab — Phase 1) ──
+# A "version" is a commit on `main` that touched strategies/<campaign>.py.
+# These are the strategies that actually went live (promote.py is the only
+# writer on main). Newest-first; the head is the currently deployed version.
+
+def _git_log_versions(campaign: str) -> list[dict]:
+    rel = f"strategies/{campaign}.py"
+    cmd = [
+        "git", "-C", str(ROOT), "log", "main", "--follow",
+        "--format=%H%x09%cI%x09%s", "--", rel,
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        return []
+
+    rows: list[dict] = []
+    for line in out.strip().splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        commit, promoted_at, subject = parts
+        rows.append({
+            "commit": commit,
+            "short": commit[:7],
+            "promoted_at": promoted_at,
+            "subject": subject,
+        })
+
+    # rows are newest-first. retired_at[i] = promoted_at[i-1]; head has retired_at=None.
+    for i, r in enumerate(rows):
+        r["retired_at"] = rows[i - 1]["promoted_at"] if i > 0 else None
+    return rows
+
+
+@app.get("/api/strategy/versions")
+def strategy_versions(campaign: str) -> dict:
+    """Promotion history for a campaign — every commit on main that changed
+    strategies/<campaign>.py. The first entry is the currently deployed version."""
+    if campaign not in ("stocks", "crypto"):
+        raise HTTPException(400, "campaign must be 'stocks' or 'crypto'")
+    versions = _git_log_versions(campaign)
+    return {"campaign": campaign, "versions": versions}
+
+
+# ── paper trading equity curve (Phase 1) ──
+# Walks results/paper.log, pairs BUY→SELL per symbol, accumulates realized
+# P&L into a time-series + per-trade ledger. Also returns one point per
+# closed trade so the frontend can plot a step curve.
+
+def _paper_equity(campaign: str) -> dict:
+    asset_filter = "crypto" if campaign == "crypto" else "stock"
+    if not PAPER_LOG.exists():
+        return {"trades": [], "points": [], "summary": {"total_trades": 0, "total_pnl": 0.0, "wins": 0, "losses": 0}}
+
+    records: list[dict] = []
+    with PAPER_LOG.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("asset") != asset_filter:
+                continue
+            records.append(rec)
+
+    # Chronological order — paper.log is append-only, but be defensive.
+    records.sort(key=lambda r: r.get("ts", ""))
+
+    open_legs: dict[str, dict] = {}  # symbol → {entry_price, qty, ts}
+    trades: list[dict] = []
+    cumulative = 0.0
+
+    def _is_buy(action: str) -> bool:
+        return "buy" in (action or "")  # captures buy + dry-buy
+
+    def _is_sell(action: str) -> bool:
+        return "sell" in (action or "")
+
+    for rec in records:
+        sym = rec.get("symbol")
+        ts = rec.get("ts")
+        scan = rec.get("scan") or {}
+        ex = rec.get("execution") or {}
+        action = ex.get("action") or ""
+
+        if _is_buy(action) and sym not in open_legs:
+            entry = scan.get("entry_price") or scan.get("last_close")
+            if entry is None:
+                continue
+            qty_raw = ex.get("qty") or ex.get("would_qty")
+            try:
+                qty = float(qty_raw) if isinstance(qty_raw, (int, float, str)) and str(qty_raw).replace('.', '', 1).isdigit() else 1.0
+            except (ValueError, TypeError):
+                qty = 1.0
+            open_legs[sym] = {"entry_price": float(entry), "qty": qty, "entry_ts": ts}
+
+        elif _is_sell(action) and sym in open_legs:
+            leg = open_legs.pop(sym)
+            exit_price = scan.get("exit_price") or scan.get("last_close")
+            if exit_price is None:
+                continue
+            pnl = (float(exit_price) - leg["entry_price"]) * leg["qty"]
+            cumulative += pnl
+            trades.append({
+                "ts": ts,
+                "symbol": sym,
+                "entry_ts": leg["entry_ts"],
+                "entry_price": leg["entry_price"],
+                "exit_price": float(exit_price),
+                "qty": leg["qty"],
+                "realized_pnl": pnl,
+                "cumulative_pnl": cumulative,
+            })
+
+    points = [{"ts": t["ts"], "cumulative_pnl": t["cumulative_pnl"]} for t in trades]
+    wins = sum(1 for t in trades if t["realized_pnl"] > 0)
+    losses = sum(1 for t in trades if t["realized_pnl"] < 0)
+    return {
+        "trades": trades,
+        "points": points,
+        "open_positions": [
+            {"symbol": s, **leg} for s, leg in open_legs.items()
+        ],
+        "summary": {
+            "total_trades": len(trades),
+            "total_pnl": cumulative,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": (wins / len(trades)) if trades else 0.0,
+        },
+    }
+
+
+@app.get("/api/paper/equity")
+def paper_equity(campaign: str) -> dict:
+    """Realized paper-trading P&L curve + ledger for the campaign.
+    Reconstructed from results/paper.log by pairing BUY→SELL per symbol."""
+    if campaign not in ("stocks", "crypto"):
+        raise HTTPException(400, "campaign must be 'stocks' or 'crypto'")
+    return {"campaign": campaign, **_paper_equity(campaign)}
+
+
+# ── live chart data (Phase 2) ──
+# Fetches recent bars, runs the current strategy on them, extracts
+# indicator series via introspection, and returns price + indicators +
+# entry/exit markers. The "auto-detect indicators" trick: backtesting.py
+# stores every self.I() registration on `strategy._indicators`. We pull
+# those back out and filter to ones that overlay sensibly on the price
+# axis (median-value heuristic). When the loop swaps to a different
+# strategy with different indicators tomorrow, the chart adapts with
+# zero code changes.
+
+import time as _time
+_chart_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_CHART_TTL = 90.0  # seconds — bars only roll over every 4h/1d
+
+
+def _default_symbol(campaign: str) -> str:
+    if campaign == "crypto":
+        return (os.environ.get("PAPER_CRYPTO_WATCHLIST") or "BTC/USD").split(",")[0].strip()
+    return (os.environ.get("PAPER_WATCHLIST") or "SPY,QQQ,TSLA,NVDA").split(",")[0].strip()
+
+
+@app.get("/api/paper/chart-data")
+def paper_chart_data(campaign: str, symbol: str | None = None, bars: int = 80) -> dict:
+    """Recent bars + strategy indicators (auto-detected) + paper-trade markers.
+
+    Cached for 90s so the dashboard's 30s refresh doesn't hammer Alpaca/yfinance.
+    """
+    if campaign not in ("stocks", "crypto"):
+        raise HTTPException(400, "campaign must be 'stocks' or 'crypto'")
+
+    sym = (symbol or _default_symbol(campaign)).strip()
+    asset = "crypto" if campaign == "crypto" else "stock"
+
+    cache_key = (asset, sym)
+    cached = _chart_cache.get(cache_key)
+    if cached and (_time.time() - cached[0] < _CHART_TTL):
+        return cached[1]
+
+    import numpy as np
+    try:
+        from live_trade import _fetch_bars  # reuses crypto/stock fetchers
+        from backtesting import Backtest
+        from backtesting.lib import FractionalBacktest
+        from backtest import load_strategy_class
+    except Exception as e:
+        raise HTTPException(500, f"import failure: {e}")
+
+    timeframe = os.environ.get("PAPER_CRYPTO_TIMEFRAME", "4h") if asset == "crypto" else "1d"
+    # Calendar days to request — generous enough that we get >= `bars` rows after warmup.
+    days = max(60, bars * 5 if asset != "crypto" else bars)
+
+    try:
+        df_full = _fetch_bars(sym, asset, days=days, timeframe=timeframe)
+    except Exception as e:
+        raise HTTPException(502, f"data fetch failed: {e}")
+
+    if len(df_full) < 30:
+        raise HTTPException(502, f"only {len(df_full)} bars returned for {sym}")
+
+    strategy_file = f"strategies/{campaign}.py"
+    try:
+        UserStrategy = load_strategy_class(strategy_file)
+    except Exception as e:
+        raise HTTPException(500, f"load strategy {strategy_file} failed: {e}")
+
+    # Match the real paper trader's per-symbol cash budget so simulated dollar
+    # P&L is directly comparable to actual paper trades. FractionalBacktest
+    # for crypto (lets us "buy" fractions of a BTC at $10K cash); regular
+    # Backtest for stocks (whole-share, plenty at this notional).
+    cash = float(os.environ.get("PAPER_PER_SYMBOL_CASH", 10000))
+    commission = float(os.environ.get("COMMISSION", 0.001))
+    BacktestClass = FractionalBacktest if asset == "crypto" else Backtest
+    try:
+        bt = BacktestClass(df_full, UserStrategy, cash=cash, commission=commission,
+                           exclusive_orders=True, finalize_trades=True)
+        stats = bt.run()
+    except Exception as e:
+        raise HTTPException(500, f"backtest failed: {e}")
+
+    strat = stats._strategy
+
+    # Slice to the last `bars` rows for display.
+    n = len(df_full)
+    start = max(0, n - bars)
+    df = df_full.iloc[start:]
+
+    bars_out = [{
+        "ts": ts.isoformat(),
+        "o": float(row.Open), "h": float(row.High),
+        "l": float(row.Low), "c": float(row.Close),
+        "v": float(row.Volume),
+    } for ts, row in df.iterrows()]
+
+    # Build simulated trades + cumulative P&L within the visible window.
+    # This answers the question that actually matters: "if the deployed
+    # strategy had been live over these recent bars, would it have made money?"
+    # Until paper.log has real trades, this is the closest signal of strategy
+    # health we have on real recent market data (not stale 2020-2024 backtest).
+    sim_markers: list[dict] = []
+    sim_trades: list[dict] = []
+    sim_pnl_curve: list[dict] = []  # one point per visible bar; cumulative realized
+    cumulative_pnl = 0.0
+    closed_trades_in_window = 0
+    wins = 0
+
+    trades_df = stats.get("_trades")
+    window_start = df.index[0]
+    realized_at: dict[str, float] = {}  # exit_ts_iso → cumulative_pnl_after
+    if trades_df is not None and len(trades_df):
+        for _, t in trades_df.iterrows():
+            et = pd.Timestamp(t["EntryTime"])
+            xt = pd.Timestamp(t["ExitTime"]) if pd.notna(t.get("ExitTime")) else None
+
+            entry_in_window = et >= window_start
+            exit_in_window = xt is not None and xt >= window_start
+
+            if entry_in_window:
+                sim_markers.append({"ts": et.isoformat(), "type": "BUY", "price": float(t["EntryPrice"])})
+            if exit_in_window:
+                sim_markers.append({"ts": xt.isoformat(), "type": "SELL", "price": float(t["ExitPrice"])})
+
+            # Count realized P&L only for trades that closed within the visible
+            # window; in-progress trades don't contribute until they exit.
+            if exit_in_window:
+                pnl = float(t["PnL"])
+                cumulative_pnl += pnl
+                closed_trades_in_window += 1
+                if pnl > 0:
+                    wins += 1
+                sim_trades.append({
+                    "entry_ts": et.isoformat(),
+                    "exit_ts": xt.isoformat(),
+                    "entry_price": float(t["EntryPrice"]),
+                    "exit_price": float(t["ExitPrice"]),
+                    "pnl": pnl,
+                    "return_pct": float(t["ReturnPct"]) * 100.0,
+                })
+                realized_at[xt.isoformat()] = cumulative_pnl
+
+    # Step curve: P&L only changes at exit timestamps; in between it's flat.
+    running = 0.0
+    for ts in df.index:
+        running = realized_at.get(ts.isoformat(), running)
+        sim_pnl_curve.append({"ts": ts.isoformat(), "cumulative_pnl": running})
+
+    # Real paper.log markers for THIS symbol — these are the only "real" signals
+    # (ones the executor actually saw on a live bar close).
+    real_markers: list[dict] = []
+    if PAPER_LOG.exists():
+        with PAPER_LOG.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("symbol") != sym:
+                    continue
+                scan = rec.get("scan") or {}
+                if scan.get("signal") == "BUY" and scan.get("entry_price") and scan.get("entry_time"):
+                    real_markers.append({"ts": scan["entry_time"], "type": "BUY", "price": float(scan["entry_price"])})
+                elif scan.get("signal") == "SELL" and scan.get("exit_price") and scan.get("exit_time"):
+                    real_markers.append({"ts": scan["exit_time"], "type": "SELL", "price": float(scan["exit_price"])})
+
+    out = {
+        "campaign": campaign,
+        "symbol": sym,
+        "asset": asset,
+        "timeframe": timeframe,
+        "bars": bars_out,
+        "sim_markers": sim_markers,
+        "real_markers": real_markers,
+        "sim_pnl_curve": sim_pnl_curve,
+        "sim_pnl_total": cumulative_pnl,
+        "sim_trades": sim_trades,
+        "sim_trades_count": closed_trades_in_window,
+        "sim_win_rate": (wins / closed_trades_in_window) if closed_trades_in_window else None,
+        "last_bar": {
+            "ts": df.index[-1].isoformat(),
+            "close": float(df["Close"].iloc[-1]),
+            "in_position": bool(strat.position),
+        },
+        "watchlist": [s.strip() for s in (
+            os.environ.get("PAPER_CRYPTO_WATCHLIST" if asset == "crypto" else "PAPER_WATCHLIST", "")
+        ).split(",") if s.strip()] or [sym],
+    }
+    _chart_cache[cache_key] = (_time.time(), out)
+    return out
+
+
+# ── per-version performance + anomaly stats (Phases 4 + 5) ──
+
+@app.get("/api/paper/version-stats")
+def paper_version_stats(campaign: str) -> dict:
+    """Slice paper trades by which strategy version was deployed when each
+    trade fired. Returns one row per version, newest-first, with per-version
+    realized stats. Versions with zero trades still appear (so the user can
+    see "this version was deployed but hasn't traded yet")."""
+    if campaign not in ("stocks", "crypto"):
+        raise HTTPException(400, "campaign must be 'stocks' or 'crypto'")
+
+    versions = _git_log_versions(campaign)
+    eq = _paper_equity(campaign)
+    trades = eq["trades"]
+
+    def _ver_for(ts: str) -> str | None:
+        # The version active at time ts is the newest version with promoted_at <= ts.
+        for v in versions:  # newest first
+            if v["promoted_at"] <= ts:
+                return v["commit"]
+        return None
+
+    by_version: dict[str, list[dict]] = {}
+    for t in trades:
+        cv = _ver_for(t["ts"])
+        if cv is None:
+            continue
+        by_version.setdefault(cv, []).append(t)
+
+    rows: list[dict] = []
+    for v in versions:
+        v_trades = by_version.get(v["commit"], [])
+        pnl = sum(t["realized_pnl"] for t in v_trades)
+        wins = sum(1 for t in v_trades if t["realized_pnl"] > 0)
+        rows.append({
+            "commit": v["commit"],
+            "short": v["short"],
+            "promoted_at": v["promoted_at"],
+            "retired_at": v["retired_at"],
+            "subject": v["subject"],
+            "trades": len(v_trades),
+            "pnl": pnl,
+            "wins": wins,
+            "losses": sum(1 for t in v_trades if t["realized_pnl"] < 0),
+            "win_rate": (wins / len(v_trades)) if v_trades else None,
+        })
+    return {"campaign": campaign, "versions": rows}
+
+
+@app.get("/api/paper/anomalies")
+def paper_anomalies(campaign: str) -> dict:
+    """Lightweight diagnostic stats — currently just 'days since last signal'
+    for the current version, which catches a stuck/silent strategy fast."""
+    if campaign not in ("stocks", "crypto"):
+        raise HTTPException(400, "campaign must be 'stocks' or 'crypto'")
+
+    if not PAPER_LOG.exists():
+        return {"days_since_last_signal": None, "last_signal_ts": None, "last_signal_symbol": None}
+
+    asset_filter = "crypto" if campaign == "crypto" else "stock"
+    last_ts: str | None = None
+    last_sym: str | None = None
+    last_sig: str | None = None
+    with PAPER_LOG.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("asset") != asset_filter:
+                continue
+            scan = rec.get("scan") or {}
+            if scan.get("signal") in ("BUY", "SELL"):
+                ts = rec.get("ts")
+                if ts and (last_ts is None or ts > last_ts):
+                    last_ts, last_sym, last_sig = ts, rec.get("symbol"), scan["signal"]
+
+    days = None
+    if last_ts:
+        from datetime import datetime as _dt, timezone as _tz
+        try:
+            dt = _dt.fromisoformat(last_ts.replace("Z", "+00:00"))
+            days = (_dt.now(_tz.utc) - dt).total_seconds() / 86400.0
+        except ValueError:
+            pass
+
+    return {
+        "days_since_last_signal": days,
+        "last_signal_ts": last_ts,
+        "last_signal_symbol": last_sym,
+        "last_signal_kind": last_sig,
+    }
 
 
 @app.get("/api/paper-log")
