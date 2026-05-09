@@ -13,9 +13,6 @@ __pycache__/
 # Virtual environment
 .venv/
 
-# Cached OHLCV data (large, refetchable, never committed)
-data/
-
 # Per-run artifacts inside results/ — keep per-campaign *.tsv files (and
 # .gitkeep) so experiment logs persist in git and across CI runs; ignore
 # logs and one-time backups.
@@ -36,3 +33,9 @@ logs/
 
 # promote.py scratch dir — holds candidate strategy file during validation
 _promote_tmp/
+
+# Local-only campaign worktrees (`git worktree add .worktrees/<campaign> ...`).
+# Each developer creates these themselves via /init-local-dev. They must
+# never be tracked — git would otherwise record them as broken submodule
+# gitlinks, which is what happened once already.
+.worktrees/

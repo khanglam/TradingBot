@@ -319,12 +319,65 @@
     <!-- ═══════════════ TRADING TAB ═══════════════ -->
     <main x-show="activeTab==='trading'" class="max-w-7xl mx-auto px-6 py-8 space-y-6">
 
-      <!-- KPI cards -->
-      <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <!-- Current Version card — anchors the whole tab.
+           Strategies mutate daily; every metric below is "since this version was deployed". -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Currently Deployed Strategy</div>
+          <span class="text-xs text-ink-500 font-mono" x-text="activeCampaign"></span>
+          <!-- Anomaly: silent strategy detection. The most common failure mode is "no trades in N days when the backtest expected them". -->
+          <span x-show="anomalies.days_since_last_signal != null"
+                class="ml-3 px-2 py-0.5 rounded text-xs font-mono"
+                :class="anomalies.days_since_last_signal > 14 ? 'bg-amber-500/20 text-accent-crash' : 'bg-ink-800 text-ink-300'">
+            <span x-text="Math.floor(anomalies.days_since_last_signal) + 'd since last signal'"></span>
+          </span>
+          <span x-show="anomalies.days_since_last_signal == null && paperEquity.summary.total_trades === 0"
+                class="ml-3 px-2 py-0.5 rounded text-xs font-mono bg-ink-800 text-ink-300">no signals yet</span>
+          <button @click="refreshTrading()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+        </div>
+        <div x-show="!currentVersion" class="p-8 text-center text-ink-300 text-sm">
+          No promoted versions yet for <span x-text="activeCampaign" class="font-mono"></span>.
+          Strategies become "deployed" only after promote.py copies them to main.
+        </div>
+        <div x-show="currentVersion" class="p-5 grid grid-cols-1 md:grid-cols-5 gap-5">
+          <div class="md:col-span-2">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-1">Version</div>
+            <div class="font-mono text-lg text-ink-100" x-text="currentVersion?.short"></div>
+            <div class="text-xs text-ink-300 mt-1 truncate" x-text="currentVersion?.subject"></div>
+            <div class="text-xs text-ink-500 mt-2 font-mono">
+              live <span x-text="currentVersion?.live_for"></span> · since <span x-text="currentVersion?.promoted_short"></span>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-1">Trades</div>
+            <div class="text-2xl font-semibold text-ink-100" x-text="versionStats.trades"></div>
+            <div class="text-xs text-ink-500 mt-1">since deploy</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-1">Realized P&L</div>
+            <div class="text-2xl font-semibold"
+                 :class="versionStats.pnl > 0 ? 'text-emerald-400' : versionStats.pnl < 0 ? 'text-accent-discard' : 'text-ink-300'"
+                 x-text="versionStats.pnl_display"></div>
+            <div class="text-xs text-ink-500 mt-1">closed paper trades</div>
+          </div>
+          <div>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-1">Win Rate</div>
+            <div class="text-2xl font-semibold text-ink-100" x-text="versionStats.win_rate_display"></div>
+            <div class="text-xs text-ink-500 mt-1"
+                 x-text="versionStats.wins + 'W · ' + versionStats.losses + 'L'"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- KPI cards — slimmed.
+           Mode/Orders-Fired removed (CI dashboard's job, not this tab's). -->
+      <section class="grid grid-cols-2 md:grid-cols-3 gap-4">
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
-          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Orders Fired</div>
-          <div class="text-2xl font-semibold mt-2 text-emerald-400" x-text="tradeSummary.ordersFired"></div>
-          <div class="text-xs text-ink-300 mt-1" x-text="tradeSummary.lastRunAgo"></div>
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Total Paper P&L</div>
+          <div class="text-2xl font-semibold mt-2"
+               :class="paperEquity.summary.total_pnl > 0 ? 'text-emerald-400' : paperEquity.summary.total_pnl < 0 ? 'text-accent-discard' : 'text-ink-300'"
+               x-text="formatPnl(paperEquity.summary.total_pnl)"></div>
+          <div class="text-xs text-ink-300 mt-1" x-text="paperEquity.summary.total_trades + ' trades all-time'"></div>
         </div>
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
           <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Open Positions</div>
@@ -337,163 +390,247 @@
                x-text="alpaca.account ? '$' + Number(alpaca.account.equity).toLocaleString(undefined,{maximumFractionDigits:0}) : '—'"></div>
           <div class="text-xs text-ink-300 mt-1" x-text="alpaca.account ? 'BP $' + Number(alpaca.account.buying_power).toLocaleString(undefined,{maximumFractionDigits:0}) : ''"></div>
         </div>
-        <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
-          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Mode</div>
-          <div class="text-2xl font-semibold mt-2 font-mono"
-               :class="tradeSummary.lastMode==='LIVE' ? 'text-accent-discard' : tradeSummary.lastMode==='PAPER' ? 'text-accent-run' : 'text-ink-300'"
-               x-text="tradeSummary.lastMode || '—'"></div>
-          <div class="text-xs text-ink-300 mt-1" x-text="tradeSummary.totalSymbols + ' symbols tracked'"></div>
+      </section>
+
+      <!-- Live price chart — bars + auto-detected strategy indicators + signal markers.
+           Indicators are extracted from the strategy's self.I() registrations,
+           so when the loop swaps to a different strategy tomorrow the overlays
+           adapt automatically. -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3 flex-wrap">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Live Strategy View</div>
+          <select x-model="chartSymbol" @change="fetchChartData()"
+                  class="bg-ink-800 border border-ink-700 rounded-md px-2 py-1 text-xs font-mono">
+            <template x-for="s in (chartData.watchlist || [])" :key="s">
+              <option :value="s" x-text="s"></option>
+            </template>
+          </select>
+          <span class="text-xs text-ink-500 font-mono"
+                x-text="chartData.timeframe ? chartData.timeframe + ' · ' + (chartData.bars?.length || 0) + ' bars' : ''"></span>
+          <span x-show="chartData.last_bar?.in_position"
+                class="px-2 py-0.5 rounded text-xs font-mono bg-emerald-500/20 text-accent-keep">in position</span>
+          <span x-show="chartLoading" class="text-xs text-ink-500 font-mono">loading…</span>
+          <button @click="fetchChartData(true)" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+        </div>
+        <div class="p-5">
+          <div x-show="chartError" class="py-12 text-center text-ink-300 text-sm" x-text="chartError"></div>
+          <div x-show="!chartError && !chartData.bars?.length" class="py-12 text-center text-ink-300 text-sm">
+            Loading bars…
+          </div>
+          <div x-show="!chartError && chartData.bars?.length" class="relative h-96">
+            <canvas x-ref="liveChartCanvas"></canvas>
+          </div>
+          <!-- Decoder for the marker dots and the secondary axis. -->
+          <div x-show="!chartError && chartData.bars?.length" class="mt-3 flex items-center gap-4 text-xs text-ink-400 font-mono flex-wrap">
+            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>real BUY</span>
+            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-red-400"></span>real SELL</span>
+            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400/40 ring-1 ring-emerald-400"></span>sim BUY</span>
+            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-red-400/40 ring-1 ring-red-400"></span>sim SELL</span>
+            <span class="ml-auto text-ink-500">"sim" = if the current strategy had been live, it would have traded here; right axis = cumulative simulated P&L on $10k notional.</span>
+          </div>
         </div>
       </section>
 
-      <!-- Positions + Trade Log -->
+      <!-- Position card + Strategy Thinking panel.
+           The two questions a trader asks every morning: "where am I?" and "what's the algo about to do?" -->
       <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-        <!-- Open Positions -->
+        <!-- Position card — focused on a single open position (the typical case
+             for this system, which trades one symbol at a time). Falls back to a
+             list if Alpaca shows multiple. -->
         <div class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
           <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
-            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Open Positions</div>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Where Am I?</div>
             <div x-show="alpaca.account" class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full" :class="alpaca.account?.paper ? 'bg-accent-run' : 'bg-accent-discard'"></span>
               <span class="text-xs font-mono text-ink-300" x-text="alpaca.account?.paper ? 'PAPER' : 'LIVE'"></span>
             </div>
-            <button @click="fetchAlpacaPositions()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+            <button @click="fetchAlpacaPositions()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻</button>
           </div>
-          <div x-show="alpaca.error" class="p-8 text-center">
-            <div class="text-4xl mb-3">🔑</div>
-            <div class="text-sm text-ink-300 font-mono" x-text="alpaca.error"></div>
-            <div class="text-xs text-ink-300 mt-2">Add ALPACA_API_KEY + ALPACA_API_SECRET to .env</div>
+          <div x-show="alpaca.error" class="p-6 text-sm text-ink-300">
+            <div class="font-mono text-xs" x-text="alpaca.error"></div>
+            <div class="text-xs mt-2 text-ink-500">Add ALPACA_API_KEY + ALPACA_API_SECRET to .env to see live positions.</div>
           </div>
-          <div x-show="!alpaca.error">
-            <table class="w-full text-sm" x-show="alpaca.positions?.length">
-              <thead class="border-b border-ink-800">
-                <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider">
-                  <th class="px-4 py-2">Symbol</th>
-                  <th class="px-4 py-2 text-right">Qty</th>
-                  <th class="px-4 py-2 text-right">Avg Cost</th>
-                  <th class="px-4 py-2 text-right">Mkt Val</th>
-                  <th class="px-4 py-2 text-right">P&amp;L</th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="pos in alpaca.positions" :key="pos.symbol">
-                  <tr class="border-b border-ink-800/50 hover:bg-ink-800/40 transition-colors">
-                    <td class="px-4 py-2 font-mono font-semibold" x-text="pos.symbol"></td>
-                    <td class="px-4 py-2 font-mono text-right" x-text="pos.qty"></td>
-                    <td class="px-4 py-2 font-mono text-right" x-text="'$' + (pos.avg_entry_price ?? 0).toFixed(2)"></td>
-                    <td class="px-4 py-2 font-mono text-right" x-text="'$' + (pos.market_value ?? 0).toLocaleString(undefined,{maximumFractionDigits:0})"></td>
-                    <td class="px-4 py-2 font-mono text-right text-sm"
-                        :class="(pos.unrealized_pl ?? 0) >= 0 ? 'text-emerald-400' : 'text-accent-discard'"
-                        x-text="((pos.unrealized_pl ?? 0) >= 0 ? '+' : '') + '$' + (pos.unrealized_pl ?? 0).toFixed(2) + ' (' + (((pos.unrealized_plpc ?? 0)*100).toFixed(2)) + '%)'"></td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-            <div x-show="!alpaca.positions?.length" class="p-8 text-center text-ink-300 text-sm">No open positions</div>
+          <div x-show="!alpaca.error && !alpaca.positions?.length" class="p-8 text-center">
+            <div class="text-sm text-ink-300">Flat — no open position</div>
+            <div class="text-xs text-ink-500 mt-1 font-mono" x-text="'last close: $' + ((chartData.last_bar?.close ?? 0).toFixed(2))"></div>
+          </div>
+          <div x-show="!alpaca.error && alpaca.positions?.length" class="p-5 space-y-4">
+            <template x-for="pos in alpaca.positions" :key="pos.symbol">
+              <div class="space-y-3">
+                <div class="flex items-baseline gap-2">
+                  <span class="font-mono font-semibold text-lg" x-text="pos.symbol"></span>
+                  <span class="text-xs text-ink-500 font-mono" x-text="pos.qty + ' units'"></span>
+                </div>
+                <div class="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Entry</div>
+                    <div class="font-mono" x-text="'$' + (pos.avg_entry_price ?? 0).toFixed(2)"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Current</div>
+                    <div class="font-mono" x-text="'$' + (pos.current_price ?? 0).toFixed(2)"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Mkt Value</div>
+                    <div class="font-mono" x-text="'$' + (pos.market_value ?? 0).toLocaleString(undefined,{maximumFractionDigits:0})"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Unrealized</div>
+                    <div class="font-mono"
+                         :class="(pos.unrealized_pl ?? 0) >= 0 ? 'text-emerald-400' : 'text-accent-discard'"
+                         x-text="((pos.unrealized_pl ?? 0) >= 0 ? '+' : '') + '$' + (pos.unrealized_pl ?? 0).toFixed(2) + ' (' + (((pos.unrealized_plpc ?? 0)*100).toFixed(2)) + '%)'"></div>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
-        <!-- Trade Log -->
+        <!-- Simulated Performance — answers "is this strategy profitable on
+             real recent market data?" using the same backtest harness the
+             chart runs. The most useful diagnostic until paper.log fills in. -->
         <div class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
           <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
-            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Trade Log</div>
-            <span class="text-xs text-ink-300 font-mono" x-text="tradeLog.length + ' entries'"></span>
-            <button @click="fetchTradeLog()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Simulated Performance</div>
+            <span class="text-xs text-ink-500 font-mono"
+                  x-text="chartData.bars?.length ? ('last ' + chartData.bars.length + ' bars · ' + chartData.timeframe) : ''"></span>
           </div>
-          <div class="overflow-auto max-h-80 custom-scroll">
-            <table class="w-full" x-show="tradeLog.length">
-              <thead class="bg-ink-900 sticky top-0 border-b border-ink-800">
-                <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider">
-                  <th class="px-4 py-2">Time</th>
-                  <th class="px-4 py-2">Mode</th>
-                  <th class="px-4 py-2">Symbol</th>
-                  <th class="px-4 py-2">Signal</th>
-                  <th class="px-4 py-2">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="(entry, i) in tradeLog" :key="i">
-                  <tr class="border-b border-ink-800/50 hover:bg-ink-800/40 transition-colors">
-                    <td class="px-4 py-1.5 font-mono text-xs text-ink-300" x-text="entry.ts?.slice(0,16).replace('T',' ')"></td>
-                    <td class="px-4 py-1.5">
-                      <span class="px-1.5 py-0.5 rounded text-xs font-mono uppercase"
-                            :class="entry.mode==='LIVE' ? 'bg-red-500/20 text-accent-discard' : entry.mode==='PAPER' ? 'bg-blue-500/20 text-accent-run' : 'bg-ink-700 text-ink-300'"
-                            x-text="entry.mode"></span>
-                    </td>
-                    <td class="px-4 py-1.5 font-mono text-xs font-semibold" x-text="entry.symbol"></td>
-                    <td class="px-4 py-1.5">
-                      <span x-show="entry.scan?.signal"
-                            class="px-1.5 py-0.5 rounded text-xs font-mono uppercase"
-                            :class="entry.scan?.signal==='BUY' ? 'bg-emerald-500/20 text-accent-keep' : 'bg-red-500/20 text-accent-discard'"
-                            x-text="entry.scan?.signal"></span>
-                      <span x-show="!entry.scan?.signal" class="text-ink-500 text-xs">—</span>
-                    </td>
-                    <td class="px-4 py-1.5">
-                      <span class="px-1.5 py-0.5 rounded text-xs font-mono"
-                            :class="{
-                              'bg-emerald-500/20 text-accent-keep': entry.execution?.action?.includes('buy'),
-                              'bg-red-500/20 text-accent-discard': entry.execution?.action?.includes('sell'),
-                              'bg-amber-500/20 text-accent-crash': entry.execution?.action==='error',
-                              'bg-ink-700 text-ink-300': ['noop','skip'].includes(entry.execution?.action),
-                            }"
-                            x-text="entry.execution?.action || '—'"></span>
-                    </td>
-                  </tr>
+          <div x-show="chartError" class="p-6 text-sm text-ink-300 font-mono" x-text="chartError"></div>
+          <div x-show="!chartError && chartData.bars?.length" class="p-5 space-y-4">
+            <!-- Cash-flow framing — the clearest way to communicate the result.
+                 "You start with $X, end with $Y, that's a $Z move (W%)." No
+                 jargon, no notional confusion. The starting cash matches the
+                 paper trader's per-symbol budget so the number is directly
+                 comparable to live paper P&L. -->
+            <div class="space-y-1.5 text-sm font-mono">
+              <div class="flex items-center justify-between">
+                <span class="text-ink-300">Starting cash</span>
+                <span class="text-ink-100" x-text="'$' + simNotional.toLocaleString()"></span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-ink-300">Ending cash</span>
+                <span class="text-ink-100"
+                      x-text="'$' + (simNotional + (chartData.sim_pnl_total ?? 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })"></span>
+              </div>
+              <div class="flex items-center justify-between border-t border-ink-800 pt-2 mt-1">
+                <span class="text-xs uppercase tracking-wider text-ink-300">P&L</span>
+                <span class="text-xl font-semibold"
+                      :class="(chartData.sim_pnl_total ?? 0) > 0 ? 'text-emerald-400' : (chartData.sim_pnl_total ?? 0) < 0 ? 'text-accent-discard' : 'text-ink-300'"
+                      x-text="formatPnl(chartData.sim_pnl_total ?? 0) + '  (' + ((chartData.sim_pnl_total ?? 0) / simNotional * 100).toFixed(2) + '%)'"></span>
+              </div>
+              <div class="text-xs text-ink-500 pt-1">
+                Simulated: ran the deployed strategy on the last
+                <span x-text="chartData.bars?.length || 0"></span> <span x-text="chartData.timeframe"></span>
+                bars (<span x-text="windowDurationLabel"></span>) with the paper trader's per-symbol budget.
+              </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-3 text-sm border-t border-ink-800 pt-4">
+              <div>
+                <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Trades</div>
+                <div class="font-mono text-base" x-text="chartData.sim_trades_count ?? 0"></div>
+              </div>
+              <div>
+                <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Win Rate</div>
+                <div class="font-mono text-base"
+                     x-text="chartData.sim_win_rate != null ? Math.round(chartData.sim_win_rate*100) + '%' : '—'"></div>
+              </div>
+              <div>
+                <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Position Now</div>
+                <div class="font-mono text-base"
+                     :class="chartData.last_bar?.in_position ? 'text-emerald-400' : 'text-ink-300'"
+                     x-text="chartData.last_bar?.in_position ? 'in position' : 'flat'"></div>
+              </div>
+            </div>
+
+            <!-- Per-trade ledger so you can see WHICH trades made/lost what.
+                 If the totals look weird, you can usually spot the outlier trade here. -->
+            <div x-show="chartData.sim_trades?.length">
+              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-2">Closed Sim Trades</div>
+              <div class="space-y-1 max-h-40 overflow-auto custom-scroll text-xs font-mono">
+                <template x-for="(t, i) in (chartData.sim_trades || [])" :key="i">
+                  <div class="flex items-center gap-2 py-1 border-b border-ink-800/50">
+                    <span class="text-ink-400" x-text="t.entry_ts.slice(5,16).replace('T',' ')"></span>
+                    <span class="text-ink-500">→</span>
+                    <span class="text-ink-400" x-text="t.exit_ts.slice(5,16).replace('T',' ')"></span>
+                    <span class="ml-auto" :class="t.pnl > 0 ? 'text-emerald-400' : 'text-accent-discard'"
+                          x-text="formatPnl(t.pnl) + ' (' + t.return_pct.toFixed(2) + '%)'"></span>
+                  </div>
                 </template>
-              </tbody>
-            </table>
-            <div x-show="!tradeLog.length" class="p-8 text-center text-ink-300 text-sm">No trade log entries yet.</div>
+              </div>
+            </div>
+            <div x-show="!chartData.sim_trades?.length" class="text-xs text-ink-500 font-mono">
+              No simulated trades fired in this window — strategy hasn't met its entry conditions on these bars.
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- Run Paper Trader -->
-      <section class="bg-ink-900 border border-ink-800 rounded-lg p-5">
-        <div class="flex items-center gap-4 mb-4">
-          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Run Paper Trader</div>
-          <div class="flex items-center gap-2 ml-auto">
-            <span class="relative flex h-2 w-2">
-              <span class="absolute inline-flex h-full w-full rounded-full opacity-75" :class="tradeProc.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
-              <span class="relative inline-flex rounded-full h-2 w-2" :class="tradeProc.running ? 'bg-accent-run' : 'bg-ink-500'"></span>
-            </span>
-            <span class="text-xs font-mono text-ink-300" x-text="tradeProc.running ? 'running…' : 'idle'"></span>
+      <!-- Realized Paper P&L curve. -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Realized Paper P&L</div>
+          <span class="text-xs text-ink-500 font-mono">cumulative · per closed trade</span>
+        </div>
+        <div class="p-5">
+          <div x-show="!paperEquity.points.length" class="py-12 text-center text-ink-300 text-sm">
+            No closed paper trades yet. The curve fills in as the strategy enters and exits positions.
+          </div>
+          <div x-show="paperEquity.points.length" class="relative h-72">
+            <canvas x-ref="paperEquityCanvas"></canvas>
           </div>
         </div>
-        <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-          <div>
-            <label class="block text-xs text-ink-300 font-mono mb-1">Asset</label>
-            <select x-model="tradeAsset" class="w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500">
-              <option value="stock">Stock</option>
-              <option value="crypto">Crypto</option>
-            </select>
-          </div>
-          <div class="sm:col-span-2">
-            <label class="block text-xs text-ink-300 font-mono mb-1">Symbols <span class="text-ink-500">(blank = watchlist)</span></label>
-            <input type="text" x-model="tradeSymbols" placeholder="SPY,TSLA,NVDA"
-                   class="w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-emerald-500" />
-          </div>
-          <div class="flex flex-col gap-2">
-            <label class="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" x-model="tradeDry" class="rounded accent-emerald-500" />
-              <span class="font-mono text-xs text-ink-300">Dry run (no orders)</span>
-            </label>
-            <button @click="tradeProc.running ? stopTrader() : startTrader()"
-                    class="w-full px-4 py-2 rounded-md text-sm font-medium transition-colors"
-                    :class="tradeProc.running
-                      ? 'bg-accent-discard/20 text-accent-discard hover:bg-accent-discard/30 border border-accent-discard/40'
-                      : 'bg-emerald-500/20 text-accent-keep hover:bg-emerald-500/30 border border-emerald-500/40'">
-              <span x-show="!tradeProc.running">▶ Run Trader</span>
-              <span x-show="tradeProc.running">■ Stop</span>
-            </button>
-          </div>
+      </section>
+
+      <!-- Per-version leaderboard — slices paper trades by which strategy
+           version was deployed when each one fired. The defining metric for
+           "is the promotion gate working?" — a version with great backtested
+           Sharpe but flat paper P&L is a flag. -->
+      <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
+          <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Promotion History</div>
+          <span class="text-xs text-ink-500 font-mono" x-text="(versionStatsList.length) + ' versions on main'"></span>
         </div>
-        <div x-show="tradeConsoleLines.length" class="mt-4">
-          <div class="flex items-center gap-2 mb-2">
-            <span class="text-xs font-mono text-ink-300 uppercase tracking-wider">Output</span>
-            <button @click="tradeConsoleLines=[]" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">clear</button>
+        <div class="overflow-auto max-h-96 custom-scroll">
+          <table class="w-full text-sm" x-show="versionStatsList.length">
+            <thead class="bg-ink-900 sticky top-0 border-b border-ink-800">
+              <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider">
+                <th class="px-4 py-2">Version</th>
+                <th class="px-4 py-2">Promoted</th>
+                <th class="px-4 py-2">Window</th>
+                <th class="px-4 py-2 text-right">Trades</th>
+                <th class="px-4 py-2 text-right">Realized P&L</th>
+                <th class="px-4 py-2 text-right">Win Rate</th>
+                <th class="px-4 py-2">Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="(v, i) in versionStatsList" :key="v.commit">
+                <tr class="border-b border-ink-800/50 hover:bg-ink-800/40 transition-colors"
+                    :class="i === 0 ? 'bg-emerald-500/5' : ''">
+                  <td class="px-4 py-2 font-mono text-xs">
+                    <span x-text="v.short"></span>
+                    <span x-show="i === 0" class="ml-1 text-emerald-400">●</span>
+                  </td>
+                  <td class="px-4 py-2 font-mono text-xs text-ink-300" x-text="v.promoted_at?.slice(0,10)"></td>
+                  <td class="px-4 py-2 font-mono text-xs text-ink-400" x-text="formatVersionWindow(v)"></td>
+                  <td class="px-4 py-2 font-mono text-right text-xs"
+                      :class="v.trades > 0 ? 'text-ink-100' : 'text-ink-500'"
+                      x-text="v.trades || '—'"></td>
+                  <td class="px-4 py-2 font-mono text-right text-xs"
+                      :class="v.pnl > 0 ? 'text-emerald-400' : v.pnl < 0 ? 'text-accent-discard' : 'text-ink-500'"
+                      x-text="v.trades ? formatPnl(v.pnl) : '—'"></td>
+                  <td class="px-4 py-2 font-mono text-right text-xs text-ink-300"
+                      x-text="v.win_rate != null ? Math.round(v.win_rate*100) + '%' : '—'"></td>
+                  <td class="px-4 py-2 text-xs text-ink-400 truncate max-w-md" x-text="v.subject"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div x-show="!versionStatsList.length" class="p-8 text-center text-ink-300 text-sm">
+            No version history yet — once promote.py runs on main, each commit appears here.
           </div>
-          <pre class="bg-ink-950 border border-ink-800 rounded-md p-3 font-mono text-xs leading-relaxed h-48 overflow-y-auto custom-scroll"
-          ><template x-for="line in tradeConsoleLines" :key="line.id"><span :class="tradeLineClass(line.text)" x-text="line.text + '\n'"></span></template></pre>
         </div>
       </section>
 
@@ -563,7 +700,7 @@
         consoleLines: [], consoleOpen: true, consoleId: 0, sse: null,
         showLaunch: false, launchIters: 5,
         sortKey: '', sortDir: 'desc', filter: ['keep', 'discard', 'crash'],
-        charts: { equity: null, progression: null, drawdown: null },
+        charts: { equity: null, progression: null, drawdown: null, paperEquity: null, live: null },
 
         // ── Trading tab state ──
         activeTab: 'trading',
@@ -572,6 +709,12 @@
         tradeProc: { running: false },
         tradeConsoleLines: [], tradeConsoleId: 0, tradeSse: null,
         tradeAsset: 'stock', tradeSymbols: '', tradeDry: true,
+        versions: [],
+        paperEquity: { trades: [], points: [], summary: { total_trades: 0, total_pnl: 0, wins: 0, losses: 0, win_rate: 0 }, open_positions: [] },
+        chartData: { bars: [], indicators: [], indicator_panel: [], sim_markers: [], real_markers: [], watchlist: [], last_bar: null, timeframe: '' },
+        chartSymbol: '', chartLoading: false, chartError: '',
+        anomalies: { days_since_last_signal: null, last_signal_ts: null, last_signal_symbol: null, last_signal_kind: null },
+        versionStatsList: [],
 
         get kpiCards() {
           const total = this.summary.total || 0;
@@ -600,6 +743,84 @@
           };
         },
 
+        // Currently deployed strategy = newest commit on main touching strategies/<campaign>.py.
+        // Enriched with a friendly "live for X" string and short timestamp.
+        get currentVersion() {
+          const v = this.versions[0];
+          if (!v) return null;
+          const promoted = new Date(v.promoted_at);
+          const elapsedMs = Date.now() - promoted.getTime();
+          const dayMs = 86_400_000;
+          const days = Math.floor(elapsedMs / dayMs);
+          const hours = Math.floor((elapsedMs % dayMs) / 3_600_000);
+          const live_for = days > 0 ? `${days}d ${hours}h` : `${hours}h`;
+          const promoted_short = promoted.toISOString().slice(0, 10);
+          return { ...v, live_for, promoted_short };
+        },
+
+        // Realized stats sliced to "since current version was deployed". This is the
+        // load-bearing framing — comparing today's paper trades against trades from
+        // a strategy that no longer exists is just noise.
+        get versionStats() {
+          const v = this.currentVersion;
+          if (!v) return { trades: 0, pnl: 0, pnl_display: '—', wins: 0, losses: 0, win_rate_display: '—' };
+          const cutoff = new Date(v.promoted_at).getTime();
+          const t = this.paperEquity.trades.filter(x => new Date(x.ts).getTime() >= cutoff);
+          const pnl = t.reduce((a, b) => a + b.realized_pnl, 0);
+          const wins = t.filter(x => x.realized_pnl > 0).length;
+          const losses = t.filter(x => x.realized_pnl < 0).length;
+          const wr = t.length ? (wins / t.length) : 0;
+          return {
+            trades: t.length,
+            pnl,
+            pnl_display: this.formatPnl(pnl),
+            wins, losses,
+            win_rate_display: t.length ? `${(wr * 100).toFixed(0)}%` : '—',
+          };
+        },
+
+        formatPnl(n) {
+          if (n == null || isNaN(n)) return '—';
+          const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
+          return `${sign}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        },
+
+        formatIndicatorValue(v) {
+          if (v == null || isNaN(v)) return '—';
+          // Big numbers (price-scale) get $ prefix and commas; small ones (ratios, ATRs) get more decimals.
+          if (Math.abs(v) >= 100) return '$' + v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+          if (Math.abs(v) >= 1) return v.toFixed(3);
+          return v.toFixed(5);
+        },
+
+        // The chart endpoint runs sim with the same per-symbol cash budget the
+        // paper trader uses. Default $10k matches PAPER_PER_SYMBOL_CASH default.
+        get simNotional() { return 10000; },
+
+        // Human-readable span of the visible chart window (e.g. "~13 days").
+        // Lets the panel say "ran on the last 13 days" instead of "80 bars".
+        get windowDurationLabel() {
+          const bars = this.chartData.bars || [];
+          if (bars.length < 2) return '';
+          const start = new Date(bars[0].ts).getTime();
+          const end = new Date(bars[bars.length - 1].ts).getTime();
+          const days = (end - start) / 86_400_000;
+          if (days >= 1) return `~${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'}`;
+          const hours = Math.round((end - start) / 3_600_000);
+          return `~${hours}h`;
+        },
+
+        formatVersionWindow(v) {
+          const start = new Date(v.promoted_at);
+          const end = v.retired_at ? new Date(v.retired_at) : new Date();
+          const ms = end.getTime() - start.getTime();
+          const days = Math.floor(ms / 86_400_000);
+          const hours = Math.floor((ms % 86_400_000) / 3_600_000);
+          if (days >= 1) return `${days}d`;
+          if (hours >= 1) return `${hours}h`;
+          return '<1h';
+        },
+
         get filteredResults() {
           let rows = this.results.filter(r => this.filter.includes(r.status));
           if (this.sortKey) {
@@ -621,7 +842,13 @@
           // Sync active campaign from server before fetching any campaign-scoped data.
           await this.fetchCampaigns();
           await Promise.all([this.fetchSummary(), this.fetchResults(), this.fetchSetup(), this.fetchStrategy(), this.fetchGitLog()]);
-          await Promise.all([this.fetchTradeLog(), this.fetchAlpacaPositions()]);
+          await Promise.all([
+            this.fetchTradeLog(), this.fetchAlpacaPositions(), this.fetchVersions(),
+            this.fetchPaperEquity(), this.fetchAnomalies(), this.fetchVersionStats(),
+          ]);
+          // Chart fetch is deferred — it's slow (network fetch) and not critical
+          // for first paint of the rest of the tab.
+          this.fetchChartData();
           // Defer first chart paint by one rAF so Tailwind's CDN has time to
           // inject styles. Otherwise parent height is 0 and Chart.js renders blank.
           requestAnimationFrame(() => {
@@ -633,6 +860,12 @@
           setInterval(() => { this.fetchSetup(); }, 15000);
           setInterval(() => { if (this.activeTab==='trading') this.fetchTradeLog(); }, 15000);
           setInterval(() => { if (this.activeTab==='trading') this.fetchAlpacaPositions(); }, 30000);
+          setInterval(() => { if (this.activeTab==='trading') this.fetchPaperEquity(); }, 30000);
+          // Chart auto-refreshes on a longer cadence — bars only roll over
+          // every 4h (crypto) or 1d (stocks), so polling faster is wasteful.
+          setInterval(() => { if (this.activeTab==='trading') this.fetchChartData(); }, 120000);
+          setInterval(() => { if (this.activeTab==='trading') this.fetchAnomalies(); }, 60000);
+          setInterval(() => { if (this.activeTab==='trading') this.fetchVersionStats(); }, 60000);
           this.connectTradeSse();
         },
 
@@ -662,7 +895,13 @@
               await Promise.all([
                 this.fetchSummary(), this.fetchResults(),
                 this.fetchStrategy(), this.fetchGitLog(),
+                this.fetchVersions(), this.fetchPaperEquity(),
+                this.fetchAnomalies(), this.fetchVersionStats(),
               ]);
+              // Chart symbol is campaign-scoped; reset it so the new campaign's
+              // watchlist head is picked up by fetchChartData's default-symbol path.
+              this.chartSymbol = '';
+              this.fetchChartData(true);
               this.reloadEquity();
             }
           } catch (e) { console.warn('campaign switch failed:', e); }
@@ -744,6 +983,228 @@
 
         async fetchTradeLog() {
           try { this.tradeLog = await fetch('/api/paper-log?limit=100').then(r => r.json()); } catch {}
+        },
+
+        async fetchVersions() {
+          try {
+            const r = await fetch('/api/strategy/versions?campaign=' + encodeURIComponent(this.activeCampaign)).then(r => r.json());
+            this.versions = r.versions || [];
+          } catch {}
+        },
+
+        async fetchVersionStats() {
+          try {
+            const r = await fetch('/api/paper/version-stats?campaign=' + encodeURIComponent(this.activeCampaign)).then(r => r.json());
+            this.versionStatsList = r.versions || [];
+          } catch {}
+        },
+
+        async fetchAnomalies() {
+          try {
+            this.anomalies = await fetch('/api/paper/anomalies?campaign=' + encodeURIComponent(this.activeCampaign)).then(r => r.json());
+          } catch {}
+        },
+
+        async fetchChartData(force = false) {
+          if (this.chartLoading && !force) return;
+          this.chartLoading = true; this.chartError = '';
+          try {
+            const params = new URLSearchParams({ campaign: this.activeCampaign });
+            if (this.chartSymbol) params.set('symbol', this.chartSymbol);
+            const res = await fetch('/api/paper/chart-data?' + params.toString());
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            const r = await res.json();
+            this.chartData = r;
+            // Sync chartSymbol if it wasn't set yet (first fetch picks the watchlist head).
+            if (!this.chartSymbol && r.symbol) this.chartSymbol = r.symbol;
+            requestAnimationFrame(() => this.renderLiveChart());
+          } catch (e) {
+            this.chartError = String(e.message || e);
+          } finally {
+            this.chartLoading = false;
+          }
+        },
+
+        renderLiveChart() {
+          const canvas = this.$refs.liveChartCanvas;
+          if (!canvas || !this.chartData.bars?.length) return;
+          const labels = this.chartData.bars.map(b => b.ts.slice(0, 16).replace('T', ' '));
+          const closeData = this.chartData.bars.map(b => b.c);
+
+          // Cumulative simulated P&L on a second y-axis. This is the chart's
+          // entire reason to exist: "if my strategy had been live over these
+          // bars, would it have made money?" Color the area green/red by sign
+          // at the final value (close enough — the curve is mostly monotonic
+          // within a single visible window).
+          const pnlSeries = (this.chartData.sim_pnl_curve || []).map(p => p.cumulative_pnl);
+          const finalPnl = pnlSeries.length ? pnlSeries[pnlSeries.length - 1] : 0;
+          const pnlColor = finalPnl >= 0 ? '#34d399' : '#f87171';
+          const pnlDataset = {
+            label: 'Simulated P&L',
+            data: pnlSeries,
+            yAxisID: 'pnl',
+            borderColor: pnlColor,
+            backgroundColor: pnlColor + '22',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0,
+            fill: 'origin',
+            stepped: 'before',  // P&L only changes at trade exits — flat between
+          };
+
+          // Markers as sparse arrays aligned to the label index — null at every
+          // non-marker bar, the price at marker bars. Same dataset shape as the
+          // line series so Chart.js doesn't trip on type mixing; dots-only via
+          // showLine:false + pointRadius. Solid fill = real (from paper.log),
+          // ring outline = simulated (from this run's backtest).
+          const tsToLabel = ts => ts.slice(0, 16).replace('T', ' ');
+          const findIndex = ts => labels.indexOf(tsToLabel(ts));
+          const sparse = (markers, kind) => {
+            const arr = new Array(labels.length).fill(null);
+            for (const m of (markers || [])) {
+              if (m.type !== kind) continue;
+              const idx = findIndex(m.ts);
+              if (idx >= 0) arr[idx] = m.price;
+            }
+            return arr;
+          };
+          const markerDataset = (markers, kind, color, fillStyle, label) => ({
+            label,
+            data: sparse(markers, kind),
+            borderColor: 'transparent',
+            showLine: false,
+            spanGaps: false,
+            pointRadius: fillStyle === 'solid' ? 6 : 5,
+            pointHoverRadius: fillStyle === 'solid' ? 8 : 7,
+            pointBorderColor: color,
+            pointBorderWidth: fillStyle === 'solid' ? 0 : 2,
+            pointBackgroundColor: fillStyle === 'solid' ? color : 'rgba(0,0,0,0)',
+          });
+
+          const datasets = [
+            {
+              label: 'Price', data: closeData, yAxisID: 'price',
+              borderColor: '#e4e4e7', borderWidth: 1.8,
+              backgroundColor: 'rgba(228, 228, 231, 0.04)',
+              pointRadius: 0, tension: 0.05, fill: false,
+            },
+            pnlDataset,
+            markerDataset(this.chartData.real_markers, 'BUY',  '#34d399', 'solid', 'BUY (real)'),
+            markerDataset(this.chartData.real_markers, 'SELL', '#f87171', 'solid', 'SELL (real)'),
+            markerDataset(this.chartData.sim_markers,  'BUY',  '#34d399', 'ring',  'BUY (sim)'),
+            markerDataset(this.chartData.sim_markers,  'SELL', '#f87171', 'ring',  'SELL (sim)'),
+          ];
+          // Markers ride on the price y-axis (defaults to first dataset's axis,
+          // which is `price`).
+          for (let i = 2; i < datasets.length; i++) datasets[i].yAxisID = 'price';
+
+          const cfg = {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              plugins: {
+                legend: {
+                  display: true, position: 'top', align: 'end',
+                  // Hide marker datasets from the top legend — they're explained
+                  // in the dot-row legend below the chart.
+                  labels: { boxWidth: 12, filter: l => !/\((real|sim)\)$/.test(l.text) },
+                },
+                tooltip: {
+                  // Skip null positions on marker datasets so the tooltip doesn't
+                  // show "BUY (real): $0" on every non-marker bar.
+                  filter: ctx => ctx.parsed.y != null,
+                  callbacks: { label: ctx => `${ctx.dataset.label}: $${(ctx.parsed.y ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
+                },
+              },
+              scales: {
+                x: { ticks: { maxRotation: 0, autoSkipPadding: 24 } },
+                price: {
+                  position: 'left', type: 'linear',
+                  ticks: { callback: v => '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }) },
+                },
+                pnl: {
+                  position: 'right', type: 'linear',
+                  grid: { drawOnChartArea: false },  // don't double up gridlines
+                  ticks: {
+                    callback: v => (v >= 0 ? '+' : '') + '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 }),
+                    color: pnlColor,
+                  },
+                  title: { display: true, text: 'sim P&L', color: pnlColor, font: { size: 10 } },
+                },
+              },
+            },
+          };
+          if (this.charts.live) {
+            this.charts.live.data = cfg.data;
+            this.charts.live.options = cfg.options;
+            this.charts.live.update();
+          } else {
+            this.charts.live = new Chart(canvas.getContext('2d'), cfg);
+          }
+        },
+
+        async refreshTrading() {
+          await Promise.all([
+            this.fetchVersions(), this.fetchPaperEquity(), this.fetchAlpacaPositions(),
+            this.fetchChartData(true), this.fetchAnomalies(), this.fetchVersionStats(),
+          ]);
+        },
+
+        async fetchPaperEquity() {
+          try {
+            const r = await fetch('/api/paper/equity?campaign=' + encodeURIComponent(this.activeCampaign)).then(r => r.json());
+            this.paperEquity = {
+              trades: r.trades || [],
+              points: r.points || [],
+              summary: r.summary || { total_trades: 0, total_pnl: 0, wins: 0, losses: 0, win_rate: 0 },
+              open_positions: r.open_positions || [],
+            };
+            // Defer paint by one rAF — same trick as reloadEquity, lets the canvas size before draw.
+            requestAnimationFrame(() => this.renderPaperEquity());
+          } catch {}
+        },
+
+        renderPaperEquity() {
+          const canvas = this.$refs.paperEquityCanvas;
+          if (!canvas || !this.paperEquity.points.length) return;
+          const labels = this.paperEquity.points.map(p => p.ts.slice(0, 10));
+          const data = this.paperEquity.points.map(p => p.cumulative_pnl);
+          // Mark each promotion as a vertical reference line so the user can see
+          // where one strategy version was retired and the next took over.
+          const verticalLines = (this.versions || []).map(v => ({
+            type: 'line', xMin: v.promoted_at.slice(0, 10), xMax: v.promoted_at.slice(0, 10),
+            borderColor: 'rgba(96, 165, 250, 0.35)', borderWidth: 1, borderDash: [4, 4],
+          }));
+          const cfg = {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [{
+                label: 'Cumulative P&L ($)', data,
+                borderColor: '#34d399', backgroundColor: 'rgba(52, 211, 153, 0.08)',
+                borderWidth: 2, tension: 0.1, fill: true, pointRadius: 3,
+              }],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { ticks: { maxRotation: 0, autoSkipPadding: 16 } },
+                y: { ticks: { callback: v => '$' + Number(v).toLocaleString() } },
+              },
+            },
+          };
+          if (this.charts.paperEquity) {
+            this.charts.paperEquity.data = cfg.data;
+            this.charts.paperEquity.update();
+          } else {
+            this.charts.paperEquity = new Chart(canvas.getContext('2d'), cfg);
+          }
         },
 
         async fetchAlpacaPositions() {

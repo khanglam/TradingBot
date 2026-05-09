@@ -85,7 +85,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
-          pip install backtesting yfinance pyarrow scipy python-dotenv
+          pip install -r requirements.txt
 
       - name: Cache OHLCV parquet data
         if: steps.gate.outputs.skip != 'true'

@@ -291,6 +291,7 @@ These are mirrored in `program.md` and enforced by `loop.py`:
 - `/research <topic>` — fan-out parallel research (5 agents, different angles)
 - `/debate <claim>` — stochastic multi-agent consensus (3 agents, adversarial)
 - `/scout <topic>` — research → debate pipeline in one command
+- `/optimize-loop [N]` — autoresearch-style loop performance optimizer: establishes a timing baseline + correctness fingerprint, then iterates N times proposing one speed change at a time, keeping improvements and reverting regressions
 
 Use `/scout` before adopting any new framework or major architectural change.
 

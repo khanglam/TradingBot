@@ -101,8 +101,40 @@ def _fetch_stock_bars(symbol: str, days: int) -> pd.DataFrame:
     return df
 
 
-def _fetch_crypto_bars(symbol: str, days: int) -> pd.DataFrame:
-    """Daily crypto bars via alpaca-py public CryptoHistoricalDataClient.
+def _parse_timeframe(tf_str: str):
+    """Parse a timeframe string like '4h', '1h', '1d', '15m' into an alpaca-py TimeFrame.
+
+    Accepted units: m/min/minute, h/hr/hour, d/day. Case-insensitive.
+    Examples: '4h', '1H', '15m', '1d', '30min'.
+    """
+    try:
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    except ImportError as e:
+        raise SystemExit(f"alpaca-py not installed. Run: pip install alpaca-py\n(original error: {e})")
+
+    tf_str = tf_str.strip().lower()
+    import re
+    m = re.fullmatch(r"(\d+)\s*(m|min|minute|h|hr|hour|d|day)", tf_str)
+    if not m:
+        raise ValueError(
+            f"Unrecognised timeframe {tf_str!r}. Use a number + unit, e.g. '4h', '15m', '1d'."
+        )
+    amount = int(m.group(1))
+    unit_str = m.group(2)
+    if unit_str in ("m", "min", "minute"):
+        unit = TimeFrameUnit.Minute
+    elif unit_str in ("h", "hr", "hour"):
+        unit = TimeFrameUnit.Hour
+    else:
+        unit = TimeFrameUnit.Day
+    return TimeFrame(amount, unit)
+
+
+def _fetch_crypto_bars(symbol: str, days: int, timeframe: str = "4h") -> pd.DataFrame:
+    """Crypto bars via alpaca-py public CryptoHistoricalDataClient.
+
+    timeframe: string like '4h', '1h', '1d', '15m' (default '4h' to match
+    the autoresearch loop which trains on BTC_USDT_4h data).
 
     No API key required for crypto market data, but we pass keys if available
     so the same client can be used in production. Returns a DataFrame with the
@@ -111,7 +143,6 @@ def _fetch_crypto_bars(symbol: str, days: int) -> pd.DataFrame:
     try:
         from alpaca.data.historical import CryptoHistoricalDataClient
         from alpaca.data.requests import CryptoBarsRequest
-        from alpaca.data.timeframe import TimeFrame
     except ImportError as e:
         raise SystemExit(
             "alpaca-py not installed. Run: pip install alpaca-py\n"
@@ -127,7 +158,7 @@ def _fetch_crypto_bars(symbol: str, days: int) -> pd.DataFrame:
 
     req = CryptoBarsRequest(
         symbol_or_symbols=[symbol],
-        timeframe=TimeFrame.Day,
+        timeframe=_parse_timeframe(timeframe),
         start=start,
         end=end,
     )
@@ -151,15 +182,15 @@ def _fetch_crypto_bars(symbol: str, days: int) -> pd.DataFrame:
     return df
 
 
-def _fetch_bars(symbol: str, asset: str, days: int) -> pd.DataFrame:
+def _fetch_bars(symbol: str, asset: str, days: int, timeframe: str = "4h") -> pd.DataFrame:
     if asset == "crypto":
-        return _fetch_crypto_bars(symbol, days)
+        return _fetch_crypto_bars(symbol, days, timeframe)
     return _fetch_stock_bars(symbol, days)
 
 
 # ─────────────────────────── signal extraction ──────────────────────────
 
-def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: float) -> dict:
+def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: float, timeframe: str = "4h") -> dict:
     """Run strategy.py against recent bars and return the signal dict.
 
     Mirrors scan._scan_symbol so behaviour is identical across alerts and
@@ -169,7 +200,7 @@ def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: floa
     """
     out: dict = {"symbol": symbol, "signal": None, "last_bar": None}
     try:
-        df = _fetch_bars(symbol, asset, days)
+        df = _fetch_bars(symbol, asset, days, timeframe)
     except Exception as e:
         out["error"] = f"data fetch failed: {e}"
         return out
@@ -408,6 +439,8 @@ def main() -> int:
     p.add_argument("--asset", choices=["stock", "crypto"], default="stock")
     p.add_argument("--days", type=int, default=int(os.environ.get("PAPER_LOOKBACK_DAYS", 250)))
     p.add_argument("--fresh", type=int, default=int(os.environ.get("PAPER_FRESH_BARS", 1)))
+    p.add_argument("--timeframe", default=os.environ.get("PAPER_CRYPTO_TIMEFRAME", "4h"),
+                   help="Crypto bar timeframe, e.g. '4h', '1h', '1d', '15m' (env PAPER_CRYPTO_TIMEFRAME). Ignored for stocks.")
     p.add_argument("--cash", type=float, default=DEFAULT_PER_SYMBOL_CASH,
                    help="Per-symbol cash budget (default $10k, env PAPER_PER_SYMBOL_CASH).")
     p.add_argument("--dry", action="store_true",
@@ -433,7 +466,8 @@ def main() -> int:
     strat_path = (ROOT / strategy_file)
     head = strat_path.read_text(encoding="utf-8").splitlines()[0] if strat_path.exists() else "(missing)"
     print(f"[paper] strategy file: {strategy_file}  | first line: {head}")
-    print(f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={args.days}d  fresh={args.fresh}")
+    tf_display = f"  timeframe={args.timeframe}" if args.asset == "crypto" else ""
+    print(f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={args.days}d  fresh={args.fresh}{tf_display}")
 
     # If we're going to actually submit, fail fast on missing creds — the user
     # has explicit instructions: no fallbacks, only real data.
@@ -450,7 +484,7 @@ def main() -> int:
 
     fired_any = False
     for sym in symbols:
-        scan = _scan_symbol(sym, args.asset, days=args.days, fresh_bars=args.fresh, cash=args.cash)
+        scan = _scan_symbol(sym, args.asset, days=args.days, fresh_bars=args.fresh, cash=args.cash, timeframe=args.timeframe)
         sig = scan.get("signal") or "—"
         err = scan.get("error", "")
         print(f"[paper] {sym}: {sig} {err}".rstrip())

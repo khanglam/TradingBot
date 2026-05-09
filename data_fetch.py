@@ -104,6 +104,51 @@ def fetch_stocks(
     return out
 
 
+def fetch_if_missing(path: str | Path, start: str | None = None) -> Path:
+    """Make sure a data/<asset>/<symbol>_<tf>.parquet file is on disk; fetch if not.
+
+    Idempotent — returns immediately when the file already exists. Otherwise
+    parses asset class / symbol / timeframe from the path layout and delegates
+    to `fetch_crypto` or `fetch_stocks`. Blocks the caller for ~30–60s on the
+    very first miss; subsequent calls are instant.
+
+    Used by every code path that reads a backtest parquet (app.py endpoints,
+    backtest.py:_run_single) so that a fresh checkout never crashes with a
+    bare FileNotFoundError on missing OHLCV.
+
+    `start` overrides the default fetch window (2019 for crypto, 2018 for stocks);
+    pass it through if a particular caller wants a deeper history.
+    """
+    path = Path(path)
+    if path.exists():
+        return path
+
+    try:
+        rel = path.resolve().relative_to(DATA_DIR.resolve())
+    except ValueError:
+        raise ValueError(f"path must be under {DATA_DIR}, got {path}")
+
+    parts = rel.parts
+    if len(parts) != 2:
+        raise ValueError(f"expected data/<asset>/<symbol>_<tf>.parquet, got {rel}")
+    asset = parts[0]
+    stem = Path(parts[1]).stem  # 'BTC_USDT_4h'
+
+    bits = stem.rsplit("_", 1)
+    if len(bits) != 2:
+        raise ValueError(f"can't infer timeframe from {stem!r}; expected '<symbol>_<tf>'")
+    symbol_us, timeframe = bits
+
+    print(f"[data_fetch] missing {rel}; fetching {asset} {symbol_us} {timeframe} (~30–60s)…", flush=True)
+
+    if asset == "crypto":
+        symbol = symbol_us.replace("_", "/")
+        return fetch_crypto(symbol=symbol, timeframe=timeframe, start=start or "2019-01-01")
+    if asset == "stocks":
+        return fetch_stocks(symbol=symbol_us, interval=timeframe, start=start or "2018-01-01")
+    raise ValueError(f"unknown asset class {asset!r}; expected 'crypto' or 'stocks'")
+
+
 def load(path: str | Path) -> pd.DataFrame:
     """Load a cached Parquet file as the OHLCV DataFrame the backtest expects."""
     return pd.read_parquet(path)
