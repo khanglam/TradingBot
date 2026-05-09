@@ -67,8 +67,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
-from scipy import stats as sp_stats
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -261,7 +261,7 @@ def _psr(sharpe_per_bar: float, n: int, skew: float, excess_kurt: float, sr_benc
     if denom_sq <= 0:
         return 0.0
     z = (sharpe_per_bar - sr_benchmark) * math.sqrt(n - 1) / math.sqrt(denom_sq)
-    return float(sp_stats.norm.cdf(z))
+    return 0.5 * math.erfc(-z / math.sqrt(2))
 
 
 _ZERO_EXTRA = {"sharpe_ann_4h": 0.0, "calmar": 0.0, "psr": 0.0, "dsr": 0.0, "skew": 0.0, "kurtosis": 0.0}
@@ -295,8 +295,22 @@ def _extra_metrics(stats_obj, total_return: float, max_dd: float, ann_factor: fl
 
         sharpe_per_bar = mu / sd
         sharpe_ann = sharpe_per_bar * ann_factor
-        skew = float(sp_stats.skew(rets, bias=False))
-        excess_kurt = float(sp_stats.kurtosis(rets, fisher=True, bias=False))
+        rets_np = rets.values
+        centered = rets_np - mu
+        m2 = float(np.mean(centered ** 2))
+        m3 = float(np.mean(centered ** 3))
+        m4 = float(np.mean(centered ** 4))
+        if m2 > 0:
+            # Adjusted Fisher-Pearson skewness (scipy bias=False equivalent)
+            skew = float(math.sqrt(n * (n - 1)) / (n - 2) * m3 / m2 ** 1.5)
+            # Unbiased excess kurtosis (scipy fisher=True, bias=False equivalent)
+            excess_kurt = float(
+                (n + 1) * (n - 1) / ((n - 2) * (n - 3)) * m4 / m2 ** 2
+                - 3.0 * (n - 1) ** 2 / ((n - 2) * (n - 3))
+            )
+        else:
+            skew = 0.0
+            excess_kurt = 0.0
         psr = _psr(sharpe_per_bar, n, skew, excess_kurt, sr_benchmark=0.0)
 
         try:
@@ -336,6 +350,10 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
         return None
 
     try:
+        # Fetch on first miss so a fresh checkout doesn't crash the loop
+        # with a bare FileNotFoundError. Subsequent reads hit the cache.
+        import data_fetch
+        data_fetch.fetch_if_missing(data_path)
         df = pd.read_parquet(data_path)
     except Exception as e:
         print(f"# data load: {e}", file=sys.stderr)
@@ -455,22 +473,29 @@ def _run_basket(resolved: list[tuple[str, Path]], window: str, penalty: float) -
     Symbols whose data is missing or whose backtests crash are skipped with a
     warning; if at least one survives, the basket result is the aggregate of
     those that did. If none survive, returns zero metrics."""
+    from concurrent.futures import ThreadPoolExecutor
+
     print(f"# basket mode: {len(resolved)} symbols", file=sys.stderr)
-    per_symbol: list[tuple[str, dict]] = []
-    for sym, path in resolved:
+
+    def _run_one(item: tuple[str, Path]) -> tuple[str, dict | None]:
+        sym, path = item
         if not path.exists():
             print(f"# basket: missing data for {sym} ({path}), skipping", file=sys.stderr)
-            continue
-        m = _run_single(path, window, min_trades=MIN_BASKET_TRADES)
-        if m is None:
-            print(f"# basket: {sym} crashed/insufficient, skipping", file=sys.stderr)
-            continue
-        print(
-            f"# basket {sym}: sharpe={m['val_sharpe']:.4f} dd={m['max_drawdown']:.2f}% "
-            f"trades={m['total_trades']} ret={m['total_return_pct']:.2f}%",
-            file=sys.stderr,
-        )
-        per_symbol.append((sym, m))
+            return sym, None
+        return sym, _run_single(path, window, min_trades=MIN_BASKET_TRADES)
+
+    per_symbol: list[tuple[str, dict]] = []
+    with ThreadPoolExecutor(max_workers=len(resolved)) as ex:
+        for sym, m in ex.map(_run_one, resolved):
+            if m is None:
+                print(f"# basket: {sym} crashed/insufficient, skipping", file=sys.stderr)
+                continue
+            print(
+                f"# basket {sym}: sharpe={m['val_sharpe']:.4f} dd={m['max_drawdown']:.2f}% "
+                f"trades={m['total_trades']} ret={m['total_return_pct']:.2f}%",
+                file=sys.stderr,
+            )
+            per_symbol.append((sym, m))
 
     if not per_symbol:
         return dict(ZERO_METRICS)
