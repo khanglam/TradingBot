@@ -170,3 +170,30 @@ jobs:
           done
           echo "::error ::Failed to push promotion after 3 attempts"
           exit 1
+
+      - name: Sync harness files from main to campaign branch
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          CAMPAIGN: ${{ matrix.campaign }}
+        run: |
+          BRANCH="autoresearch/${CAMPAIGN}"
+          MAIN_SHA=$(git rev-parse --short=7 main)
+
+          git checkout "${BRANCH}"
+
+          # Copy harness files from main — never touch strategies/ (campaign owns that)
+          git checkout main -- \
+            loop.py backtest.py program.md campaigns.py \
+            data_fetch.py requirements.txt AGENTS.md \
+            app.py scan.py live_trade.py promote.py
+
+          if git diff --cached --quiet; then
+            echo "[sync] ${BRANCH}: harness already up to date with main ${MAIN_SHA}"
+            git checkout main
+            exit 0
+          fi
+
+          git commit -m "chore: sync harness from main ${MAIN_SHA}" --no-verify
+          git push origin "${BRANCH}"
+          echo "[sync] ${BRANCH}: pushed harness sync from main ${MAIN_SHA}"
+          git checkout main
