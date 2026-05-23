@@ -1,5 +1,5 @@
 # Reusable autoresearch loop job. Called by loop-stocks.yml and loop-crypto.yml.
-# Main is NEVER touched — promotion happens via promote.yml.
+# Main is NEVER touched — promotion happens via sync_branches.yml.
 
 name: Autoresearch loop (campaign)
 

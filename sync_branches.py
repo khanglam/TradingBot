@@ -11,7 +11,7 @@ scan.py / live_trade.py read. This script is the only path between the two:
   4. Run backtest on candidate (lockbox window) — sanity floors:
        sharpe ≥ LOCKBOX_MIN_SHARPE  and  max_drawdown ≤ LOCKBOX_MAX_DD.
   5. If all pass → overwrite the frozen file in the main working tree.
-     The caller (promote.yml) commits + pushes.
+     The caller (sync_branches.yml) commits + pushes.
 
 Exit codes:
   0 → promoted (caller should commit + push)
@@ -19,8 +19,8 @@ Exit codes:
   2 → error (unknown campaign, missing branch, etc.)
 
 Usage:
-    python promote.py --campaign stocks
-    python promote.py --campaign crypto
+    python sync_branches.py --campaign stocks
+    python sync_branches.py --campaign crypto
 
 The script must be run from a checkout of main with autoresearch/<campaign>
 fetched (the workflow handles the fetch).

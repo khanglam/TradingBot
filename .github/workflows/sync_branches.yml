@@ -1,10 +1,11 @@
-name: Promote candidate to main
+name: Sync branches
 
-# Daily validation gate. For each campaign:
+# Daily sync. For each campaign:
 #   1. Fetch autoresearch/<campaign>
-#   2. promote.py: backtest candidate vs frozen on val window, then lockbox.
-#   3. If it clears the gauntlet, promote.py overwrites strategies/<campaign>.py
+#   2. sync_branches.py: backtest candidate vs frozen on val window, then lockbox.
+#   3. If it clears the gauntlet, sync_branches.py overwrites strategies/<campaign>.py
 #      in the working tree on main; this workflow commits + pushes.
+#   4. Sync harness files (loop.py, backtest.py, etc.) from main → campaign branch.
 #
 # Schedule: 12:00 UTC daily (= 04:00 PST / 05:00 PDT). Runs after
 # loop-stocks.yml (04:00 UTC) and before stocks paper (13:35 UTC).
@@ -142,7 +143,7 @@ jobs:
           CAMPAIGN: ${{ matrix.campaign }}
         run: |
           set +e
-          python promote.py --campaign "$CAMPAIGN"
+          python sync_branches.py --campaign "$CAMPAIGN"
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -185,7 +186,7 @@ jobs:
           git checkout main -- \
             loop.py backtest.py program.md campaigns.py \
             data_fetch.py requirements.txt AGENTS.md \
-            app.py scan.py live_trade.py promote.py
+            app.py scan.py live_trade.py sync_branches.py
 
           if git diff --cached --quiet; then
             echo "[sync] ${BRANCH}: harness already up to date with main ${MAIN_SHA}"

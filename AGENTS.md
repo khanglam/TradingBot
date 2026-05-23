@@ -21,7 +21,7 @@ that must NOT see mid-mutation state. We use branches to enforce that:
 
 ```
 main                    ← FROZEN. scan.py + live_trade.py read this.
-                          Updated only by promote.py (daily, validated).
+                          Updated only by sync_branches.py (daily, validated).
   ↑ (promotion gate, single-file copy)
 autoresearch/stocks     ← stocks loop owns this. Mutates strategies/stocks.py
                           + writes results/<slug>.tsv. Single writer
@@ -34,16 +34,16 @@ Rules:
   (override: `ALLOW_LOOP_ON_MAIN=1`).
 - Each campaign branch has exactly one writer at a time (its CI workflow or
   a local loop run — never both simultaneously).
-- `promote.py` is the only path between candidate and frozen. It runs a
+- `sync_branches.py` is the only path between candidate and frozen. It runs a
   validation gauntlet (val window must beat frozen by margin; lockbox
   must clear sanity floors) before overwriting the frozen file on main.
-- `promote.yml` also syncs harness files (loop.py, backtest.py, etc.) from
+- `sync_branches.yml` also syncs harness files (loop.py, backtest.py, etc.) from
   main back to each campaign branch so code improvements propagate automatically.
 - Local research: each campaign has a persistent **git worktree** at
   `.worktrees/<campaign>` checked out to `autoresearch/<campaign>`. The
   dashboard (`app.py`) launches `loop.py` inside that worktree; main stays
   on `main` so paper/scan are never disturbed. Locally promote via
-  `python promote.py --campaign stocks` from the main checkout.
+  `python sync_branches.py --campaign stocks` from the main checkout.
 
 ## The Stack (chosen 2026-04-28 after `/research`)
 
@@ -120,10 +120,10 @@ TradingBot/
 │   ├── loop-stocks.yml        autoresearch stocks — daily 04:00 UTC
 │   ├── loop-crypto.yml        autoresearch crypto — every 6h
 │   ├── loop-campaign.yml      reusable job (workflow_call only)
-│   ├── promote.yml            daily promotion gate + harness sync (12:00 UTC)
+│   ├── sync_branches.yml            daily promotion gate + harness sync (12:00 UTC)
 │   ├── scan.yml               stocks pre-market + crypto every 4h
 │   └── paper.yml              Alpaca paper-trade executor (mirrors scan)
-├── promote.py                 candidate → frozen validation gate
+├── sync_branches.py                 candidate → frozen validation gate
 └── archive/                   old Jesse + Lumibot code
 ```
 
@@ -230,7 +230,7 @@ Mode is auto-selected by count — no separate basket flag. Empty/unset →
 |---|---|---|
 | `.github/workflows/loop-stocks.yml` | Daily 04:00 UTC (= 21:00 PST prior day, outside US market hours). Single writer on `autoresearch/stocks`. Disable workflow in Actions UI to pause stocks research. | Stocks autoresearch; commits land on campaign branch only — never on main |
 | `.github/workflows/loop-crypto.yml` | Every 6h (`0 */6 * * *`). Single writer on `autoresearch/crypto`. Disable independently of stocks. | Crypto autoresearch; same branch isolation |
-| `.github/workflows/promote.yml` | Daily 12:00 UTC (~04:00 PST / 05:00 PDT, before stocks paper at 13:35 UTC). For each campaign: runs promotion gauntlet, then syncs harness files from main → campaign branch. | Candidate → frozen promotion + harness sync |
+| `.github/workflows/sync_branches.yml` | Daily 12:00 UTC (~04:00 PST / 05:00 PDT, before stocks paper at 13:35 UTC). For each campaign: runs promotion gauntlet, then syncs harness files from main → campaign branch. | Candidate → frozen promotion + harness sync |
 | `.github/workflows/scan.yml` | Stocks: weekdays 13:30 UTC (05:30 PST). Crypto: every 4h, every day (`0 */4 * * *`). Reads `strategies/<campaign>.py` from main (frozen). | Signal alerts to webhook (Discord/Slack format) |
 | `.github/workflows/paper.yml` | Stocks: weekdays 13:35 UTC (5 min after scan). Crypto: every 4h. Reuses `scan.py`'s logic via `live_trade.py`; reads frozen strategies from main. | Paper-trade the latest promoted strategy against the watchlists |
 
@@ -300,10 +300,10 @@ Use `/scout` before adopting any new framework or major architectural change.
 - [x] Daily signal scanner + Discord/Slack webhook
 - [x] Scheduled GitHub Actions for loop, scanner, and paper trader
 - [x] Branch-per-campaign: stocks/crypto loops isolated on `autoresearch/*` branches, main reserved for promoted strategies
-- [x] Promotion gate (`promote.py` + `promote.yml`): val-window beat + lockbox sanity floors before main moves
+- [x] Promotion gate (`sync_branches.py` + `sync_branches.yml`): val-window beat + lockbox sanity floors before main moves
 - [x] Paper trading (`live_trade.py`) rewritten on `alpaca-py` — reuses `scan.py`'s strategy harness so it always tracks the latest `strategy.py`
 - [x] $10K per-symbol cash default, idempotent re-runs, JSONL `paper.log`
-- [x] Harness sync: promote.yml pushes main's harness files to campaign branches daily
+- [x] Harness sync: sync_branches.yml pushes main's harness files to campaign branches daily
 - [ ] User signs up for Alpaca paper keys + sets `ALPACA_API_KEY`/`ALPACA_API_SECRET` repo secrets
 - [ ] First scheduled CI run executed (loop + scan + paper)
 - [ ] First paper order filled

@@ -1,7 +1,7 @@
 name: Autoresearch loop (stocks)
 
 # Runs the autoresearch loop on autoresearch/stocks (single writer = this workflow).
-# Main is NEVER touched — promotion to main happens via promote.yml.
+# Main is NEVER touched — promotion to main happens via sync_branches.yml.
 #
 # Schedule (UTC): 04:00 daily (= 21:00 PST previous day, well outside US market
 # hours so paper/scan on main never see a strategy file mid-mutation).

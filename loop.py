@@ -3,7 +3,7 @@
 The loop ALWAYS runs on a campaign-specific branch (autoresearch/<campaign>),
 never on main. main carries only the frozen, promoted strategy files that
 scan.py / live_trade.py read; the loop's mutations and git resets stay
-quarantined on the campaign branch and only land on main via promote.py.
+quarantined on the campaign branch and only land on main via sync_branches.py.
 
 Each iteration:
   1. Read STRATEGY_FILE + last 10 rows of per-campaign results.tsv + program.md

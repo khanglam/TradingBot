@@ -34,7 +34,7 @@ TradingBot/
     ├── loop-stocks.yml     ← Autoresearch stocks (daily 04 UTC); disable independently
     ├── loop-crypto.yml     ← Autoresearch crypto (every 6h); disable independently
     ├── loop-campaign.yml   ← Reusable job (called by loop-stocks / loop-crypto)
-    ├── promote.yml         ← Daily promotion gate — candidate → main
+    ├── sync_branches.yml         ← Daily promotion gate — candidate → main
     ├── scan.yml            ← Stocks pre-market + crypto every 4h
     └── paper.yml           ← Alpaca paper executor (mirrors scan)
 ```
@@ -161,7 +161,7 @@ Five user-facing workflows ship in `.github/workflows/` (plus `loop-campaign.yml
 |---|---|---|
 | `loop-stocks.yml` | Daily 04:00 UTC | Autoresearch on `autoresearch/stocks`. Never touches main. Disable in Actions UI to pause stocks research only. |
 | `loop-crypto.yml` | Every 6h | Autoresearch on `autoresearch/crypto`. Never touches main. Disable independently of stocks. |
-| `promote.yml` | Daily 12:00 UTC | Validation gauntlet (`promote.py`): if a campaign's candidate beats the frozen strategy on val + clears lockbox sanity, commit the new frozen `strategies/<campaign>.py` to main |
+| `sync_branches.yml` | Daily 12:00 UTC | Validation gauntlet (`sync_branches.py`): if a campaign's candidate beats the frozen strategy on val + clears lockbox sanity, commit the new frozen `strategies/<campaign>.py` to main |
 | `scan.yml` | Stocks weekdays 13:30 UTC; crypto every 4h | Signal scanner — reads frozen strategies from main, posts to webhook |
 | `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | Alpaca paper executor — `live_trade.py` against frozen strategies on main |
 

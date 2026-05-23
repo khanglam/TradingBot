@@ -739,7 +739,7 @@ PAPER_LOG = ROOT / "results" / "paper.log"
 
 # ── strategy version tracking (Trading tab — Phase 1) ──
 # A "version" is a commit on `main` that touched strategies/<campaign>.py.
-# These are the strategies that actually went live (promote.py is the only
+# These are the strategies that actually went live (sync_branches.py is the only
 # writer on main). Newest-first; the head is the currently deployed version.
 
 def _git_log_versions(campaign: str) -> list[dict]:

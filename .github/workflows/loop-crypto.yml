@@ -1,7 +1,7 @@
 name: Autoresearch loop (crypto)
 
 # Runs the autoresearch loop on autoresearch/crypto (single writer = this workflow).
-# Main is NEVER touched — promotion to main happens via promote.yml.
+# Main is NEVER touched — promotion to main happens via sync_branches.yml.
 #
 # Schedule (UTC): every 6h (24/7 markets; scan/paper crypto read frozen main).
 #
