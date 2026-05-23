@@ -13,6 +13,12 @@ __pycache__/
 # Virtual environment
 .venv/
 
+# Cached OHLCV data (regenerate via data_fetch.py)
+data/
+
+# Local Claude Code settings (machine-specific permissions)
+.claude/settings.local.json
+
 # Per-run artifacts inside results/ — keep per-campaign *.tsv files (and
 # .gitkeep) so experiment logs persist in git and across CI runs; ignore
 # logs and one-time backups.
