@@ -1,0 +1,51 @@
+name: Autoresearch loop (stocks)
+
+# Runs the autoresearch loop on autoresearch/stocks (single writer = this workflow).
+# Main is NEVER touched — promotion to main happens via promote.yml.
+#
+# Schedule (UTC): 04:00 daily (= 21:00 PST previous day, well outside US market
+# hours so paper/scan on main never see a strategy file mid-mutation).
+#
+# Disable this workflow in GitHub Actions to pause stocks research without
+# affecting loop-crypto.yml or promote/scan/paper.
+#
+# Required repo secrets:
+#   OPENROUTER_API_KEY  — used by loop.py to call the LLM
+# Optional repo variables:
+#   OPENROUTER_MODEL    — any model slug from https://openrouter.ai/models
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: 'Number of mutations to attempt'
+        required: false
+        default: '8'
+        type: string
+      optimize_metric:
+        description: 'val_sharpe | calmar | dsr'
+        required: false
+        default: 'val_sharpe'
+        type: choice
+        options:
+          - val_sharpe
+          - calmar
+          - dsr
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autoresearch-loop-stocks
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    uses: ./.github/workflows/loop-campaign.yml
+    secrets: inherit
+    with:
+      campaign: stocks
+      iters: ${{ github.event.inputs.iters || '8' }}
+      optimize_metric: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}

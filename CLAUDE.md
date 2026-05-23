@@ -25,7 +25,7 @@ main                    ← FROZEN. scan.py + live_trade.py read this.
   ↑ (promotion gate, single-file copy)
 autoresearch/stocks     ← stocks loop owns this. Mutates strategies/stocks.py
                           + writes results/<slug>.tsv. Single writer
-                          (loop.yml). git reset --hard happens here.
+                          (loop-stocks.yml / loop-crypto.yml). git reset --hard happens here.
 autoresearch/crypto     ← same shape, for crypto.
 ```
 
@@ -116,7 +116,9 @@ TradingBot/
 │   └── paper.log              paper-trade execution history (gitignored)
 ├── data/                      cached OHLCV (gitignored)
 ├── .github/workflows/
-│   ├── loop.yml               autoresearch — stocks daily 04:00 UTC, crypto every 6h
+│   ├── loop-stocks.yml        autoresearch stocks — daily 04:00 UTC
+│   ├── loop-crypto.yml        autoresearch crypto — every 6h
+│   ├── loop-campaign.yml      reusable job (workflow_call only)
 │   ├── promote.yml            daily promotion gate (12:00 UTC)
 │   ├── scan.yml               stocks pre-market + crypto every 4h
 │   └── paper.yml              Alpaca paper-trade executor (mirrors scan)
@@ -237,7 +239,8 @@ Mode is auto-selected by count — no separate basket flag. Empty/unset →
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `.github/workflows/loop.yml` | Stocks: 04:00 UTC daily (= 21:00 PST prior day, well outside US market hours). Crypto: every 6h (`0 */6 * * *`). Each campaign runs on its own branch (`autoresearch/<campaign>`) — single writer per branch, no push races. | Two parallel autoresearch tracks; commits land on the campaign branch only — never on main |
+| `.github/workflows/loop-stocks.yml` | Daily 04:00 UTC (= 21:00 PST prior day, outside US market hours). Single writer on `autoresearch/stocks`. Disable workflow in Actions UI to pause stocks research. | Stocks autoresearch; commits land on campaign branch only — never on main |
+| `.github/workflows/loop-crypto.yml` | Every 6h (`0 */6 * * *`). Single writer on `autoresearch/crypto`. Disable independently of stocks. | Crypto autoresearch; same branch isolation |
 | `.github/workflows/promote.yml` | Daily 12:00 UTC (~04:00 PST / 05:00 PDT, before stocks paper at 13:35 UTC). For each campaign, fetches `autoresearch/<campaign>`, runs `promote.py` (val-window beat + lockbox sanity floors), and if it passes, commits the new frozen `strategies/<campaign>.py` to main. | The only path from candidate → frozen |
 | `.github/workflows/scan.yml` | Stocks: weekdays 13:30 UTC (05:30 PST). Crypto: every 4h, every day (`0 */4 * * *`). Reads `strategies/<campaign>.py` from main (frozen). | Signal alerts to webhook (Discord/Slack format) |
 | `.github/workflows/paper.yml` | Stocks: weekdays 13:35 UTC (5 min after scan). Crypto: every 4h. Reuses `scan.py`'s logic via `live_trade.py`; reads frozen strategies from main. | Paper-trade the latest promoted strategy against the watchlists |
@@ -246,11 +249,11 @@ Required repo secrets / variables:
 
 | Name | Type | Used by | Purpose |
 |---|---|---|---|
-| `OPENROUTER_API_KEY` | Secret | loop.yml | OpenRouter API key (https://openrouter.ai/keys) |
+| `OPENROUTER_API_KEY` | Secret | loop-stocks.yml, loop-crypto.yml | OpenRouter API key (https://openrouter.ai/keys) |
 | `SCAN_WEBHOOK_URL` | Secret | scan.yml | Discord/Slack webhook |
 | `ALPACA_API_KEY` | Secret | paper.yml | Alpaca paper API key |
 | `ALPACA_API_SECRET` | Secret | paper.yml | Alpaca paper API secret |
-| `OPENROUTER_MODEL` | Variable | loop.yml | Override default model (any openrouter.ai slug) |
+| `OPENROUTER_MODEL` | Variable | loop-stocks.yml, loop-crypto.yml | Override default model (any openrouter.ai slug) |
 | `SCAN_WATCHLIST` | Variable | scan.yml | Stock watchlist (e.g. `SPY,QQQ,TSLA,NVDA`) |
 | `SCAN_WATCHLIST_CRYPTO` | Variable | scan.yml | Crypto watchlist via yfinance (e.g. `BTC-USD,ETH-USD`) |
 | `PAPER_WATCHLIST` | Variable | paper.yml | Stock watchlist (Alpaca tickers) |

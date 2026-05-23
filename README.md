@@ -31,7 +31,9 @@ TradingBot/
 ├── data/                   ← Cached parquet OHLCV (gitignored)
 ├── archive/                ← Old code retained for reference
 └── .github/workflows/
-    ├── loop.yml            ← Autoresearch (stocks daily 04 UTC; crypto every 6h)
+    ├── loop-stocks.yml     ← Autoresearch stocks (daily 04 UTC); disable independently
+    ├── loop-crypto.yml     ← Autoresearch crypto (every 6h); disable independently
+    ├── loop-campaign.yml   ← Reusable job (called by loop-stocks / loop-crypto)
     ├── promote.yml         ← Daily promotion gate — candidate → main
     ├── scan.yml            ← Stocks pre-market + crypto every 4h
     └── paper.yml           ← Alpaca paper executor (mirrors scan)
@@ -153,16 +155,17 @@ I execute manually" workflow.
 
 ## GitHub Actions (scheduled runs)
 
-Four workflows ship in `.github/workflows/`:
+Five user-facing workflows ship in `.github/workflows/` (plus `loop-campaign.yml`, reusable):
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `loop.yml` | Stocks 04:00 UTC daily; crypto every 6h | Runs the autoresearch loop on the campaign branch (`autoresearch/stocks` or `autoresearch/crypto`). Never touches main. |
+| `loop-stocks.yml` | Daily 04:00 UTC | Autoresearch on `autoresearch/stocks`. Never touches main. Disable in Actions UI to pause stocks research only. |
+| `loop-crypto.yml` | Every 6h | Autoresearch on `autoresearch/crypto`. Never touches main. Disable independently of stocks. |
 | `promote.yml` | Daily 12:00 UTC | Validation gauntlet (`promote.py`): if a campaign's candidate beats the frozen strategy on val + clears lockbox sanity, commit the new frozen `strategies/<campaign>.py` to main |
 | `scan.yml` | Stocks weekdays 13:30 UTC; crypto every 4h | Signal scanner — reads frozen strategies from main, posts to webhook |
 | `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | Alpaca paper executor — `live_trade.py` against frozen strategies on main |
 
-All three have `workflow_dispatch` triggers, so you can also fire them
+All five have `workflow_dispatch` triggers, so you can also fire them
 on-demand from the GitHub Actions tab.
 
 ### Required repo secrets / variables
@@ -171,11 +174,11 @@ Settings → Secrets and variables → Actions:
 
 | Type | Name | Used by | Purpose |
 |---|---|---|---|
-| Secret | `OPENROUTER_API_KEY` | `loop.yml` | OpenRouter API key (one key, any model — https://openrouter.ai/keys) |
+| Secret | `OPENROUTER_API_KEY` | `loop-stocks.yml`, `loop-crypto.yml` | OpenRouter API key (one key, any model — https://openrouter.ai/keys) |
 | Secret | `SCAN_WEBHOOK_URL` | `scan.yml` | Discord/Slack webhook for alerts |
 | Secret | `ALPACA_API_KEY` | `paper.yml` | Alpaca paper API key |
 | Secret | `ALPACA_API_SECRET` | `paper.yml` | Alpaca paper API secret |
-| Variable | `OPENROUTER_MODEL` | `loop.yml` | (optional) override model; any slug from https://openrouter.ai/models. Default `anthropic/claude-haiku-4-5` |
+| Variable | `OPENROUTER_MODEL` | `loop-stocks.yml`, `loop-crypto.yml` | (optional) override model; any slug from https://openrouter.ai/models. Default `anthropic/claude-haiku-4-5` |
 | Variable | `SCAN_WATCHLIST` | `scan.yml` | stocks, e.g. `SPY,QQQ,TSLA,NVDA` |
 | Variable | `SCAN_WATCHLIST_CRYPTO` | `scan.yml` | crypto via yfinance, e.g. `BTC-USD,ETH-USD` |
 | Variable | `PAPER_WATCHLIST` | `paper.yml` | stocks, Alpaca tickers |

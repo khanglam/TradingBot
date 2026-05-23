@@ -6,10 +6,10 @@ name: Promote candidate to main
 #   3. If it clears the gauntlet, promote.py overwrites strategies/<campaign>.py
 #      in the working tree on main; this workflow commits + pushes.
 #
-# Schedule: 12:00 UTC daily (= 04:00 PST / 05:00 PDT). Runs after the
-# overnight stocks loop tick at 04:00 UTC and before the stocks paper run
-# at 13:35 UTC. Crypto promotions land on the same cadence; the running
-# crypto loop (every 6h on its own branch) is unaffected.
+# Schedule: 12:00 UTC daily (= 04:00 PST / 05:00 PDT). Runs after
+# loop-stocks.yml (04:00 UTC) and before stocks paper (13:35 UTC).
+# Crypto promotions use the same daily cadence; loop-crypto.yml (every 6h)
+# on autoresearch/crypto is independent — promote only reads that branch.
 #
 # Required repo secrets: none beyond GITHUB_TOKEN.
 # Optional env knobs: PROMOTION_MARGIN, LOCKBOX_MIN_SHARPE, LOCKBOX_MAX_DD.
