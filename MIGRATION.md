@@ -6,12 +6,15 @@ or rewrite main on your behalf.
 
 ## 1. Push the new infrastructure on main
 
-The current branch (`main`) now contains the new `loop.yml`, `promote.yml`,
-`promote.py`, and the loop-on-main guard. Commit them as one change:
+The current branch (`main`) now contains the new loop workflows (`loop-stocks.yml`,
+`loop-crypto.yml`, `loop-campaign.yml`), `promote.yml`, `promote.py`, and the
+loop-on-main guard. Commit them as one change:
 
 ```bash
 git status                         # confirm what's pending
-git add .github/workflows/loop.yml \
+git add .github/workflows/loop-stocks.yml \
+        .github/workflows/loop-crypto.yml \
+        .github/workflows/loop-campaign.yml \
         .github/workflows/promote.yml \
         promote.py loop.py \
         CLAUDE.md MIGRATION.md .gitignore
@@ -54,9 +57,9 @@ problem, just clutter.
 
 ## 4. Verify CI
 
-- Trigger `.github/workflows/loop.yml` manually with `campaign: stocks`,
-  `iters: 1`. Confirm the run checks out `autoresearch/stocks`, makes one
-  experiment commit, and pushes only to that branch.
+- Trigger **Autoresearch loop (stocks)** (`.github/workflows/loop-stocks.yml`)
+  manually with `iters: 1`. Confirm the run checks out `autoresearch/stocks`,
+  makes one experiment commit, and pushes only to that branch.
 - After the loop has produced at least one keep, trigger
   `.github/workflows/promote.yml` manually with `campaign: stocks`.
   Confirm it either promotes (commit on main) or logs "candidate does

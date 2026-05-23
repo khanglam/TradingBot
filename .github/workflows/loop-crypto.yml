@@ -1,0 +1,50 @@
+name: Autoresearch loop (crypto)
+
+# Runs the autoresearch loop on autoresearch/crypto (single writer = this workflow).
+# Main is NEVER touched — promotion to main happens via promote.yml.
+#
+# Schedule (UTC): every 6h (24/7 markets; scan/paper crypto read frozen main).
+#
+# Disable this workflow in GitHub Actions to pause crypto research without
+# affecting loop-stocks.yml or promote/scan/paper.
+#
+# Required repo secrets:
+#   OPENROUTER_API_KEY  — used by loop.py to call the LLM
+# Optional repo variables:
+#   OPENROUTER_MODEL    — any model slug from https://openrouter.ai/models
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: 'Number of mutations to attempt'
+        required: false
+        default: '8'
+        type: string
+      optimize_metric:
+        description: 'val_sharpe | calmar | dsr'
+        required: false
+        default: 'val_sharpe'
+        type: choice
+        options:
+          - val_sharpe
+          - calmar
+          - dsr
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autoresearch-loop-crypto
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    uses: ./.github/workflows/loop-campaign.yml
+    secrets: inherit
+    with:
+      campaign: crypto
+      iters: ${{ github.event.inputs.iters || '8' }}
+      optimize_metric: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}

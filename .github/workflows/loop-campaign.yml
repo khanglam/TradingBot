@@ -1,39 +1,15 @@
-name: Autoresearch loop
+# Reusable autoresearch loop job. Called by loop-stocks.yml and loop-crypto.yml.
+# Main is NEVER touched — promotion happens via promote.yml.
 
-# Runs the autoresearch loop on dedicated campaign branches:
-#   - stocks → autoresearch/stocks  (one writer = this workflow)
-#   - crypto → autoresearch/crypto  (one writer = this workflow)
-#
-# Main is NEVER touched here — promotion to main happens via promote.yml.
-# That isolation means each branch has exactly one writer, so there are no
-# push races and no rebase-retry dance.
-#
-# Schedules (UTC):
-#   - stocks: 04:00 daily        (= 21:00 PST previous day, well outside US
-#                                  market hours so paper executor never sees
-#                                  a strategy file mid-mutation)
-#   - crypto: every 6h           (24/7 markets; paper crypto reads main, so
-#                                  no contention with this branch)
-#
-# Required repo secrets:
-#   OPENROUTER_API_KEY  — used by loop.py to call the LLM
-# Optional repo variables:
-#   OPENROUTER_MODEL    — any model slug from https://openrouter.ai/models
+name: Autoresearch loop (campaign)
 
 on:
-  schedule:
-    - cron: '0 4 * * *'      # stocks: 04:00 UTC daily
-    - cron: '0 */6 * * *'    # crypto: every 6h
-  workflow_dispatch:
+  workflow_call:
     inputs:
       campaign:
-        description: 'Which campaign to run'
+        description: 'stocks or crypto'
         required: true
-        default: 'stocks'
-        type: choice
-        options:
-          - stocks
-          - crypto
+        type: string
       iters:
         description: 'Number of mutations to attempt'
         required: false
@@ -43,64 +19,31 @@ on:
         description: 'val_sharpe | calmar | dsr'
         required: false
         default: 'val_sharpe'
-        type: choice
-        options:
-          - val_sharpe
-          - calmar
-          - dsr
+        type: string
 
 permissions:
-  contents: write   # push commits the loop produces (campaign branch only)
+  contents: write
 
 jobs:
-  # Single job, parameterized by campaign. The campaign is decided from the
-  # cron string (or the dispatch input). Wrong-campaign-for-this-cron fires
-  # are filtered out in the gate step rather than at the cron level so we
-  # keep one job definition.
   loop:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    # Per-branch concurrency. A second tick for the same campaign queues
-    # behind the first; different campaigns run in parallel.
-    concurrency:
-      group: autoresearch-loop-${{ github.event.schedule || github.event.inputs.campaign }}
-      cancel-in-progress: false
-
     env:
-      ITERS: ${{ github.event.inputs.iters || '8' }}
-      OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
+      CAMPAIGN: ${{ inputs.campaign }}
+      BRANCH: autoresearch/${{ inputs.campaign }}
+      ITERS: ${{ inputs.iters }}
+      OPTIMIZE_METRIC: ${{ inputs.optimize_metric }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5' }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
     steps:
-      - name: Decide campaign + branch from trigger
-        id: route
-        env:
-          DISPATCH_CAMPAIGN: ${{ github.event.inputs.campaign }}
-          TRIGGER_CRON: ${{ github.event.schedule }}
-        run: |
-          if [ -n "$DISPATCH_CAMPAIGN" ]; then
-            CAMPAIGN="$DISPATCH_CAMPAIGN"
-          elif [ "$TRIGGER_CRON" = "0 4 * * *" ]; then
-            CAMPAIGN="stocks"
-          elif [ "$TRIGGER_CRON" = "0 */6 * * *" ]; then
-            CAMPAIGN="crypto"
-          else
-            echo "::error ::Unrecognized trigger; refusing to guess a campaign."
-            exit 1
-          fi
-          BRANCH="autoresearch/$CAMPAIGN"
-          echo "campaign=$CAMPAIGN" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH"     >> "$GITHUB_OUTPUT"
-          echo "Routed to campaign='$CAMPAIGN' branch='$BRANCH'"
-
       - name: Checkout campaign branch (full history for resets)
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.route.outputs.branch }}
+          ref: autoresearch/${{ inputs.campaign }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -117,7 +60,7 @@ jobs:
 
       - name: Export campaign config to environment
         env:
-          CAMPAIGN: ${{ steps.route.outputs.campaign }}
+          CAMPAIGN: ${{ inputs.campaign }}
         run: |
           python - <<'EOF'
           import os, sys
@@ -137,9 +80,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/
-          key: ohlcv-${{ runner.os }}-${{ steps.route.outputs.campaign }}-v1
+          key: ohlcv-${{ runner.os }}-${{ inputs.campaign }}-v1
           restore-keys: |
-            ohlcv-${{ runner.os }}-${{ steps.route.outputs.campaign }}-
+            ohlcv-${{ runner.os }}-${{ inputs.campaign }}-
             ohlcv-${{ runner.os }}-
 
       - name: Fetch OHLCV data for each entry in SYMBOLS
@@ -185,7 +128,7 @@ jobs:
 
       - name: Push back to campaign branch
         env:
-          BRANCH: ${{ steps.route.outputs.branch }}
+          BRANCH: autoresearch/${{ inputs.campaign }}
         run: |
           # Single-writer branch — no rebase needed. If push fails it means
           # someone pushed to this branch manually; surface that as an error
@@ -200,7 +143,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: run-log-${{ steps.route.outputs.campaign }}-${{ github.run_id }}
+          name: run-log-${{ inputs.campaign }}-${{ github.run_id }}
           path: |
             results/run.log
             results/*.tsv
