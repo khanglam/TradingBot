@@ -8,8 +8,8 @@ and either keeps or reverts based on the active optimization metric.
 
 ## Goal
 
-Maximize the active **`OPTIMIZE_METRIC`** on the fixed validation window
-(2020-01-01 → 2024-12-31, basket of TSLA/NVDA/PYPL daily) subject to:
+Maximize the active **`OPTIMIZE_METRIC`** on the configured validation window
+subject to:
 
 - `max_drawdown` < 30%
 - `total_trades` ≥ 20
@@ -27,15 +27,14 @@ All metrics (`val_sharpe`, `sortino`, `sharpe_ann_4h`, `calmar`, `psr`, `dsr`,
 `skew`, `kurtosis`) are logged to `results.tsv`. Optimizing one generally
 moves the others in the same direction.
 
-The training window (2019-01-01 → 2022-12-31) exists implicitly in the time
-series but is *not* what the metric is measured on. You may reason about it
-when designing changes; you may not modify the windows.
+A **training window** exists implicitly in the time series but is *not* what
+the metric is measured on. You may reason about it when designing changes;
+you may not modify the windows.
 
-A third **lockbox window** (2025-01-01 → present) is held back and never
-evaluated by the loop. It is opened manually only when promoting a strategy
-to paper trading. **Do not** design strategies that target lockbox dates —
-the loop has no signal from it, and overfitting to validation will be
-caught there.
+A **lockbox window** is held back and never evaluated by the loop. It is
+opened manually only when promoting a strategy to paper trading. **Do not**
+design strategies that target lockbox dates — the loop has no signal from it,
+and overfitting to validation will be caught there.
 
 ## Hard Rules
 
