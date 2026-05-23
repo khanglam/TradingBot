@@ -46,6 +46,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import math
 import os
 import re
@@ -87,7 +89,7 @@ if not Path(PYTHON).exists():
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "anthropic/claude-haiku-4-5"  # any model slug from openrouter.ai/models
-MAX_OUTPUT_TOKENS = 8000
+MAX_OUTPUT_TOKENS = 800
 
 KEEP_THRESHOLD = float(os.environ.get("KEEP_THRESHOLD", "0.0"))  # strictly > best
 MAX_DRAWDOWN_LIMIT = float(_bt_module._cfg("MAX_DRAWDOWN_LIMIT", "30.0"))
@@ -395,17 +397,20 @@ def _parse_summary(out: str) -> dict:
 
 
 def run_backtest() -> dict:
-    """Run backtest.py in a subprocess, parse summary block, return metrics.
+    """Run backtest in-process (skips subprocess cold-start overhead).
     Inherits DSR_BENCHMARK, SYMBOLS, and BASKET_PENALTY env vars from the caller."""
-    proc = subprocess.run(
-        [PYTHON, "backtest.py"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    out = proc.stdout
-    RUN_LOG.write_text(out + "\n----- STDERR -----\n" + proc.stderr, encoding="utf-8")
+    buf = io.StringIO()
+    err_buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err_buf):
+        try:
+            _bt_module.run()
+        except SystemExit:
+            pass
+        except Exception:
+            import traceback as _tb
+            _tb.print_exc(file=err_buf)
+    out = buf.getvalue()
+    RUN_LOG.write_text(out + "\n----- STDERR -----\n" + err_buf.getvalue(), encoding="utf-8")
     return _parse_summary(out)
 
 
@@ -495,6 +500,29 @@ DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL
 # `## strategies/stocks.py`, `## strategies/crypto.py`, etc. — so the
 # section label matches whatever file is actively being edited.
 CODE_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
+DIFF_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```diff\s*\n(.*?)\n```", re.DOTALL)
+
+
+def _apply_unified_diff(src: str, diff_text: str) -> str:
+    """Apply a unified diff string to src and return the patched content."""
+    import tempfile, os as _os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".orig", delete=False, encoding="utf-8") as f:
+        f.write(src)
+        orig = f.name
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
+        f.write(diff_text + "\n")
+        patch = f.name
+    try:
+        result = subprocess.run(
+            ["patch", "--no-backup-if-mismatch", "-o", "-", orig, patch],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"patch failed:\n{result.stderr[:500]}")
+        return result.stdout
+    finally:
+        _os.unlink(orig)
+        _os.unlink(patch)
 
 
 def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
@@ -571,23 +599,36 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
     user_msg += "Propose ONE change. Reply with the two required sections only."
 
     model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
-    resp = client.chat.completions.create(
+    stream = client.chat.completions.create(
         model=model,
         max_tokens=MAX_OUTPUT_TOKENS,
+        stream=True,
         messages=[
             {"role": "system", "content": program_src},
             {"role": "user", "content": user_msg},
         ],
     )
-    text = resp.choices[0].message.content or ""
+    chunks: list[str] = []
+    print("[loop] streaming Claude response: ", end="", flush=True)
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if delta.content:
+            print(delta.content, end="", flush=True)
+            chunks.append(delta.content)
+    print()
+    text = "".join(chunks)
 
     desc_m = DESCRIPTION_RE.search(text)
+    diff_m = DIFF_RE.search(text)
     code_m = CODE_RE.search(text)
-    if not desc_m or not code_m:
+    if not desc_m or (not diff_m and not code_m):
         raise ValueError(f"could not parse LLM response:\n{text[:1000]}")
 
     description = desc_m.group(1).strip().splitlines()[0][:200]
-    new_code = code_m.group(1)
+    if diff_m:
+        new_code = _apply_unified_diff(strategy_src, diff_m.group(1))
+    else:
+        new_code = code_m.group(1)
     return description, new_code
 
 
