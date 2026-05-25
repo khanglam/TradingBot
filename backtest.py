@@ -469,21 +469,32 @@ def _aggregate_basket(per_symbol: list[tuple[str, dict]], penalty: float) -> dic
     }
 
 
+def _ensure_symbol_data(resolved: list[tuple[str, Path]]) -> None:
+    """Fetch any missing OHLCV parquets before backtest (idempotent)."""
+    if not resolved:
+        return
+    import data_fetch
+
+    start = _CAMPAIGN_CFG.get("data_fetch_start")
+    start_s = str(start) if start is not None else None
+    for sym, path in resolved:
+        try:
+            data_fetch.fetch_if_missing(path, start=start_s)
+        except Exception as e:
+            print(f"# data fetch failed for {sym} ({path}): {e}", file=sys.stderr)
+
+
 def _run_basket(resolved: list[tuple[str, Path]], window: str, penalty: float) -> dict:
     """Run the strategy on each symbol in the basket and aggregate.
 
-    Symbols whose data is missing or whose backtests crash are skipped with a
-    warning; if at least one survives, the basket result is the aggregate of
-    those that did. If none survive, returns zero metrics."""
+    Symbols whose backtests crash are skipped with a warning; if at least one
+    survives, the basket result is the aggregate of those that did."""
     from concurrent.futures import ThreadPoolExecutor
 
     print(f"# basket mode: {len(resolved)} symbols", file=sys.stderr)
 
     def _run_one(item: tuple[str, Path]) -> tuple[str, dict | None]:
         sym, path = item
-        if not path.exists():
-            print(f"# basket: missing data for {sym} ({path}), skipping", file=sys.stderr)
-            return sym, None
         return sym, _run_single(path, window, min_trades=MIN_BASKET_TRADES)
 
     per_symbol: list[tuple[str, dict]] = []
@@ -515,6 +526,7 @@ def run(symbols: str | None = None, window: str = "val") -> dict:
     """
     spec = symbols if symbols is not None else (os.environ.get("SYMBOLS") or DEFAULT_SYMBOLS)
     resolved = _resolve_symbols(spec)
+    _ensure_symbol_data(resolved)
 
     if len(resolved) == 0:
         metrics = dict(ZERO_METRICS)

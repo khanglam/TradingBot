@@ -13,6 +13,7 @@ indexed by a timezone-naive UTC DatetimeIndex (backtesting.py expects this).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -154,26 +155,88 @@ def load(path: str | Path) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
+def _load_campaign_config() -> dict:
+    import subprocess
+    import tomllib
+
+    campaign = os.environ.get("CAMPAIGN", "").strip()
+    if not campaign:
+        return {}
+    root = Path(__file__).parent
+    r = subprocess.run(
+        ["git", "show", "origin/main:configs.toml"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    if r.returncode == 0:
+        cfg_text = r.stdout
+    elif (root / "configs.toml").exists():
+        cfg_text = (root / "configs.toml").read_text(encoding="utf-8")
+    else:
+        return {}
+    all_campaigns = tomllib.loads(cfg_text)
+    return all_campaigns.get(campaign, {})
+
+
+def ensure_symbols_spec(spec: str, start: str | None = None) -> None:
+    """Ensure every parquet in a SYMBOLS spec exists under data/; fetch on miss."""
+    for raw in spec.split(","):
+        entry = raw.strip()
+        if not entry:
+            continue
+        rel = entry[len("data/") :] if entry.startswith("data/") else entry
+        if rel.endswith(".parquet"):
+            rel = rel[: -len(".parquet")]
+        fetch_if_missing(DATA_DIR / f"{rel}.parquet", start=start)
+
+
+def fetch_campaign_symbols() -> None:
+    """Fetch all symbols from configs.toml for the active CAMPAIGN (no-op if cached)."""
+    cfg = _load_campaign_config()
+    spec = os.environ.get("SYMBOLS") or cfg.get("symbols")
+    if not spec:
+        return
+    start = cfg.get("data_fetch_start")
+    ensure_symbols_spec(str(spec), start=str(start) if start is not None else None)
+
+
 if __name__ == "__main__":
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        root = Path(__file__).parent
+        for p in [root, *root.parents]:
+            if (p / "configs.toml").exists() and (p / ".env").exists():
+                load_dotenv(p / ".env", override=False)
+                break
+    except ImportError:
+        pass
+
     p = argparse.ArgumentParser()
     p.add_argument("--asset", choices=["crypto", "stocks", "all"], default="all")
     p.add_argument("--symbol", default=None)
     p.add_argument("--timeframe", default=None, help="crypto: 1m/5m/1h/4h/1d  stocks: 1d/1h/15m")
-    p.add_argument("--start", default="2019-01-01")
+    p.add_argument("--start", default=None, help="default: configs.toml data_fetch_start or 2019/2018")
     p.add_argument("--end", default=None)
     args = p.parse_args()
 
-    if args.asset in ("crypto", "all"):
-        fetch_crypto(
-            symbol=args.symbol or "BTC/USDT",
-            timeframe=args.timeframe or "4h",
-            start=args.start,
-            end=args.end,
-        )
-    if args.asset in ("stocks", "all"):
-        fetch_stocks(
-            symbol=args.symbol or "SPY",
-            interval=args.timeframe or "1d",
-            start=args.start,
-            end=args.end,
-        )
+    if args.symbol is None and os.environ.get("CAMPAIGN"):
+        fetch_campaign_symbols()
+    else:
+        start = args.start
+        if args.asset in ("crypto", "all"):
+            fetch_crypto(
+                symbol=args.symbol or "BTC/USDT",
+                timeframe=args.timeframe or "4h",
+                start=start or "2019-01-01",
+                end=args.end,
+            )
+        if args.asset in ("stocks", "all"):
+            fetch_stocks(
+                symbol=args.symbol or "SPY",
+                interval=args.timeframe or "1d",
+                start=start or "2018-01-01",
+                end=args.end,
+            )
