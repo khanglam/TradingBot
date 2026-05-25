@@ -45,6 +45,7 @@ INDEX_HTML = ROOT / "web" / "index.html"
 WORKTREE_ROOT = ROOT / ".worktrees"
 
 _active_campaign: str = "crypto"
+os.environ.setdefault("CAMPAIGN", "crypto")  # backtest.py reads this at import time
 
 
 def _results_path() -> Path:
@@ -93,7 +94,7 @@ def _campaign_root(campaign: str | None = None) -> Path:
 def _campaign_or_400() -> str:
     if not _active_campaign:
         raise HTTPException(400, "No campaign selected. POST /api/campaign/<name> first.")
-    return name
+    return _active_campaign
 
 
 
@@ -602,6 +603,7 @@ def set_campaign(name: str) -> dict:
     if loop_proc.is_running():
         raise HTTPException(409, "Stop the running loop before switching campaign.")
     _active_campaign = name
+    os.environ["CAMPAIGN"] = name  # backtest.py reads this on reload
     import importlib
     import backtest as _bt
     importlib.reload(_bt)
