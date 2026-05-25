@@ -38,6 +38,8 @@ Environment knobs (all optional):
                              openai/gpt-5
                              deepseek/deepseek-r1
                              google/gemini-2.5-pro
+    MAX_OUTPUT_TOKENS      LLM reply cap (default 8000). Set in .env. Do not set
+                           below 4096 when program.md requests unified diffs.
 
 Usage:
     python loop.py --iters 50
@@ -89,7 +91,30 @@ if not Path(PYTHON).exists():
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "minimax/minimax-m2.7"  # any model slug from openrouter.ai/models
-MAX_OUTPUT_TOKENS = 2048
+_DEFAULT_MAX_OUTPUT_TOKENS = 8000
+
+
+def _load_dotenv_files() -> None:
+    """Load .env from cwd and repo root (required for .worktrees/* runs)."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
+    p = ROOT
+    for _ in range(5):
+        if (p / "configs.toml").exists() and (p / ".env").exists():
+            load_dotenv(p / ".env", override=False)
+            break
+        if p.parent == p:
+            break
+        p = p.parent
+
+
+def _max_output_tokens() -> int:
+    """From MAX_OUTPUT_TOKENS in .env (loaded by _load_dotenv_files before loop runs)."""
+    return max(1500, int(os.environ.get("MAX_OUTPUT_TOKENS", str(_DEFAULT_MAX_OUTPUT_TOKENS))))
+
 
 KEEP_THRESHOLD = float(os.environ.get("KEEP_THRESHOLD", "0.0"))  # strictly > best
 MAX_DRAWDOWN_LIMIT = float(_bt_module._cfg("MAX_DRAWDOWN_LIMIT", "30.0"))
@@ -501,28 +526,63 @@ DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL
 # section label matches whatever file is actively being edited.
 CODE_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
 DIFF_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```diff\s*\n(.*?)\n```", re.DOTALL)
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 def _apply_unified_diff(src: str, diff_text: str) -> str:
-    """Apply a unified diff string to src and return the patched content."""
-    import tempfile, os as _os
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".orig", delete=False, encoding="utf-8") as f:
-        f.write(src)
-        orig = f.name
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False, encoding="utf-8") as f:
-        f.write(diff_text + "\n")
-        patch = f.name
-    try:
-        result = subprocess.run(
-            ["patch", "--no-backup-if-mismatch", "-o", "-", orig, patch],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            raise ValueError(f"patch failed:\n{result.stderr[:500]}")
-        return result.stdout
-    finally:
-        _os.unlink(orig)
-        _os.unlink(patch)
+    """Apply unified diff in-process (GNU patch is not on Windows PATH by default)."""
+    lines = src.splitlines(keepends=True)
+    if src and not src.endswith(("\n", "\r")):
+        if lines:
+            lines[-1] = lines[-1] + "\n"
+        else:
+            lines = ["\n"]
+    diff_lines = diff_text.strip().splitlines()
+    i = 0
+    while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
+        i += 1
+    if i >= len(diff_lines):
+        raise ValueError("diff has no @@ hunk headers")
+
+    out: list[str] = []
+    src_i = 0
+    while i < len(diff_lines):
+        m = _HUNK_RE.match(diff_lines[i])
+        if not m:
+            i += 1
+            continue
+        old_start = int(m.group(1)) - 1
+        i += 1
+        while src_i < old_start:
+            if src_i >= len(lines):
+                raise ValueError(f"diff past end of file at line {old_start + 1}")
+            out.append(lines[src_i])
+            src_i += 1
+        while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
+            row = diff_lines[i]
+            if row.startswith(("---", "+++")):
+                i += 1
+                continue
+            if not row:
+                i += 1
+                continue
+            tag, body = row[0], row[1:] if len(row) > 1 else ""
+            if tag == " ":
+                if src_i >= len(lines) or lines[src_i].rstrip("\r\n") != body:
+                    raise ValueError(f"diff context mismatch at line {src_i + 1}")
+                out.append(lines[src_i])
+                src_i += 1
+            elif tag == "-":
+                if src_i >= len(lines) or lines[src_i].rstrip("\r\n") != body:
+                    raise ValueError(f"diff removal mismatch at line {src_i + 1}")
+                src_i += 1
+            elif tag == "+":
+                out.append(body + ("\n" if not body.endswith("\n") else ""))
+            else:
+                raise ValueError(f"unexpected diff line: {row!r}")
+            i += 1
+    out.extend(lines[src_i:])
+    return "".join(out)
 
 
 def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
@@ -601,7 +661,7 @@ def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[
     model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
     stream = client.chat.completions.create(
         model=model,
-        max_tokens=MAX_OUTPUT_TOKENS,
+        max_tokens=_max_output_tokens(),
         stream=True,
         messages=[
             {"role": "system", "content": program_src},
@@ -715,13 +775,7 @@ def main() -> int:
     p.add_argument("--iters", type=int, default=50)
     args = p.parse_args()
 
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        try:
-            from dotenv import load_dotenv
-
-            load_dotenv()
-        except ImportError:
-            pass
+    _load_dotenv_files()
     if not os.environ.get("OPENROUTER_API_KEY"):
         print(
             "ERROR: OPENROUTER_API_KEY not set. Get a key at https://openrouter.ai/keys "

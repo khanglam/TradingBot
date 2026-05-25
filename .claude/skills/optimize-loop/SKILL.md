@@ -117,6 +117,50 @@ If the run crashes or produces `val_sharpe: 0.000000` with `total_trades: 0`, st
 - Run `python backtest.py` **five times** back-to-back. Drop min and max. Average remaining three → `T_baseline`.
 - Print: `[baseline] val_sharpe=<X>  total_trades=<N>  T_baseline=<T>s (avg of 3 mid runs)`
 
+### 1c. Harness integrity baseline (mandatory — do not skip)
+
+These checks ensure `/optimize-loop` does not break the autoresearch loop (parse errors, WinError 2, truncated diffs). Run from **project root** with the venv Python.
+
+**Load env:** ensure `.env` exists (copy from `.env.example` if needed). Confirm `MAX_OUTPUT_TOKENS` is set (default **8000**). If `program.md` already requests unified diffs, **`MAX_OUTPUT_TOKENS` must be ≥ 4096** — never 800 or 2048.
+
+**A. Diff apply smoke test** (required if `loop.py` contains `DIFF_RE` or `_apply_unified_diff`):
+
+```python
+# Run: python -c "..." from project root
+import loop
+src = "line1\nline2\nline3\n"
+diff = "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n line1\n-line2\n+LINE2\n line3\n"
+assert loop._apply_unified_diff(src, diff) == "line1\nLINE2\nline3\n"
+print("[integrity] diff apply OK")
+```
+
+- If this raises or calls `subprocess.run(["patch", ...])`, **stop** — implement in-process diff apply (no GNU `patch`). On Windows, `patch` is usually missing (`[WinError 2]`).
+
+**B. In-process vs subprocess backtest** (required if `run_backtest()` no longer uses `subprocess.run([PYTHON, "backtest.py"])`):
+
+1. Run `python backtest.py` once → parse fingerprint `F_sub`.
+2. Run:
+
+```python
+import io, contextlib, backtest as bt
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+    try: bt.run()
+    except SystemExit: pass
+# parse --- block from buf.getvalue() → F_inproc
+```
+
+3. Compare `F_sub` and `F_inproc` with the same tolerances as Step 3 (Phase 2). If any field differs, **stop optimize-loop** — fix in-process wiring before continuing.
+
+**C. Record harness state** for the final report:
+
+```
+[integrity] MAX_OUTPUT_TOKENS=<from .env or default>
+[integrity] diff_apply=in-process|patch-cli|missing
+[integrity] backtest=in-process|subprocess
+[integrity] program.md default output=diff|full-python
+```
+
 ---
 
 ## Phase 2 — Optimization loop (repeat N times)
@@ -138,13 +182,15 @@ Read the current contents of `loop.py`, `backtest.py`, and `program.md`. Then pr
 
 Work through this list in order; pick the first idea not yet implemented or not already discarded:
 
-**1. Reduce `MAX_OUTPUT_TOKENS`**
+**1. Reduce `MAX_OUTPUT_TOKENS` (via `.env` only — do not hardcode in `loop.py`)**
 
-In `loop.py`, `MAX_OUTPUT_TOKENS = 8000`. For reasoning models this is the thinking budget — the model burns thinking tokens up to this cap. Reduce it to `max(1500, 3 × strat_tokens)` where `strat_tokens = len(strategy_file) // 4`. This directly limits thinking time.
+Read `MAX_OUTPUT_TOKENS` from `.env` (see `.env.example`; default **8000**). `loop.py` should use `os.environ.get("MAX_OUTPUT_TOKENS", "8000")` at call time after `load_dotenv`, not a literal like `800`.
 
-Example: strategy is ~800 tokens → new cap = max(1500, 2400) = 2400. For a reasoning model at 40 tok/s: 8000 tokens = 200s → 2400 tokens = 60s. **3.3× speedup.**
+For reasoning models, lower the **env** cap to `max(4096, 3 × strat_tokens)` where `strat_tokens = len(strategy_file) // 4`.
 
-*Do not reduce below 1500* — the strategy rewrite itself needs room, and too-tight caps cause truncated/malformed output.
+**Critical interaction with diffs:** If `program.md` already tells the model to output unified diffs (check before lowering), the floor is **`max(4096, 3 × strat_tokens)`**, not 1500. Typical multi-hunk diffs need 1500–4000+ visible tokens. Setting 800 caused truncated replies and `could not parse LLM response`.
+
+*Never set `MAX_OUTPUT_TOKENS` below 1500 for full-file mode or below 4096 when diff mode is active.*
 
 **2. Switch to in-process backtest call**
 
@@ -171,34 +217,15 @@ Note: `backtest` is already imported as `_bt_module` at line ~`import backtest a
 
 **3. Diff-based strategy mutations**
 
-Currently Claude rewrites the **entire** strategy file (~800 tokens). Ask it to output a **unified diff** instead (~50-200 tokens). This is a 4-10× token reduction — the single biggest LLM speedup available.
+Currently the LLM rewrites the **entire** strategy file (~800+ tokens). Ask it to output a **unified diff** instead (~50–400 tokens for small edits; large refactors can still need 2000+).
 
-This requires two coordinated changes in one iteration:
-- **`program.md`**: change the output format instruction from "output the complete new strategy file" to "output a unified diff (`--- a/strategy.py`, `+++ b/strategy.py`, `@@ ... @@` format)"
-- **`loop.py`**: replace `STRATEGY.write_text(new_code)` with diff-apply logic using `difflib` or `subprocess.run(["patch"])`:
+This requires two coordinated changes in **one** iteration (counts as one logical change):
+- **`program.md`**: default output = unified diff in a ` ```diff ` fence; keep full ` ```python ` as fallback for rewrites.
+- **`loop.py`**: add `DIFF_RE`, `_apply_unified_diff(src, diff_text) -> str`, and branch in `call_llm` before `STRATEGY.write_text`.
 
-```python
-import subprocess, tempfile, os
+**Do NOT use `subprocess.run(["patch", ...])`.** GNU `patch` is not on Windows PATH by default (`[WinError 2]`). Implement **in-process** hunk apply (see existing `_apply_unified_diff` in `loop.py`) or `git apply` in a temp dir — never the skill's old patch-only snippet.
 
-def _apply_diff(strategy_path: Path, diff_text: str) -> None:
-    """Apply a unified diff to the strategy file."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
-        f.write(diff_text)
-        patch_file = f.name
-    try:
-        result = subprocess.run(
-            ["patch", "--no-backup-if-mismatch", str(strategy_path), patch_file],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise ValueError(f"patch failed: {result.stderr}")
-    finally:
-        os.unlink(patch_file)
-```
-
-Update `CODE_RE` regex in loop.py to capture the diff block instead of a Python code block.
-
-This is the highest-leverage change but also the most complex. Implement it only after #1 and #2 have been tried.
+After implementing, run **Phase 1c-A** (diff smoke test). Ensure `.env` has `MAX_OUTPUT_TOKENS=8000` (or ≥ 4096). Implement only after #1 and #2 have been tried or skipped as already done.
 
 **4. Stream the LLM response**
 
@@ -228,7 +255,9 @@ Apply the change via file edits. Do not commit yet.
 
 ### Step 3 — Correctness gate
 
-Run `python backtest.py` once. Parse the `---` block. Compare every field in the fingerprint:
+Run `python backtest.py` once. Parse the `---` block. Compare every field in the fingerprint.
+
+If this iteration changed `run_backtest()` to in-process, also run the **Phase 1c-B** subprocess vs in-process comparison; both must match before KEEP.
 
 | Field | Tolerance |
 |---|---|
@@ -292,7 +321,25 @@ Print one line:
 
 ---
 
-## Phase 3 — Final report
+## Phase 3 — Final report + loop smoke test (mandatory)
+
+After all Phase 2 iterations, if **any change was kept**, run these from a **campaign worktree** (same cwd the dashboard uses):
+
+```bash
+# Example: crypto campaign
+cd .worktrees/crypto
+# Ensure repo-root .env is loaded (loop.py walks up to configs.toml parent)
+python loop.py --iters 1
+```
+
+Requirements for PASS:
+- No `llm error: [WinError 2]`
+- No `could not parse LLM response` on a complete-looking diff
+- Either a backtest runs (`committed … running backtest`) or `llm_error` only with empty/truncated API output (retry user env), not harness bugs
+
+If `OPENROUTER_API_KEY` is missing, run **Phase 1c-A** + **1c-B** instead and print: `[integrity] loop smoke test skipped (no API key)`.
+
+Sync kept harness changes to worktrees if you edited `loop.py` on main only: copy `loop.py`, `program.md` to `.worktrees/crypto` and `.worktrees/stocks`, or tell the user to run `/sync-branches`.
 
 ```
 ===== /optimize-loop complete =====
@@ -327,3 +374,6 @@ Next steps:
 - **Revert on any gate failure.** Always revert before moving on. Never leave a failing change in the working tree.
 - **Report clearly.** Every iteration prints its outcome with enough detail to understand what was tried and why it was kept or dropped.
 - **Reasoning model warning.** If the model is classified as a reasoning model and `MAX_OUTPUT_TOKENS` is above 3000, print a warning before Phase 2: "⚠ Reasoning model detected with MAX_OUTPUT_TOKENS=N — thinking traces likely dominate iteration time. Reducing max_tokens is the highest-priority optimization."
+- **Never bundle incompatible optimizations.** Do not lower `MAX_OUTPUT_TOKENS` below 4096 in the same session you enable diff output in `program.md`. Do not ship `patch` CLI apply on Windows.
+- **Phase 1c is mandatory** before Phase 2 and documents harness state in the final report.
+- **Phase 3 loop smoke test** is mandatory when K > 0 and API key is present.
