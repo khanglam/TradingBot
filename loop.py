@@ -7,7 +7,7 @@ quarantined on the campaign branch and only land on main via sync_branches.py.
 
 Each iteration:
   1. Read STRATEGY_FILE + last 10 rows of per-campaign results.tsv + program.md
-  2. Ask Claude for a single mutation (returns description + new strategy file)
+  2. Ask the LLM for a single mutation (returns description + new strategy file)
   3. Write strategy file, git commit
   4. Compute DSR benchmark from prior trial variance, set DSR_BENCHMARK env
   5. Run backtest.py (subprocess), parse summary block
@@ -33,8 +33,8 @@ Environment knobs (all optional):
                            "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d").
                            N=1 → single mode; N≥2 → basket mode with overfit penalty.
     OPENROUTER_MODEL       any model slug from openrouter.ai/models. Defaults to
-                           anthropic/claude-haiku-4-5. Examples:
-                             anthropic/claude-sonnet-4-6
+                           minimax/minimax-m2.7. Examples:
+                             anthropic/claude-haiku-4-5
                              openai/gpt-5
                              deepseek/deepseek-r1
                              google/gemini-2.5-pro
@@ -88,8 +88,8 @@ if not Path(PYTHON).exists():
     PYTHON = sys.executable
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "anthropic/claude-haiku-4-5"  # any model slug from openrouter.ai/models
-MAX_OUTPUT_TOKENS = 800
+DEFAULT_MODEL = "minimax/minimax-m2.7"  # any model slug from openrouter.ai/models
+MAX_OUTPUT_TOKENS = 2048
 
 KEEP_THRESHOLD = float(os.environ.get("KEEP_THRESHOLD", "0.0"))  # strictly > best
 MAX_DRAWDOWN_LIMIT = float(_bt_module._cfg("MAX_DRAWDOWN_LIMIT", "30.0"))
@@ -195,7 +195,7 @@ def git_short_sha() -> str:
 
 
 def git_commit_strategy(description: str) -> str | None:
-    """Commit the active strategy file. Returns None if Claude wrote
+    """Commit the active strategy file. Returns None if the LLM returned
     bytes-identical content (no diff) — the caller must treat this as
     a no-op iteration, not a crash."""
     _git("add", str(STRATEGY))
@@ -417,15 +417,15 @@ def run_backtest() -> dict:
 # ──────────────────────── crash feed-forward ─────────────────────────
 
 # When a backtest crashes, the loop reverts the offending strategy.py via
-# git_reset_last(). The next iteration's Claude call would otherwise see
+# git_reset_last(). The next iteration's LLM call would otherwise see
 # only `status=crash` in the history row — no traceback, no idea what broke.
-# We rebuild the crash context on demand at call_claude time:
+# We rebuild the crash context on demand at call_llm time:
 #   - source: git_show on the crashed SHA from results.tsv
 #       (commit object survives the reset; lives in reflog + as a loose
 #        object until git-gc, ~90d default — plenty of time for one tick)
 #   - stderr: tail of run.log
-#       (overwritten only inside run_backtest(), which runs after call_claude
-#        each iteration, so at call_claude time it still holds prior stderr)
+#       (overwritten only inside run_backtest(), which runs after call_llm
+#        each iteration, so at call_llm time it still holds prior stderr)
 
 
 def _read_stderr_tail() -> str:
@@ -525,7 +525,7 @@ def _apply_unified_diff(src: str, diff_text: str) -> str:
         _os.unlink(patch)
 
 
-def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
+def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
     """Returns (description, new_strategy_source).
 
     Uses OpenRouter (https://openrouter.ai) as the LLM backend. Any model
@@ -609,7 +609,7 @@ def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tup
         ],
     )
     chunks: list[str] = []
-    print("[loop] streaming Claude response: ", end="", flush=True)
+    print("[loop] streaming LLM response: ", end="", flush=True)
     for chunk in stream:
         delta = chunk.choices[0].delta
         if delta.content:
@@ -641,22 +641,22 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
     history = last_n_rows(10)
 
     if history and history[-1].get("status") == "crash":
-        print(f"[loop] feeding back last crash (commit {history[-1].get('commit', '?')}) to Claude")
+        print(f"[loop] feeding back last crash (commit {history[-1].get('commit', '?')}) to LLM")
 
-    print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking Claude…")
+    print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking LLM…")
     try:
-        description, new_code = call_claude(strategy_src, program_src, history)
+        description, new_code = call_llm(strategy_src, program_src, history)
     except Exception as e:
-        print(f"[loop] claude error: {e}")
-        return "claude_error", best_metric
+        print(f"[loop] llm error: {e}")
+        return "llm_error", best_metric
 
     print(f"[loop] proposed: {description}")
     STRATEGY.write_text(new_code, encoding="utf-8")
     sha = git_commit_strategy(description)
     if sha is None:
-        # Claude regenerated bytes-identical strategy.py — degenerate mutation.
+        # LLM returned bytes-identical strategy.py — degenerate mutation.
         # No commit was made; nothing to revert. Skip the backtest entirely.
-        print("[loop] no-change → skipping (Claude returned identical strategy)")
+        print("[loop] no-change → skipping (LLM returned identical strategy)")
         return "noop", best_metric
     print(f"[loop] committed {sha}, running backtest…")
 
@@ -761,7 +761,7 @@ def main() -> int:
 
             if status == "keep":
                 consecutive_regressions = 0
-            elif status == "claude_error":
+            elif status == "llm_error":
                 time.sleep(10)
             elif status == "noop":
                 # No real attempt made (identical code) — don't count toward streak.

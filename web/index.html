@@ -643,7 +643,7 @@
          @keydown.escape.window="showLaunch = false">
       <div @click.outside="showLaunch = false" class="bg-ink-900 border border-ink-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
         <div class="text-lg font-semibold">Launch autoresearch loop</div>
-        <p class="text-sm text-ink-300 mt-1">Asks Claude for one mutation per iteration, runs the backtest, keeps wins, reverts losses.</p>
+        <p class="text-sm text-ink-300 mt-1">Asks the LLM for one mutation per iteration, runs the backtest, keeps wins, reverts losses.</p>
         <label class="block mt-5 text-xs uppercase tracking-wider text-ink-300 font-mono">Iterations</label>
         <input type="number" x-model.number="launchIters" min="1" max="500"
                class="mt-1 w-full bg-ink-800 border border-ink-700 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-emerald-500" />

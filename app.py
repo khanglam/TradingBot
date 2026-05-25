@@ -42,6 +42,11 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "web" / "index.html"
+WORKTREE_ROOT = ROOT / ".worktrees"
+
+_active_campaign: str = "crypto"
+
+
 def _results_path() -> Path:
     """Per-campaign results.tsv path inside the active campaign's worktree.
     Recomputed each call so the dashboard follows env changes without restart."""
@@ -70,9 +75,6 @@ app = FastAPI(title="TradingBot Autoresearch UI")
 # never runs `git checkout` on the main repo — it just resolves paths
 # into the right worktree based on the active campaign.
 
-WORKTREE_ROOT = ROOT / ".worktrees"
-
-
 def _worktree_for(campaign: str) -> Path:
     return WORKTREE_ROOT / campaign
 
@@ -83,16 +85,13 @@ def _campaign_root(campaign: str | None = None) -> Path:
     is missing so the dashboard never 500s on a fresh clone — the user
     sees stale main data plus the setup hint instead."""
     if campaign is None:
-        campaign = os.environ.get("CAMPAIGN") or ""
-    if not campaign:
-        return ROOT
+        campaign = _active_campaign
     wt = _worktree_for(campaign)
     return wt if wt.exists() else ROOT
 
 
 def _campaign_or_400() -> str:
-    name = os.environ.get("CAMPAIGN") or ""
-    if not name:
+    if not _active_campaign:
         raise HTTPException(400, "No campaign selected. POST /api/campaign/<name> first.")
     return name
 
@@ -431,7 +430,10 @@ def summary() -> dict:
             "description": last["description"],
         }
     import backtest as bt_module
-    symbols_spec = os.environ.get("SYMBOLS") or bt_module.DEFAULT_SYMBOLS
+    try:
+        symbols_spec = _load_campaigns()[_active_campaign]["symbols"]
+    except Exception:
+        symbols_spec = bt_module.DEFAULT_SYMBOLS
     return {
         "best_sharpe": best,
         "total": int(len(df)),
@@ -584,13 +586,13 @@ def get_campaigns() -> dict:
         available = list(_load_campaigns().keys())
     except Exception:
         available = ["stocks", "crypto"]
-    active = os.environ.get("CAMPAIGN", "stocks")
-    return {"active": active, "available": available}
+    return {"active": _active_campaign, "available": available}
 
 
 @app.post("/api/campaign/{name}")
 def set_campaign(name: str) -> dict:
-    """Switch the active campaign: updates env vars and reloads backtest module."""
+    """Switch the active campaign and reload the backtest module."""
+    global _active_campaign
     try:
         all_campaigns = _load_campaigns()
     except Exception:
@@ -599,10 +601,7 @@ def set_campaign(name: str) -> dict:
         raise HTTPException(400, f"Unknown campaign: {name!r}. Available: {list(all_campaigns)}")
     if loop_proc.is_running():
         raise HTTPException(409, "Stop the running loop before switching campaign.")
-    cfg = all_campaigns[name]
-    os.environ["CAMPAIGN"] = name
-    for key, val in cfg.items():
-        os.environ[key.upper()] = str(val)
+    _active_campaign = name
     import importlib
     import backtest as _bt
     importlib.reload(_bt)
