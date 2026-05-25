@@ -105,9 +105,9 @@ jobs:
         run: |
           python - <<'EOF'
           import os, sys, subprocess
-          sys.path.insert(0, ".")
-          from campaigns import CAMPAIGNS
-          cfg = CAMPAIGNS[os.environ["CAMPAIGN"]]
+          import tomllib
+          with open("configs.toml", "rb") as f:
+              cfg = tomllib.load(f)[os.environ["CAMPAIGN"]]
           symbols = cfg["symbols"]
           start = cfg["data_fetch_start"]
           for entry in symbols.split(","):
@@ -183,10 +183,10 @@ jobs:
           git checkout "${BRANCH}"
 
           # Copy harness files from main — never touch strategies/ (campaign owns that)
+          # app.py, scan.py, live_trade.py, sync_branches.py are main-only and must NOT be synced
           git checkout main -- \
-            loop.py backtest.py program.md campaigns.py \
-            data_fetch.py requirements.txt AGENTS.md \
-            app.py scan.py live_trade.py sync_branches.py
+            loop.py backtest.py program.md \
+            data_fetch.py requirements.txt AGENTS.md
 
           if git diff --cached --quiet; then
             echo "[sync] ${BRANCH}: harness already up to date with main ${MAIN_SHA}"

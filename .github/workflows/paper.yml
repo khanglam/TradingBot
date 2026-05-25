@@ -84,7 +84,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install backtesting yfinance pyarrow python-dotenv alpaca-py
+          pip install -r requirements.txt
 
       - name: Determine asset class + strategy file from trigger
         id: asset

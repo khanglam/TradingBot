@@ -58,22 +58,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Fetch main (for configs.toml)
+        run: git fetch origin main
+
       - name: Export campaign config to environment
         env:
           CAMPAIGN: ${{ inputs.campaign }}
         run: |
           python - <<'EOF'
-          import os, sys
-          sys.path.insert(0, ".")
-          from campaigns import CAMPAIGNS
+          import os, sys, subprocess, tomllib
           campaign = os.environ["CAMPAIGN"]
-          if campaign not in CAMPAIGNS:
-              sys.exit(f"CAMPAIGN={campaign!r} not in campaigns.py")
+          result = subprocess.run(
+              ["git", "show", "origin/main:configs.toml"],
+              capture_output=True, text=True, check=True,
+          )
+          all_campaigns = tomllib.loads(result.stdout)
+          if campaign not in all_campaigns:
+              sys.exit(f"CAMPAIGN={campaign!r} not in configs.toml")
           with open(os.environ["GITHUB_ENV"], "a") as gh_env:
               gh_env.write(f"CAMPAIGN={campaign}\n")
-              for key, val in CAMPAIGNS[campaign].items():
+              for key, val in all_campaigns[campaign].items():
                   gh_env.write(f"{key.upper()}={val}\n")
-          print(f"Exported {len(CAMPAIGNS[campaign])} vars for campaign={campaign!r}")
+          print(f"Exported {len(all_campaigns[campaign])} vars for campaign={campaign!r}")
           EOF
 
       - name: Cache OHLCV parquet data

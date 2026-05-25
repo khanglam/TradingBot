@@ -571,13 +571,18 @@ def get_equity():
     }
 
 
+def _load_campaigns() -> dict:
+    import tomllib
+    with open(ROOT / "configs.toml", "rb") as f:
+        return tomllib.load(f)
+
+
 @app.get("/api/campaigns")
 def get_campaigns() -> dict:
     """Return available campaigns and which is currently active."""
     try:
-        from campaigns import CAMPAIGNS
-        available = list(CAMPAIGNS.keys())
-    except ImportError:
+        available = list(_load_campaigns().keys())
+    except Exception:
         available = ["stocks", "crypto"]
     active = os.environ.get("CAMPAIGN", "stocks")
     return {"active": active, "available": available}
@@ -587,14 +592,14 @@ def get_campaigns() -> dict:
 def set_campaign(name: str) -> dict:
     """Switch the active campaign: updates env vars and reloads backtest module."""
     try:
-        from campaigns import CAMPAIGNS
-    except ImportError:
-        raise HTTPException(500, "campaigns.py not found")
-    if name not in CAMPAIGNS:
-        raise HTTPException(400, f"Unknown campaign: {name!r}. Available: {list(CAMPAIGNS)}")
+        all_campaigns = _load_campaigns()
+    except Exception:
+        raise HTTPException(500, "configs.toml not found")
+    if name not in all_campaigns:
+        raise HTTPException(400, f"Unknown campaign: {name!r}. Available: {list(all_campaigns)}")
     if loop_proc.is_running():
         raise HTTPException(409, "Stop the running loop before switching campaign.")
-    cfg = CAMPAIGNS[name]
+    cfg = all_campaigns[name]
     os.environ["CAMPAIGN"] = name
     for key, val in cfg.items():
         os.environ[key.upper()] = str(val)
