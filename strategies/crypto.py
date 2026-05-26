@@ -16,9 +16,8 @@ Why this and not the stocks EMA crossover:
     to clear MIN_TRADES on a 2-year val window without becoming pure noise.
 
 The agent is free to replace any of this. This is a starting point with
-real defensibility, not a local optimum to defend.
+real defensible reasoning.
 """
-from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -115,8 +114,8 @@ class Strategy(_BTStrategy):
     # tight stops in calm regimes, respecting the market regime without stacking
     # new entry filters.
     atr_period = 14
-    atr_multiplier_low_vol = 2.5   # tight stop in calm markets
-    atr_multiplier_high_vol = 3.0  # loose stop in trending volatility
+    atr_multiplier_low_vol = 3.0   # tight stop in calm markets (increased from 2.5)
+    atr_multiplier_high_vol = 3.5  # loose stop in trending volatility (increased from 3.0)
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 1.0x the 50-bar moving average of ATR. Filters out breakfakes
@@ -239,8 +238,8 @@ class Strategy(_BTStrategy):
             # on minor pullbacks, cutting winning trades short before the trailing
             # stop could capture the full trend move.
             
-            # Regime-adaptive ATR trailing stop: tighter (2.5x) in low-vol,
-            # looser (3.0x) in high-vol to avoid whipsaws during volatility spikes.
+            # Regime-adaptive ATR trailing stop: tighter (3.0x) in low-vol,
+            # looser (3.5x) in high-vol to avoid whipsaws during volatility spikes.
             is_high_vol = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
             atr_mult = self.atr_multiplier_high_vol if is_high_vol else self.atr_multiplier_low_vol
             trailing_stop = self.highest_price - self.atr[-1] * atr_mult
