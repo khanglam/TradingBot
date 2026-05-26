@@ -1,7 +1,7 @@
 name: Autoresearch loop (stocks)
 
 # Runs the autoresearch loop on dev (single writer = this workflow).
-# Main is NEVER touched — promotion to main happens via sync_branches.yml.
+# Main is updated by sync_branches.yml (daily 06:00 PST).
 #
 # Schedule: 11:00 UTC daily = 03:00 PST (04:00 PDT during daylight saving).
 # Avoid running locally at the same time to prevent push races on dev.

@@ -1,6 +1,7 @@
 # Branch migration (completed)
 
-The repo now uses **`main`** (frozen strategies + paper) and **`dev`** (research loop).
+The repo uses **`main`** (paper / deploy) and **`dev`** (research loop). Daily
+`sync_branches.yml` merges dev → main at 06:00 PST.
 
 ## Daily workflow
 

@@ -2,7 +2,7 @@
 
 The loop ALWAYS runs on the dev branch, never on main. main carries only the
 frozen, promoted strategy files that live_trade.py reads; the loop's mutations
-and git resets stay on dev and only land on main via sync_branches.py.
+and git resets stay on dev until sync_branches.yml merges dev into main.
 
 Each iteration:
   1. Read STRATEGY_FILE + last 10 rows of per-campaign results.tsv + program.md

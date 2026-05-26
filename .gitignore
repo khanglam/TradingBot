@@ -37,8 +37,5 @@ results/scan.log
 trades.log
 logs/
 
-# promote.py scratch dir — holds candidate strategy file during validation
-_promote_tmp/
-
 # Legacy campaign worktrees (removed — safe to delete locally if present)
 .worktrees/

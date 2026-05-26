@@ -1,5 +1,5 @@
 # Reusable autoresearch loop job. Called by loop-stocks.yml and loop-crypto.yml.
-# Runs on dev — main is NEVER touched; promotion happens via sync_branches.yml.
+# Runs on dev — main is updated by sync_branches.yml (daily merge dev → main).
 
 name: Autoresearch loop (dev)
 

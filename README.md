@@ -2,15 +2,15 @@
 
 A self-improving trading strategy. An LLM proposes mutations to per-campaign
 `strategies/stocks.py` and `strategies/crypto.py`, the harness runs a backtest,
-and only improvements are kept on the **`dev`** branch. Good strategies are promoted
-to **`main`** for Alpaca paper trading.
+and only improvements are kept on **`dev`**. Each morning **`main`** is updated by
+merging **`dev`** (see `sync_branches.yml`) for Alpaca paper trading.
 
 ## Branches
 
 | Branch | Role |
 |--------|------|
 | `dev` | Research — loop mutates strategies here |
-| `main` | Frozen strategies — `live_trade.py` / `paper.yml` read only this |
+| `main` | Deploy branch — daily merge from `dev`; paper reads this |
 
 See [MIGRATION.md](MIGRATION.md) for one-time setup from the old `autoresearch/*` branches.
 
@@ -34,7 +34,7 @@ TradingBot/
     ├── loop-stocks.yml     ← daily 03:00 PST on dev
     ├── loop-crypto.yml     ← daily 03:00 PST on dev
     ├── loop-dev.yml        ← reusable loop job
-    ├── sync_branches.yml   ← daily promotion dev → main
+    ├── sync_branches.yml   ← daily 06:00 PST: merge dev → main
     └── paper.yml           ← Alpaca paper on main
 ```
 
@@ -97,7 +97,7 @@ Avoid running locally at **03:00 PST** when GitHub Actions pushes to `dev`.
 |----------|----------|--------|
 | `loop-stocks.yml` | 11:00 UTC daily (03:00 PST) | `dev` |
 | `loop-crypto.yml` | 11:00 UTC daily (03:00 PST) | `dev` |
-| `sync_branches.yml` | 12:00 UTC daily | `main` (promote from `dev`) |
+| `sync_branches.yml` | 14:00 UTC daily (06:00 PST) | Merge `dev` → `main` |
 | `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | `main` |
 
 Secrets: `OPENROUTER_API_KEY` (loop), `ALPACA_API_KEY` / `ALPACA_API_SECRET` (paper).
