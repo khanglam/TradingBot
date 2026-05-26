@@ -36,7 +36,7 @@ def _bn_timeframe_ms(tf: str) -> int:
 
 def fetch_crypto(
     symbol: str = "BTC/USDT",
-    exchange: str = "kucoin",
+    exchange: str = "kraken",
     timeframe: str = "4h",
     start: str = "2019-01-01",
     end: str | None = None,
