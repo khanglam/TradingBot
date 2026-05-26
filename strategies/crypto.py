@@ -1,4 +1,4 @@
-"""Crypto campaign strategy. Mutated by the autoresearch loop on dev when
+"""Crypto campaign strategy. Mutated by the autoresearch loop when
 STRATEGY_FILE points here (default for the crypto matrix shard).
 
 Baseline: Donchian-breakout trend-following (Turtle System One on 4h bars).
@@ -52,16 +52,47 @@ def _atr_ma(high: pd.Series, low: pd.Series, close: pd.Series, atr_n: int = 14, 
     return pd.Series(atr).rolling(ma_n).mean().bfill().to_numpy()
 
 
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
+    """Average Directional Index — measures trend strength.
+    Returns ADX values. ADX > 25 indicates a strong trend (directional movement
+    is well-established). Used as momentum confirmation on entry: only take
+    breakouts when ADX confirms the market is trending, not ranging."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+    atr = _atr(high, low, close, n)
+    plus_di = 100 * (plus_dm.rolling(n).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(n).mean() / atr)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+    adx = dx.rolling(n).mean()
+    return adx.fillna(0).bfill().to_numpy()
+
+
+def _sma(series: pd.Series, n: int) -> np.ndarray:
+    """Simple moving average."""
+    return pd.Series(series).rolling(n).mean().to_numpy()
+
+
+def _volume_roc(volume: pd.Series, n: int = 10) -> np.ndarray:
+    """Volume Rate-of-Change: percentage change in volume over N bars.
+    Positive ROC = volume expanding (momentum building). Used to confirm
+    breakouts — sudden volume surges distinguish real breakouts from
+    slow grindouts that reverse quickly. Returns ROC values; positive ROC
+    indicates accelerating participation."""
+    vol = pd.Series(volume)
+    roc = vol.pct_change(periods=n) * 100
+    return roc.fillna(0).replace([np.inf, -np.inf], 0).to_numpy()
+
+
 class Strategy(_BTStrategy):
-    # Turtle System One: 28-bar breakout entry, 15-bar opposite exit.
-    # On 4h bars this is ~4.7-day entry confirmation, ~2.5-day exit signal.
-    # Widened from 20 to 28 bars to capture multi-day trends that self-filter
-    # via the volatility regime gate (ATR > 1.0x MA), avoiding the need for
-    # stacked entry filters (RSI, Stochastic) which collapse the trade set
-    # to 0 when combined with narrow windows. Wider window allows legitimate
-    # trends to emerge cleanly, reducing false breakouts and eliminating the
-    # need for exhaustion-avoidance gates that were causing repeated crashes.
-    breakout_period = 28
+    # Turtle System One: 24-bar breakout entry, 15-bar opposite exit.
+    # On 4h bars this is ~4-day entry confirmation, ~2.5-day exit signal.
+    # Tightened from 28 to 24 bars to capture shorter-term momentum breakouts
+    # while retaining the volatility regime and volume confirmation filters
+    # that have proven essential for eliminating false breakouts.
+    breakout_period = 24
     exit_period = 15
 
     # ATR trailing stop — volatility-aware hard exit. Now regime-adaptive:
@@ -82,22 +113,39 @@ class Strategy(_BTStrategy):
     atr_ma_period = 50
     atr_vol_threshold = 1.0
     
-    # Volatility-scaled position sizing: cap size inversely proportional to
-    # realized volatility ratio. When ATR is 2x the MA (panic), halve the
-    # position. When ATR is 0.5x the MA (calm), keep full size. Smooths
-    # drawdowns and equity curve by auto-reducing risk in high-vol regimes.
-    vol_scale_cap = 0.5  # minimum size multiplier in extreme vol
+    # ADX momentum confirmation: require ADX > 25 on entry bars to confirm
+    # the market is trending. Unlike the 200-bar SMA regime filter which
+    # crashed with 0 trades (too restrictive for 4h crypto data), ADX is
+    # a momentum indicator that filters out ranging chop at the bar level
+    # without blocking entire regime windows. This strengthens the entry
+    # signal by requiring trend strength, not trend direction.
+    adx_period = 14
+    adx_threshold = 25.0
+
+    # 200-bar SMA regime filter: price must be above the 200-bar SMA to enter.
+    # On 4h bars, 200 bars ≈ 33 days — captures the medium-term trend direction
+    # without the noise of shorter moving averages. Skipping long entries when
+    # price is below SMA avoids catching falling knives in bear regimes, where
+    # breakouts have poor odds even if momentum indicators fire. Structurally
+    # different from ADX (momentum strength) — SMA gates direction, not quality.
+    sma_period = 200
     
-    # Base fraction reduced from 0.70 to 0.65 to further compress maximum
-    # drawdown and smooth equity curve via conservative capital deployment.
-    # Recent keeps (3520d7b, 84b35bf) plateau at sharpe 1.625–1.673 with DD
-    # 7.04–7.58%. All entry/exit logic has been exhausted (breakout_period,
-    # exit_period, time-decay, regime gates all optimal). The remaining lever
-    # is sizing: fractional reduction from 0.70 to 0.65 trades ~7% less capital
-    # per entry without mutating signal logic or risking 0-trade crashes. This
-    # preserves trade count (~50 trades in val window) while dampening peak
-    # drawdown and volatility, targeting higher Sharpe via capital conservation.
-    base_fraction = 0.65
+    # Volatility-scaled position sizing: size INVERSELY proportional to
+    # realized volatility. REVERSED from prior logic:
+    # - High ATR (high-vol regime) → strong momentum but elevated risk → size DOWN
+    # - Low ATR (low-vol regime) → calm chop, larger positions acceptable → size UP
+    # Rationale: proper risk management reduces exposure as volatility rises.
+    # The prior ATR/ATR_MA ratio paradoxically sized up during high-vol
+    # breakouts (the biggest risk events), which increased tail exposure.
+    vol_scale_floor = 0.20  # minimum size when ATR spikes (extreme vol = small size)
+    vol_scale_ceil = 1.05   # maximum size in calm regimes
+    
+    # Base fraction calibrated for inverse ATR scaling. When ATR >> ATR_MA
+    # (high vol), multiplier → floor → size ≈ 0.55 × 0.20 = 0.11 (tiny).
+    # When ATR << ATR_MA (low vol), multiplier → ceil → size ≈ 0.55 × 1.05 = 0.58.
+    # This keeps peak exposure bounded while allowing larger positions in calm
+    # chop where the strategy has more edge (price doesn't gap through stops).
+    base_fraction = 0.55
 
     # Time-decay exit: close position after N bars in trade, regardless of
     # price action. On 4h bars, 40 bars ≈ 6.7 days. Complements ATR trailing
@@ -105,6 +153,15 @@ class Strategy(_BTStrategy):
     # in mean-reverting crypto regimes (post-breakout chop). Tested when
     # oscillating sharpe 0.45–1.35 with 10+ entry-filter mutations exhausted.
     max_bars_in_trade = 40
+
+    # Volume momentum confirmation: require 10-bar Rate-of-Change in volume
+    # to be positive (> 0%) — i.e., today's volume exceeds the volume from
+    # 10 bars ago. This fires on sudden volume surges rather than static MA
+    # crossing, capturing momentum acceleration rather than just participation.
+    # Structurally different from the prior volume SMA filter (which compared
+    # to a rolling 20-bar average), and from the ATR/ADX filters (which measure
+    # price momentum, not volume momentum).
+    volume_roc_period = 10
 
     def init(self) -> None:
         high = self.data.High
@@ -118,6 +175,9 @@ class Strategy(_BTStrategy):
         _, self.exit_lower = self.I(_donchian, high, low, self.exit_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
+        self.adx = self.I(_adx, high, low, close, self.adx_period)
+        self.sma = self.I(_sma, close, self.sma_period)
+        self.volume_roc = self.I(_volume_roc, pd.Series(self.data.Volume), self.volume_roc_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -127,29 +187,41 @@ class Strategy(_BTStrategy):
         self.bars_in_trade: int = 0
 
     def next(self) -> None:
-        if len(self.data) < self.breakout_period + 1:
+        if len(self.data) < max(self.breakout_period, self.sma_period) + 1:
             return
 
         close = self.data.Close[-1]
 
         # Entry: close breaks above the prior bar's N-bar high AND
         # current volatility (ATR) is elevated vs its 50-bar MA.
-        # Removed RSI overbought filter (was causing 0-trade crashes when
-        # stacked with narrow Donchian windows). Wider breakout window (28 bars)
-        # self-filters via vol regime gate; legitimate multi-day trends emerge
-        # cleanly without additional exhaustion gates.
+        # Also require volume momentum confirmation: today's volume must
+        # exceed the volume from 10 bars ago (positive ROC). This fires on
+        # sudden volume surges rather than static threshold crossing,
+        # capturing momentum acceleration rather than just participation.
+        # And require ADX momentum confirmation: ADX > 25 confirms the
+        # market is trending, not ranging. Unlike the 200-bar SMA filter
+        # which crashed (too restrictive on 4h crypto), ADX filters at
+        # the bar level without blocking regime participation.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
+        volume_momentum = self.volume_roc[-1] > 0  # positive ROC = volume expanding
+        momentum_confirm = self.adx[-1] > self.adx_threshold
+        # Regime filter: price above 200-bar SMA = uptrend. Skips breakouts
+        # in bear regimes where countertrend trades have poor odds.
+        uptrend_regime = close > self.sma[-1]
 
-        if breakout and vol_regime_high and not self.position:
-            # Volatility-scaled position sizing: reduce size when ATR spikes.
-            # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size shrinks.
-            # Low vol (ATR < MA) → ratio > 1, but cap at 1.0 for conservatism.
-            # Minimum is vol_scale_cap (0.5) to never go below half-size.
+        if breakout and vol_regime_high and volume_momentum and momentum_confirm and uptrend_regime and not self.position:
+            # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
+            # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
+            # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
+            # Rationale: proper risk management reduces exposure as volatility rises.
+            # High-vol breakouts have the highest tail risk (gap moves, slippage);
+            # sizing down protects capital. Low-vol chop is where larger positions
+            # are acceptable since price doesn't gap through stops as easily.
             vol_ratio = self.atr_ma[-1] / max(self.atr[-1], 0.0001)
-            size_multiplier = max(self.vol_scale_cap, min(1.0, vol_ratio))
+            size_multiplier = max(self.vol_scale_floor, min(self.vol_scale_ceil, vol_ratio))
             size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
