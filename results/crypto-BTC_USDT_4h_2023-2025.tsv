@@ -1,0 +1,2 @@
+commit	val_sharpe	sortino	sharpe_ann_4h	calmar	psr	dsr	skew	kurtosis	max_drawdown	win_rate	total_trades	status	timestamp	description
+4be1584	1.137666	1.946900	1.139407	4.024677	0.975090	0.975090	-0.069	75.574	1.63	0.581	43	keep	2026-05-26 00:16	Replace time-decay exit (40 bars) with ATR-based fixed R-multiple exit (3x ATR take-profit) for cleaner trend capture.
