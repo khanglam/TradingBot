@@ -1,5 +1,5 @@
 [crypto]
-symbols = "crypto/BTC_USDT_1h"
+symbols = "crypto/BTC_USDT_4h"
 strategy_file = "strategies/crypto.py"
 val_start = "2023-01-01"
 val_end = "2025-12-31"
