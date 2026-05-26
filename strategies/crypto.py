@@ -29,8 +29,8 @@ def _donchian(high: pd.Series, low: pd.Series, n: int = 20) -> tuple[np.ndarray,
     """Donchian channels: rolling N-bar high and N-bar low.
     Returns (upper, lower). Classic Turtle entry: close > upper(N).
     Classic Turtle exit: close < lower(M) where M < N."""
-    upper = pd.Series(high).rolling(n).max().to_numpy()
-    lower = pd.Series(low).rolling(n).min().to_numpy()
+    upper = pd.Series(high).rolling(n).max().to_numpy().copy()
+    lower = pd.Series(low).rolling(n).min().to_numpy().copy()
     return upper, lower
 
 
@@ -43,13 +43,13 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.n
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(n).mean().bfill().to_numpy()
+    return tr.rolling(n).mean().bfill().to_numpy().copy()
 
 
 def _atr_ma(high: pd.Series, low: pd.Series, close: pd.Series, atr_n: int = 14, ma_n: int = 50) -> np.ndarray:
     """50-bar moving average of ATR. Used to compute volatility regime ratio."""
     atr = _atr(high, low, close, atr_n)
-    return pd.Series(atr).rolling(ma_n).mean().bfill().to_numpy()
+    return pd.Series(atr).rolling(ma_n).mean().bfill().to_numpy().copy()
 
 
 def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.ndarray:
@@ -67,12 +67,12 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.n
     minus_di = 100 * (minus_dm.rolling(n).mean() / atr)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     adx = dx.rolling(n).mean()
-    return adx.fillna(0).bfill().to_numpy()
+    return adx.fillna(0).bfill().to_numpy().copy()
 
 
 def _sma(series: pd.Series, n: int) -> np.ndarray:
     """Simple moving average."""
-    return pd.Series(series).rolling(n).mean().to_numpy()
+    return pd.Series(series).rolling(n).mean().to_numpy().copy()
 
 
 def _volume_sma(volume: pd.Series, n: int = 20) -> np.ndarray:
@@ -81,7 +81,7 @@ def _volume_sma(volume: pd.Series, n: int = 20) -> np.ndarray:
     susceptible to one-off volume spikes), this smooths volume into a
     rolling mean. Signals when today's volume exceeds the 20-bar average,
     capturing sustained participation rather than single-bar anomalies."""
-    return pd.Series(volume).rolling(n).mean().bfill().to_numpy()
+    return pd.Series(volume).rolling(n).mean().bfill().to_numpy().copy()
 
 
 class Strategy(_BTStrategy):
@@ -145,15 +145,16 @@ class Strategy(_BTStrategy):
     # chop where the strategy has more edge (price doesn't gap through stops).
     base_fraction = 0.55
 
-    # ATR-based fixed R-multiple take-profit exit: exit when price moves
-    # 3.0x ATR above entry. Replaces the time-decay exit (40 bars) which
-    # was arbitrary and regime-insensitive. ATR targets are natural: they
-    # scale with volatility and express the trade's risk in market terms.
-    # 3x ATR means price must move 3 average true ranges from entry to take
-    # profit — a meaningful trend that exceeds noise. On 4h bars with typical
-    # 2-3% ATR, 3x ≈ 6-9% move to target, capturing multi-day trends while
-    # avoiding premature exits from normal fluctuation.
-    atr_tp_multiplier = 3.0
+    # Time-decay exit: exit after N bars in position, regardless of P&L.
+    # Replaces the ATR-based fixed R-multiple take-profit (3x ATR) which
+    # was redundant with the trailing stop and caused crashes when pushed
+    # to 4x (0 trades). The ATR take-profit rarely fires before the trailing
+    # stop does in trending markets — it's superseded by the ATR stop.
+    # Time exit is regime-insensitive: doesn't depend on current ATR, so
+    # it won't stretch in volatile regimes or compress in calm ones. On 4h
+    # bars, 30 bars ≈ 5 days — enough to capture a multi-day trend while
+    # preventing indefinite holding through chop.
+    time_exit_bars = 30
 
     def init(self) -> None:
         high = self.data.High
@@ -175,14 +176,15 @@ class Strategy(_BTStrategy):
         # entry, updated each bar while in position.
         self.highest_price: float | None = None
         
-        # Entry price — used to compute ATR-based take-profit target.
-        self.entry_price: float | None = None
+        # Entry bar index — used for time-decay exit (bars in position).
+        self.entry_bar: int | None = None
 
     def next(self) -> None:
         if len(self.data) < max(self.breakout_period, self.sma_period) + 1:
             return
 
         close = self.data.Close[-1]
+        current_bar = len(self.data) - 1
 
         # Entry: close breaks above the prior bar's N-bar high AND
         # current volatility (ATR) is elevated vs its 50-bar MA.
@@ -218,7 +220,7 @@ class Strategy(_BTStrategy):
             size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
-            self.entry_price = close
+            self.entry_bar = current_bar
         elif self.position:
             # Track running peak since entry
             self.highest_price = max(self.highest_price, close)
@@ -226,7 +228,7 @@ class Strategy(_BTStrategy):
             # Three parallel exit rails:
             #   1. Short-Donchian break — recent weakness, trend rollover.
             #   2. ATR trailing stop — volatility-aware floor below peak.
-            #   3. ATR-based take-profit — fixed R-multiple target.
+            #   3. Time-decay exit — fixed bar count, prevents indefinite holding.
             # First one to trigger wins.
             short_break = close < self.exit_lower[-2]
             
@@ -237,13 +239,12 @@ class Strategy(_BTStrategy):
             trailing_stop = self.highest_price - self.atr[-1] * atr_mult
             stop_hit = close <= trailing_stop
             
-            # ATR-based take-profit: fixed R-multiple exit instead of time-decay.
-            # More natural than bar-count: scales with volatility and expresses
-            # the target in market terms (how many ATRs price must move).
-            tp_target = self.entry_price + self.atr[-1] * self.atr_tp_multiplier
-            tp_hit = close >= tp_target
+            # Time-decay exit: exit after N bars regardless of P&L or ATR.
+            # Regime-insensitive: doesn't expand/contract with volatility.
+            bars_in_position = current_bar - self.entry_bar
+            time_exit_hit = bars_in_position >= self.time_exit_bars
 
-            if short_break or stop_hit or tp_hit:
+            if short_break or stop_hit or time_exit_hit:
                 self.position.close()
                 self.highest_price = None
-                self.entry_price = None
+                self.entry_bar = None
