@@ -1,13 +1,13 @@
 name: Autoresearch loop (crypto)
 
-# Runs the autoresearch loop on dev. Main is updated by sync_branches.yml (06:00 PST).
+# Runs the autoresearch loop on dev. Main is updated by sync_branches.yml (06:00 PDT).
 # Disable in GitHub: Actions → this workflow → ⋯ → Disable workflow.
 #
-# Schedule: 11:00 UTC daily = 03:00 PST (04:00 PDT during daylight saving).
+# Schedule: 10:00 UTC daily = 03:00 PDT (04:00 PST during standard time).
 
 on:
   schedule:
-    - cron: '0 11 * * *'
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       iters:

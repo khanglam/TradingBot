@@ -1,11 +1,11 @@
 name: Sync branches
 
 # Daily merge dev → main for paper trading.
-# Schedule: 14:00 UTC daily = 06:00 PST (07:00 PDT during daylight saving).
+# Schedule: 13:00 UTC daily = 06:00 PDT (07:00 PST during standard time).
 
 on:
   schedule:
-    - cron: '0 14 * * *'
+    - cron: '0 13 * * *'
   workflow_dispatch:
 
 permissions:

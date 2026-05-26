@@ -31,9 +31,9 @@ TradingBot/
 ├── results/                ← experiment logs (*.tsv on dev)
 ├── data/                   ← cached parquet OHLCV (gitignored)
 └── .github/workflows/
-    ├── loop-stocks.yml     ← daily 03:00 PST on dev (disable in Actions UI)
-    ├── loop-crypto.yml     ← daily 03:00 PST on dev (disable in Actions UI)
-    ├── sync_branches.yml   ← daily 06:00 PST: merge dev → main
+    ├── loop-stocks.yml     ← daily 03:00 PDT on dev (disable in Actions UI)
+    ├── loop-crypto.yml     ← daily 03:00 PDT on dev (disable in Actions UI)
+    ├── sync_branches.yml   ← daily 06:00 PDT: merge dev → main
     └── paper.yml           ← Alpaca paper on main
 ```
 
@@ -75,7 +75,7 @@ From **`dev`**, clean git tree:
 OPTIMIZE_METRIC=calmar .venv/Scripts/python.exe loop.py --iters 10
 ```
 
-Avoid running locally at **03:00 PST** when GitHub Actions pushes to `dev`.
+Avoid running locally at **03:00 PDT** when GitHub Actions pushes to `dev`.
 
 ## Time windows
 
@@ -96,9 +96,9 @@ Configured in `configs.toml` (rolled forward May 2026). Loop scores **`val` only
 
 | Workflow | Schedule | Branch |
 |----------|----------|--------|
-| `loop-stocks.yml` | 11:00 UTC daily (03:00 PST) | `dev` |
-| `loop-crypto.yml` | 11:00 UTC daily (03:00 PST) | `dev` |
-| `sync_branches.yml` | 14:00 UTC daily (06:00 PST) | Merge `dev` → `main` |
+| `loop-stocks.yml` | 10:00 UTC daily (03:00 PDT) | `dev` |
+| `loop-crypto.yml` | 10:00 UTC daily (03:00 PDT) | `dev` |
+| `sync_branches.yml` | 13:00 UTC daily (06:00 PDT) | Merge `dev` → `main` |
 | `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | `main` |
 
 Secrets: `OPENROUTER_API_KEY` (loop), `ALPACA_API_KEY` / `ALPACA_API_SECRET` (paper).
