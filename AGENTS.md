@@ -53,8 +53,8 @@ No per-file promotion gate — whatever is on `dev` becomes `main`.
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `loop-stocks.yml` | 11:00 UTC (03:00 PST) | Loop on `dev`, stocks |
-| `loop-crypto.yml` | 11:00 UTC (03:00 PST) | Loop on `dev`, crypto |
+| `loop-stocks.yml` | 11:00 UTC (03:00 PST) | Loop on `dev`, stocks (disable workflow in Actions to pause) |
+| `loop-crypto.yml` | 11:00 UTC (03:00 PST) | Loop on `dev`, crypto (disable workflow in Actions to pause) |
 | `sync_branches.yml` | 14:00 UTC (06:00 PST) | Merge `dev` → `main` |
 | `paper.yml` | Weekdays / every 4h | `live_trade.py` on `main` |
 

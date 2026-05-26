@@ -31,9 +31,8 @@ TradingBot/
 ├── results/                ← experiment logs (*.tsv on dev)
 ├── data/                   ← cached parquet OHLCV (gitignored)
 └── .github/workflows/
-    ├── loop-stocks.yml     ← daily 03:00 PST on dev
-    ├── loop-crypto.yml     ← daily 03:00 PST on dev
-    ├── loop-dev.yml        ← reusable loop job
+    ├── loop-stocks.yml     ← daily 03:00 PST on dev (disable in Actions UI)
+    ├── loop-crypto.yml     ← daily 03:00 PST on dev (disable in Actions UI)
     ├── sync_branches.yml   ← daily 06:00 PST: merge dev → main
     └── paper.yml           ← Alpaca paper on main
 ```
