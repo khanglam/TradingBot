@@ -112,22 +112,12 @@ class Strategy(_BTStrategy):
     atr_vol_threshold = 1.0
     
     # ADX momentum confirmation: require ADX > 25 on entry bars to confirm
-    # the market is trending. Unlike the 200-bar SMA regime filter which
-    # crashed with 0 trades (too restrictive for 4h crypto data), ADX is
-    # a momentum indicator that filters at the bar level without blocking
-    # entire regime windows. This strengthens the entry signal by requiring
-    # trend strength, not trend direction.
+    # the market is trending. ADX is a momentum indicator that filters at
+    # the bar level without blocking regime windows, strengthening the entry
+    # signal by requiring trend strength, not trend direction.
     adx_period = 14
     adx_threshold = 25.0
 
-    # 200-bar SMA regime filter: price must be above the 200-bar SMA to enter.
-    # On 4h bars, 200 bars ≈ 33 days — captures the medium-term trend direction
-    # without the noise of shorter moving averages. Skipping long entries when
-    # price is below SMA avoids catching falling knives in bear regimes, where
-    # breakouts have poor odds even if momentum indicators fire. Structurally
-    # different from ADX (momentum strength) — SMA gates direction, not quality.
-    sma_period = 200
-    
     # Volatility-scaled position sizing: size INVERSELY proportional to
     # realized volatility. REVERSED from prior logic:
     # - High ATR (high-vol regime) → strong momentum but elevated risk → size DOWN
@@ -168,7 +158,6 @@ class Strategy(_BTStrategy):
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
-        self.sma = self.I(_sma, close, self.sma_period)
         self.volume_sma = self.I(_volume_sma, pd.Series(self.data.Volume), 20)
 
         # Highest price since entry — drives the trailing stop. Reset on
@@ -179,7 +168,7 @@ class Strategy(_BTStrategy):
         self.entry_bar: int | None = None
 
     def next(self) -> None:
-        if len(self.data) < max(self.breakout_period, self.sma_period) + 1:
+        if len(self.data) < self.breakout_period + 1:
             return
 
         close = self.data.Close[-1]
@@ -193,20 +182,17 @@ class Strategy(_BTStrategy):
         # with a rolling average that smooths volume into a cleaner signal,
         # capturing genuine participation surges without the noise.
         # And require ADX momentum confirmation: ADX > 25 confirms the
-        # market is trending, not ranging. Unlike the 200-bar SMA filter
-        # which crashed (too restrictive on 4h crypto), ADX filters at
-        # the bar level without blocking regime participation.
+        # market is trending, not ranging. ADX filters at the bar level
+        # without blocking regime participation, unlike the 200-bar SMA
+        # filter which was too restrictive on 4h crypto data.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         volume_confirm = self.data.Volume[-1] > self.volume_sma[-1]  # vol above 20-bar SMA
         momentum_confirm = self.adx[-1] > self.adx_threshold
-        # Regime filter: price above 200-bar SMA = uptrend. Skips breakouts
-        # in bear regimes where countertrend trades have poor odds.
-        uptrend_regime = close > self.sma[-1]
 
-        if breakout and vol_regime_high and volume_confirm and momentum_confirm and uptrend_regime and not self.position:
+        if breakout and vol_regime_high and volume_confirm and momentum_confirm and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
