@@ -165,7 +165,6 @@ class Strategy(_BTStrategy):
         # output of _donchian by indexing — backtesting.py's self.I needs
         # tuple unpacking via two separate calls, one per series.
         self.upper, _ = self.I(_donchian, high, low, self.breakout_period)
-        _, self.exit_lower = self.I(_donchian, high, low, self.exit_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
@@ -225,12 +224,13 @@ class Strategy(_BTStrategy):
             # Track running peak since entry
             self.highest_price = max(self.highest_price, close)
 
-            # Three parallel exit rails:
-            #   1. Short-Donchian break — recent weakness, trend rollover.
-            #   2. ATR trailing stop — volatility-aware floor below peak.
-            #   3. Time-decay exit — fixed bar count, prevents indefinite holding.
-            # First one to trigger wins.
-            short_break = close < self.exit_lower[-2]
+            # Two exit rails in parallel:
+            #   1. ATR trailing stop — volatility-aware floor below peak.
+            #   2. Time-decay exit — fixed bar count, prevents indefinite holding.
+            # Removed the Donchian short-exit rail (close < exit_lower[-2]) which
+            # was redundant with the ATR trailing stop and caused premature exits
+            # on minor pullbacks, cutting winning trades short before the trailing
+            # stop could capture the full trend move.
             
             # Regime-adaptive ATR trailing stop: tighter (2.5x) in low-vol,
             # looser (3.0x) in high-vol to avoid whipsaws during volatility spikes.
@@ -244,7 +244,7 @@ class Strategy(_BTStrategy):
             bars_in_position = current_bar - self.entry_bar
             time_exit_hit = bars_in_position >= self.time_exit_bars
 
-            if short_break or stop_hit or time_exit_hit:
+            if stop_hit or time_exit_hit:
                 self.position.close()
                 self.highest_price = None
                 self.entry_bar = None
