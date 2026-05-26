@@ -430,10 +430,8 @@ def summary() -> dict:
             "description": last["description"],
         }
     import backtest as bt_module
-    try:
-        symbols_spec = _load_campaigns()[_active_campaign]["symbols"]
-    except Exception:
-        symbols_spec = bt_module.DEFAULT_SYMBOLS
+
+    symbols_spec = bt_module._cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
     return {
         "best_sharpe": best,
         "total": int(len(df)),
@@ -444,7 +442,10 @@ def summary() -> dict:
         "latest": latest,
         "model": _active_model(),
         "symbols": symbols_spec,
-        "val_window": f"{bt_module.VAL_START} → {bt_module.VAL_END}",
+        "val_window": (
+            f"{bt_module._cfg('VAL_START', '2020-01-01')} → {bt_module._cfg('VAL_END', '2024-12-31')}"
+        ),
+        "results_file": _results_path().relative_to(ROOT).as_posix(),
     }
 
 

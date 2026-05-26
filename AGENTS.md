@@ -23,7 +23,7 @@ manual commits. `paper.yml` and `live_trade.py` read from here.
 | File / Dir | Purpose |
 |---|---|
 | `live_trade.py` | Alpaca paper/live executor |
-| `configs.toml` | Campaign config — **lives on main**; dev CI reads `origin/main:configs.toml` |
+| `configs.toml` | Campaign config for crypto/stocks (`CAMPAIGN` env); read from the checked-out branch |
 | `strategies/*.py` | What paper trades — copy of dev after daily merge |
 | `.github/workflows/` | CI definitions (read from default branch) |
 
@@ -45,7 +45,7 @@ All loop work happens here.
 **Daily at 06:00 PST** (`sync_branches.yml`): `git merge origin/dev` into `main` and push.
 No per-file promotion gate — whatever is on `dev` becomes `main`.
 
-`configs.toml` should be edited on `main` (or merged from dev if you keep a copy there).
+`configs.toml` on `dev` is what the loop and dashboard use; merge `dev` → `main` daily so paper/CI match.
 
 ---
 

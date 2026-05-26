@@ -88,45 +88,38 @@ ROOT = Path(__file__).parent
 #   CAMPAIGN=crypto python loop.py          # all settings from configs.toml
 #   CAMPAIGN=crypto VAL_START=2021-01-01 python loop.py  # one-off override
 
+CONFIGS_TOML = ROOT / "configs.toml"
+
+
 def _load_campaign_config() -> dict:
+    """Active [CAMPAIGN] section from configs.toml in this checkout."""
     import tomllib
+
     campaign = os.environ.get("CAMPAIGN", "").strip()
     if not campaign:
         return {}
-    import subprocess as _sp
-    r = _sp.run(
-        ["git", "show", "origin/main:configs.toml"],
-        capture_output=True, text=True, cwd=ROOT,
-    )
-    if r.returncode == 0:
-        cfg_text = r.stdout
-    else:
-        cfg_text = (ROOT / "configs.toml").read_text(encoding="utf-8")
-    all_campaigns = tomllib.loads(cfg_text)
+    if not CONFIGS_TOML.exists():
+        raise FileNotFoundError(f"configs.toml not found at {CONFIGS_TOML}")
+    all_campaigns = tomllib.loads(CONFIGS_TOML.read_text(encoding="utf-8"))
     if campaign not in all_campaigns:
-        raise ValueError(f"CAMPAIGN={campaign!r} not found in configs.toml; available: {list(all_campaigns)}")
+        raise ValueError(
+            f"CAMPAIGN={campaign!r} not found in configs.toml; available: {list(all_campaigns)}"
+        )
     return all_campaigns[campaign]
 
 
-_CAMPAIGN_CFG = _load_campaign_config()
-
-
 def _cfg(env_key: str, default: str) -> str:
-    """env var > campaigns.py value > hardcoded default. Always returns str."""
+    """env var > configs.toml[campaign] > default (re-reads toml each call)."""
     env_val = os.environ.get(env_key)
     if env_val:
         return env_val
-    toml_val = _CAMPAIGN_CFG.get(env_key.lower())
+    toml_val = _load_campaign_config().get(env_key.lower())
     if toml_val is not None:
         return str(toml_val)
     return default
 
 
 # ───────────────────────── Configuration ──────────────────────────
-DEFAULT_SYMBOLS = _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
-
-# STRATEGY_FILE: each campaign owns its own file so stocks and crypto evolve
-# independently. Derived from SYMBOLS prefix if not explicitly set.
 def _default_strategy_file(symbols_spec: str) -> str:
     parts = [p.strip() for p in symbols_spec.split(",") if p.strip()]
     if parts and all(p.startswith("crypto/") for p in parts):
@@ -134,11 +127,19 @@ def _default_strategy_file(symbols_spec: str) -> str:
     return "strategies/stocks.py"
 
 
-STRATEGY_FILE = (
-    os.environ.get("STRATEGY_FILE")
-    or _CAMPAIGN_CFG.get("strategy_file")
-    or _default_strategy_file(DEFAULT_SYMBOLS)
-)
+def strategy_file() -> str:
+    symbols = _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
+    sec = _load_campaign_config()
+    return (
+        os.environ.get("STRATEGY_FILE")
+        or sec.get("strategy_file")
+        or _default_strategy_file(symbols)
+    )
+
+
+# Back-compat for code that reads backtest.STRATEGY_FILE at import time.
+STRATEGY_FILE = strategy_file()
+DEFAULT_SYMBOLS = _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
 
 
 def load_strategy_class(path: str | Path) -> type:
@@ -213,8 +214,11 @@ def results_path() -> Path:
     """Per-campaign results.tsv path: <symbols-slug>_<val-window>.tsv.
     Distinct (symbols × val-window) combos write to distinct files so histories
     are preserved across asset/window changes."""
-    window = f"{VAL_START[:4]}-{VAL_END[:4]}"
-    return ROOT / "results" / f"{_slug_for_symbols(DEFAULT_SYMBOLS)}_{window}.tsv"
+    val_start = _cfg("VAL_START", "2020-01-01")
+    val_end = _cfg("VAL_END", "2024-12-31")
+    symbols = _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
+    window = f"{val_start[:4]}-{val_end[:4]}"
+    return ROOT / "results" / f"{_slug_for_symbols(symbols)}_{window}.tsv"
 
 # Annualization factor for 4h bars: 6 bars/day * 365 days = 2190.
 # Used as the legacy default; per-run factor is inferred from data frequency.
@@ -241,11 +245,11 @@ def _ann_factor_for(df: pd.DataFrame) -> float:
 
 def _slice(df: pd.DataFrame, window: str) -> pd.DataFrame:
     if window == "train":
-        return df.loc[TRAIN_START:TRAIN_END]
+        return df.loc[_cfg("TRAIN_START", "2018-01-01"): _cfg("TRAIN_END", "2019-12-31")]
     if window == "val":
-        return df.loc[VAL_START:VAL_END]
+        return df.loc[_cfg("VAL_START", "2020-01-01"): _cfg("VAL_END", "2024-12-31")]
     if window == "lockbox":
-        return df.loc[LOCKBOX_START:]
+        return df.loc[_cfg("LOCKBOX_START", "2025-01-01"):]
     raise ValueError(f"unknown window: {window}")
 
 
@@ -345,7 +349,7 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
     try:
         from backtesting import Backtest
         from backtesting.lib import FractionalBacktest
-        UserStrategy = load_strategy_class(STRATEGY_FILE)
+        UserStrategy = load_strategy_class(strategy_file())
     except Exception as e:
         print(f"# import error: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
@@ -475,7 +479,7 @@ def _ensure_symbol_data(resolved: list[tuple[str, Path]]) -> None:
         return
     import data_fetch
 
-    start = _CAMPAIGN_CFG.get("data_fetch_start")
+    start = _load_campaign_config().get("data_fetch_start")
     start_s = str(start) if start is not None else None
     for sym, path in resolved:
         try:
@@ -524,7 +528,9 @@ def run(symbols: str | None = None, window: str = "val") -> dict:
     (e.g. "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d"). When None,
     falls back to $SYMBOLS then DEFAULT_SYMBOLS.
     """
-    spec = symbols if symbols is not None else (os.environ.get("SYMBOLS") or DEFAULT_SYMBOLS)
+    spec = symbols if symbols is not None else (
+        os.environ.get("SYMBOLS") or _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
+    )
     resolved = _resolve_symbols(spec)
     _ensure_symbol_data(resolved)
 

@@ -155,30 +155,6 @@ def load(path: str | Path) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def _load_campaign_config() -> dict:
-    import subprocess
-    import tomllib
-
-    campaign = os.environ.get("CAMPAIGN", "").strip()
-    if not campaign:
-        return {}
-    root = Path(__file__).parent
-    r = subprocess.run(
-        ["git", "show", "origin/main:configs.toml"],
-        capture_output=True,
-        text=True,
-        cwd=root,
-    )
-    if r.returncode == 0:
-        cfg_text = r.stdout
-    elif (root / "configs.toml").exists():
-        cfg_text = (root / "configs.toml").read_text(encoding="utf-8")
-    else:
-        return {}
-    all_campaigns = tomllib.loads(cfg_text)
-    return all_campaigns.get(campaign, {})
-
-
 def ensure_symbols_spec(spec: str, start: str | None = None) -> None:
     """Ensure every parquet in a SYMBOLS spec exists under data/; fetch on miss."""
     for raw in spec.split(","):
@@ -193,6 +169,8 @@ def ensure_symbols_spec(spec: str, start: str | None = None) -> None:
 
 def fetch_campaign_symbols() -> None:
     """Fetch all symbols from configs.toml for the active CAMPAIGN (no-op if cached)."""
+    from backtest import _load_campaign_config
+
     cfg = _load_campaign_config()
     spec = os.environ.get("SYMBOLS") or cfg.get("symbols")
     if not spec:

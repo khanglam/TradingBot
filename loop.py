@@ -69,18 +69,6 @@ RESULTS_DIR = ROOT / "results"
 RUN_LOG = RESULTS_DIR / "run.log"
 RESULTS_DIR.mkdir(exist_ok=True)
 
-# RESULTS path is per-campaign — derived from active SYMBOLS × val-window so
-# each (asset, window) combo gets its own history. Switching SYMBOLS env var
-# does not clobber prior research; both files coexist under results/.
-#
-# STRATEGY is the per-campaign strategy file the loop reads/writes/commits.
-# Defaults derived from SYMBOLS prefix (crypto/* → strategies/crypto.py,
-# else → strategies/stocks.py). Override with STRATEGY_FILE env var.
-import backtest as _bt_module
-RESULTS = _bt_module.results_path()
-STRATEGY = (ROOT / _bt_module.STRATEGY_FILE).resolve()
-STRATEGY_REL = str(STRATEGY.relative_to(ROOT)).replace("\\", "/")
-
 PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
 if not Path(PYTHON).exists():
     PYTHON = sys.executable
@@ -105,6 +93,15 @@ def _load_dotenv_files() -> None:
         if p.parent == p:
             break
         p = p.parent
+
+
+_load_dotenv_files()
+
+import backtest as _bt_module  # noqa: E402
+
+RESULTS = _bt_module.results_path()
+STRATEGY = (ROOT / _bt_module.strategy_file()).resolve()
+STRATEGY_REL = str(STRATEGY.relative_to(ROOT)).replace("\\", "/")
 
 
 def _max_output_tokens() -> int:
@@ -698,7 +695,6 @@ def main() -> int:
     p.add_argument("--iters", type=int, default=50)
     args = p.parse_args()
 
-    _load_dotenv_files()
     if not os.environ.get("OPENROUTER_API_KEY"):
         print(
             "ERROR: OPENROUTER_API_KEY not set. Get a key at https://openrouter.ai/keys "
@@ -722,7 +718,9 @@ def main() -> int:
     best = best_metric_so_far(OPTIMIZE_METRIC)
     gate_msg = f"  DSR_GATE={DSR_GATE_THRESHOLD:.2f}" if DSR_GATE_THRESHOLD > 0 else ""
     print(
-        f"[loop] campaign={STRATEGY_REL}  symbols={_bt_module.DEFAULT_SYMBOLS}\n"
+        f"[loop] campaign={STRATEGY_REL}  symbols={_bt_module._cfg('SYMBOLS', '')}\n"
+        f"[loop] results={RESULTS.relative_to(ROOT)}  "
+        f"val={_bt_module._cfg('VAL_START', '')}→{_bt_module._cfg('VAL_END', '')}\n"
         f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}{gate_msg}"
     )
     consecutive_regressions = 0

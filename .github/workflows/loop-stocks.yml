@@ -65,21 +65,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Fetch main (for configs.toml)
-        run: git fetch origin main
-
       - name: Export campaign config to environment
         env:
           CAMPAIGN: stocks
         run: |
           python - <<'EOF'
-          import os, sys, subprocess, tomllib
+          import os, sys, tomllib
           campaign = os.environ["CAMPAIGN"]
-          result = subprocess.run(
-              ["git", "show", "origin/main:configs.toml"],
-              capture_output=True, text=True, check=True,
-          )
-          all_campaigns = tomllib.loads(result.stdout)
+          with open("configs.toml", "rb") as f:
+              all_campaigns = tomllib.load(f)
           if campaign not in all_campaigns:
               sys.exit(f"CAMPAIGN={campaign!r} not in configs.toml")
           with open(os.environ["GITHUB_ENV"], "a") as gh_env:
