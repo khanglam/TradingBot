@@ -79,11 +79,13 @@ Avoid running locally at **03:00 PST** when GitHub Actions pushes to `dev`.
 
 ## Time windows
 
-| Window | Range | Used by |
-|--------|-------|---------|
-| `train` | 2019-01-01 → 2022-12-31 | Strategy reasoning only |
-| `val` | 2023-01-01 → 2024-12-31 | Loop optimization (default) |
-| `lockbox` | 2025-01-01 → present | Promotion sanity check only |
+Configured in `configs.toml` (rolled forward May 2026). Loop scores **`val` only**.
+
+| Window | Crypto | Stocks |
+|--------|--------|--------|
+| `train` | 2019 → 2022 | 2018 → 2021 |
+| `val` | 2023 → 2025 | 2022 → 2025 |
+| `lockbox` | 2026 → present | 2026 → present |
 
 ```bash
 .venv/Scripts/python.exe backtest.py --window val
