@@ -145,12 +145,15 @@ class Strategy(_BTStrategy):
     # chop where the strategy has more edge (price doesn't gap through stops).
     base_fraction = 0.55
 
-    # Time-decay exit: close position after N bars in trade, regardless of
-    # price action. On 4h bars, 40 bars ≈ 6.7 days. Complements ATR trailing
-    # stop and Donchian-break exits; trades tend to lose edge after ~1 week
-    # in mean-reverting crypto regimes (post-breakout chop). Tested when
-    # oscillating sharpe 0.45–1.35 with 10+ entry-filter mutations exhausted.
-    max_bars_in_trade = 40
+    # ATR-based fixed R-multiple take-profit exit: exit when price moves
+    # 3.0x ATR above entry. Replaces the time-decay exit (40 bars) which
+    # was arbitrary and regime-insensitive. ATR targets are natural: they
+    # scale with volatility and express the trade's risk in market terms.
+    # 3x ATR means price must move 3 average true ranges from entry to take
+    # profit — a meaningful trend that exceeds noise. On 4h bars with typical
+    # 2-3% ATR, 3x ≈ 6-9% move to target, capturing multi-day trends while
+    # avoiding premature exits from normal fluctuation.
+    atr_tp_multiplier = 3.0
 
     def init(self) -> None:
         high = self.data.High
@@ -172,8 +175,8 @@ class Strategy(_BTStrategy):
         # entry, updated each bar while in position.
         self.highest_price: float | None = None
         
-        # Bar count since entry — tracks time-decay exit.
-        self.bars_in_trade: int = 0
+        # Entry price — used to compute ATR-based take-profit target.
+        self.entry_price: float | None = None
 
     def next(self) -> None:
         if len(self.data) < max(self.breakout_period, self.sma_period) + 1:
@@ -215,18 +218,15 @@ class Strategy(_BTStrategy):
             size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
-            self.bars_in_trade = 0
+            self.entry_price = close
         elif self.position:
-            # Increment bar count in trade
-            self.bars_in_trade += 1
-            
             # Track running peak since entry
             self.highest_price = max(self.highest_price, close)
 
             # Three parallel exit rails:
             #   1. Short-Donchian break — recent weakness, trend rollover.
             #   2. ATR trailing stop — volatility-aware floor below peak.
-            #   3. Time-decay exit — close after N bars (edge degradation).
+            #   3. ATR-based take-profit — fixed R-multiple target.
             # First one to trigger wins.
             short_break = close < self.exit_lower[-2]
             
@@ -237,9 +237,13 @@ class Strategy(_BTStrategy):
             trailing_stop = self.highest_price - self.atr[-1] * atr_mult
             stop_hit = close <= trailing_stop
             
-            time_decay = self.bars_in_trade >= self.max_bars_in_trade
+            # ATR-based take-profit: fixed R-multiple exit instead of time-decay.
+            # More natural than bar-count: scales with volatility and expresses
+            # the target in market terms (how many ATRs price must move).
+            tp_target = self.entry_price + self.atr[-1] * self.atr_tp_multiplier
+            tp_hit = close >= tp_target
 
-            if short_break or stop_hit or time_decay:
+            if short_break or stop_hit or tp_hit:
                 self.position.close()
                 self.highest_price = None
-                self.bars_in_trade = 0
+                self.entry_price = None
