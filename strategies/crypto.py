@@ -159,7 +159,9 @@ class Strategy(_BTStrategy):
     # it won't stretch in volatile regimes or compress in calm ones. On 4h
     # bars, 30 bars ≈ 5 days — enough to capture a multi-day trend while
     # preventing indefinite holding through chop.
-    time_exit_bars = 30
+    # Increased to 40 bars to let stronger trends run longer before being
+    # forced to exit, potentially capturing larger moves.
+    time_exit_bars = 40
 
     def init(self) -> None:
         high = self.data.High
