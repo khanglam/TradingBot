@@ -595,11 +595,15 @@ def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[
     (recovered from git via the row's commit SHA) and the traceback (tail of
     run.log) are injected into the prompt so the LLM can fix the actual bug
     instead of guessing from `status=crash`."""
+    import httpx
     import openai
+
+    _http_client = httpx.Client(verify=False)
 
     client = openai.OpenAI(
         api_key=os.environ.get("OPENROUTER_API_KEY"),
         base_url=OPENROUTER_BASE_URL,
+        http_client=_http_client,
     )
 
     history_block = "(no prior experiments)"
