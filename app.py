@@ -505,42 +505,64 @@ def git_log(n: int = 20) -> dict:
         return {"commits": [], "error": str(e)}
 
 
+def _format_chart_symbol(stem: str) -> str:
+    """crypto/BTC_USDT_4h → BTC/USDT · 4h for UI labels."""
+    base = stem.split("/")[-1] if "/" in stem else stem
+    if base.endswith(".parquet"):
+        base = base[: -len(".parquet")]
+    bits = base.rsplit("_", 1)
+    if len(bits) == 2:
+        return f"{bits[0].replace('_', '/')} · {bits[1]}"
+    return base.replace("_", "/")
+
+
 @app.get("/api/equity")
-def get_equity():
-    """Run a fast backtest on the best strategy to get the equity curve."""
-    # We must run it in a subprocess or a separate thread, but backtesting.py is fast enough
-    # for 2-3 assets to just block for 100ms.
-    
-    # Reload bt_module to pick up any campaign switch or env change.
-    # Do NOT load_dotenv(override=True) here — that would clobber env vars
-    # set by /api/campaign (campaign switch would reset on every equity call).
+def get_equity(symbol: str | None = None):
+    """Run a fast single-symbol backtest for the equity-curve chart.
+
+    Optional query param `symbol` is a parquet stem from the campaign bucket
+    (e.g. crypto/BTC_USDT_4h). Defaults to the first symbol in $SYMBOLS.
+    """
     import importlib
     import backtest as bt_module
     importlib.reload(bt_module)
     from backtesting import Backtest
     from backtesting.lib import FractionalBacktest
-    # Load the candidate strategy on dev (not main's frozen copy).
+
     UserStrategy = bt_module.load_strategy_class(_campaign_root() / bt_module.STRATEGY_FILE)
 
-    # Equity curve is single-asset by definition: pick the first symbol
-    # the harness would resolve from $SYMBOLS (or DEFAULT_SYMBOLS).
     spec = os.environ.get("SYMBOLS") or bt_module.DEFAULT_SYMBOLS
     resolved = bt_module._resolve_symbols(spec)
     if not resolved:
         raise HTTPException(400, "no symbols resolved from $SYMBOLS")
+
+    by_stem = {sym: path for sym, path in resolved}
+    all_symbols = list(by_stem.keys())
+    if symbol:
+        key = symbol.strip()
+        if key not in by_stem:
+            raise HTTPException(
+                400,
+                f"symbol {key!r} not in campaign bucket: {all_symbols}",
+            )
+        chart_stem, chart_path = key, by_stem[key]
+    else:
+        chart_stem, chart_path = resolved[0]
+
     import data_fetch
     try:
-        data_fetch.fetch_if_missing(resolved[0][1])
+        data_fetch.fetch_if_missing(chart_path)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(502, f"auto-fetch failed: {e}")
-    df = pd.read_parquet(resolved[0][1])
+
+    df = pd.read_parquet(chart_path)
     df = df.loc[bt_module.VAL_START:bt_module.VAL_END]
     if len(df) < 100:
         raise HTTPException(400, "validation window has too few candles")
 
-    is_crypto = "crypto" in str(resolved[0][1])
+    is_crypto = "crypto" in str(chart_path)
     BacktestClass = FractionalBacktest if is_crypto else Backtest
     bt = BacktestClass(
         df, UserStrategy,
@@ -554,11 +576,25 @@ def get_equity():
     bh_series = df["Close"] / df["Close"].iloc[0] * float(eq["Equity"].iloc[0])
     max_dd = _safe_float(stats.get("Max. Drawdown [%]"))
     win_rate = _safe_float(stats.get("Win Rate [%]"))
+    basket_mode = len(resolved) > 1
     return {
         "timestamps": [t.isoformat() for t in eq.index],
         "equity": _safe_floats(eq["Equity"].astype(float).tolist()),
         "buy_and_hold": _safe_floats(bh_series.astype(float).tolist()),
         "drawdown": _safe_floats((-eq["DrawdownPct"].astype(float) * 100).tolist()),
+        "meta": {
+            "chart_symbol": chart_stem,
+            "chart_symbol_display": _format_chart_symbol(chart_stem),
+            "all_symbols": all_symbols,
+            "symbol_options": [
+                {"stem": s, "label": _format_chart_symbol(s)} for s in all_symbols
+            ],
+            "basket_mode": basket_mode,
+            "basket_count": len(resolved),
+            "strategy_file": bt_module.STRATEGY_FILE,
+            "val_window": f"{bt_module.VAL_START} → {bt_module.VAL_END}",
+            "buy_and_hold_asset": _format_chart_symbol(chart_stem).split(" · ")[0],
+        },
         "metrics": {
             "sharpe": _safe_float(stats.get("Sharpe Ratio")),
             "sortino": _safe_float(stats.get("Sortino Ratio")),

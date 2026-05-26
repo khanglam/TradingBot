@@ -166,24 +166,63 @@
       <!-- Charts -->
       <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
-          <div class="flex items-center justify-between mb-4">
-            <div>
+          <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div class="min-w-0">
               <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Equity Curve</div>
-              <div class="text-sm text-ink-200" x-text="'Strategy vs Buy &amp; Hold · ' + (summary.val_window || '')"></div>
+              <div class="text-sm text-ink-100 font-mono mt-0.5"
+                   x-text="equity.meta?.chart_symbol_display ? ('Preview · ' + equity.meta.chart_symbol_display) : 'Preview backtest'"></div>
+              <div class="text-xs text-ink-300 mt-0.5" x-text="equity.meta?.val_window || summary.val_window || ''"></div>
             </div>
-            <button @click="reloadEquity()" class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+            <div class="flex items-center gap-2 shrink-0">
+              <label x-show="equitySymbolOptions.length > 1" class="flex items-center gap-2 text-xs text-ink-300 font-mono">
+                <span>Symbol</span>
+                <select x-model="equityChartSymbol"
+                        @change="reloadEquity()"
+                        :disabled="equityLoading"
+                        class="bg-ink-800 border border-ink-600 rounded px-2 py-1 text-ink-100 text-xs font-mono max-w-[11rem]">
+                  <template x-for="opt in equitySymbolOptions" :key="opt.stem">
+                    <option :value="opt.stem" x-text="opt.label"></option>
+                  </template>
+                </select>
+              </label>
+              <button @click="reloadEquity()" class="text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
+            </div>
           </div>
           <div class="relative" style="height: 288px;">
             <canvas id="chart-equity"></canvas>
-            <div x-show="equityLoading" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm">running backtest…</div>
+            <div x-show="equityLoading" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm bg-ink-900/80">running backtest…</div>
           </div>
-          <div class="grid grid-cols-3 gap-3 mt-4 text-sm">
-            <div><div class="text-xs text-ink-300 font-mono">SHARPE</div><div class="font-mono" x-text="(equity.metrics?.sharpe ?? 0).toFixed(3)"></div></div>
-            <div><div class="text-xs text-ink-300 font-mono">SORTINO</div><div class="font-mono" x-text="(equity.metrics?.sortino ?? 0).toFixed(3)"></div></div>
-            <div><div class="text-xs text-ink-300 font-mono">MAX DD</div><div class="font-mono" x-text="(equity.metrics?.max_drawdown ?? 0).toFixed(2) + '%'"></div></div>
-            <div><div class="text-xs text-ink-300 font-mono">TRADES</div><div class="font-mono" x-text="equity.metrics?.total_trades ?? 0"></div></div>
-            <div><div class="text-xs text-ink-300 font-mono">RETURN</div><div class="font-mono" x-text="(equity.metrics?.total_return ?? 0).toFixed(1) + '%'"></div></div>
-            <div><div class="text-xs text-ink-300 font-mono">B&amp;H</div><div class="font-mono" x-text="(equity.metrics?.buy_and_hold_return ?? 0).toFixed(1) + '%'"></div></div>
+          <div class="grid gap-3 mt-4 text-sm"
+               :class="equity.meta?.basket_mode ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'">
+            <div x-show="equity.meta?.basket_mode" class="col-span-2 sm:col-span-4 rounded-md bg-ink-800/80 border border-ink-700 px-3 py-2">
+              <div class="text-xs text-ink-300 font-mono">BASKET SHARPE</div>
+              <div class="font-mono text-emerald-400" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></div>
+            </div>
+            <div>
+              <div class="text-xs text-ink-300 font-mono">SHARPE</div>
+              <div class="font-mono" x-text="(equity.metrics?.sharpe ?? 0).toFixed(3)"></div>
+            </div>
+            <div>
+              <div class="text-xs text-ink-300 font-mono">SORTINO</div>
+              <div class="font-mono" x-text="(equity.metrics?.sortino ?? 0).toFixed(3)"></div>
+            </div>
+            <div>
+              <div class="text-xs text-ink-300 font-mono">MAX DD</div>
+              <div class="font-mono" x-text="(equity.metrics?.max_drawdown ?? 0).toFixed(2) + '%'"></div>
+            </div>
+            <div>
+              <div class="text-xs text-ink-300 font-mono">TRADES</div>
+              <div class="font-mono" x-text="equity.metrics?.total_trades ?? 0"></div>
+            </div>
+            <div>
+              <div class="text-xs text-ink-300 font-mono">RETURN</div>
+              <div class="font-mono" x-text="(equity.metrics?.total_return ?? 0).toFixed(1) + '%'"></div>
+            </div>
+            <div>
+              <div class="text-xs text-ink-300 font-mono"
+                   x-text="'B&amp;H ' + (equity.meta?.buy_and_hold_asset || '')"></div>
+              <div class="font-mono" x-text="(equity.metrics?.buy_and_hold_return ?? 0).toFixed(1) + '%'"></div>
+            </div>
           </div>
         </div>
 
@@ -199,7 +238,11 @@
             <div x-show="!keepCount" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm">no keeps yet</div>
           </div>
           <div class="mt-3" style="height: 96px;">
-            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-2">Drawdown</div>
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-2">
+              Drawdown
+              <span class="normal-case text-ink-400" x-show="equity.meta?.chart_symbol_display"
+                    x-text="'· ' + equity.meta.chart_symbol_display"></span>
+            </div>
             <div style="height: 70px;"><canvas id="chart-drawdown"></canvas></div>
           </div>
         </div>
@@ -693,7 +736,8 @@
         strategySource: '', strategyPath: '',
         gitLog: [],
         activeCampaign: 'stocks', campaignLoading: false,
-        equity: { metrics: {}, timestamps: [], equity: [], buy_and_hold: [], drawdown: [] },
+        equity: { metrics: {}, meta: {}, timestamps: [], equity: [], buy_and_hold: [], drawdown: [] },
+        equityChartSymbol: '',
         equityLoading: false,
         loop: { running: false, lines: 0 },
         loopProgress: { current: 0, total: 0 },
@@ -703,7 +747,7 @@
         charts: { equity: null, progression: null, drawdown: null, paperEquity: null, live: null },
 
         // ── Trading tab state ──
-        activeTab: 'trading',
+        activeTab: 'autoresearch',
         tradeLog: [],
         alpaca: { account: null, positions: [], error: null },
         tradeProc: { running: false },
@@ -729,6 +773,16 @@
         },
 
         get keepCount() { return this.results.filter(r => r.status === 'keep').length; },
+
+        get equitySymbolOptions() {
+          const fromMeta = this.equity.meta?.symbol_options;
+          if (fromMeta?.length) return fromMeta;
+          const spec = this.summary.symbols || '';
+          return spec.split(',').map(s => s.trim()).filter(Boolean).map(stem => ({
+            stem,
+            label: this.formatEquitySymbolLabel(stem),
+          }));
+        },
 
         get tradeSummary() {
           const log = this.tradeLog;
@@ -869,7 +923,37 @@
           this.connectTradeSse();
         },
 
-        async fetchSummary()  { try { this.summary  = await fetch('/api/summary').then(r => r.json()); } catch {} },
+        formatEquitySymbolLabel(stem) {
+          const base = (stem || '').split('/').pop().replace(/\.parquet$/i, '');
+          const bits = base.split('_');
+          if (bits.length >= 2) {
+            const tf = bits.pop();
+            return bits.join('/').replace(/_/g, '/') + ' · ' + tf;
+          }
+          return base.replace(/_/g, '/');
+        },
+
+        syncEquityChartSymbol() {
+          const opts = this.equitySymbolOptions;
+          if (!opts.length) return;
+          const stems = opts.map(o => o.stem);
+          if (!this.equityChartSymbol || !stems.includes(this.equityChartSymbol)) {
+            this.equityChartSymbol = stems[0];
+          }
+        },
+
+        async fetchSummary()  {
+          try {
+            const prevBest = this.summary?.best_sharpe;
+            this.summary = await fetch('/api/summary').then(r => r.json());
+            this.syncEquityChartSymbol();
+            const nextBest = this.summary?.best_sharpe;
+            if (prevBest != null && nextBest != null && prevBest !== nextBest
+                && this.activeTab === 'autoresearch' && !this.equityLoading) {
+              this.reloadEquity();
+            }
+          } catch {}
+        },
         async fetchResults()  { try { this.results  = await fetch('/api/results').then(r => r.json()); } catch {} },
         async fetchSetup()    { try { this.setup    = await fetch('/api/setup').then(r => r.json()); } catch {} },
         async fetchStrategy() { try { const r = await fetch('/api/strategy').then(r => r.json()); this.strategySource = r.source || ''; this.strategyPath = r.path || 'strategy.py'; } catch {} },
@@ -901,6 +985,7 @@
               // Chart symbol is campaign-scoped; reset it so the new campaign's
               // watchlist head is picked up by fetchChartData's default-symbol path.
               this.chartSymbol = '';
+              this.equityChartSymbol = '';
               this.fetchChartData(true);
               this.reloadEquity();
             }
@@ -911,9 +996,15 @@
         async reloadEquity() {
           this.equityLoading = true;
           try {
-            const r = await fetch('/api/equity').then(r => r.json());
+            this.syncEquityChartSymbol();
+            const params = new URLSearchParams();
+            if (this.equityChartSymbol) params.set('symbol', this.equityChartSymbol);
+            const qs = params.toString();
+            const r = await fetch('/api/equity' + (qs ? '?' + qs : '')).then(res => res.json());
             if (r.error) throw new Error(r.error);
+            if (r.detail) throw new Error(typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail));
             this.equity = r;
+            if (r.meta?.chart_symbol) this.equityChartSymbol = r.meta.chart_symbol;
             this.renderEquity(); this.renderDrawdown();
           } catch (e) { console.warn('equity fetch failed:', e); }
           finally { this.equityLoading = false; }
@@ -1301,13 +1392,15 @@
           const ctx = document.getElementById('chart-equity'); if (!ctx) return;
           if (this.charts.equity) { this.charts.equity._sizeObserver?.disconnect?.(); this.charts.equity.destroy(); }
           const labels = this.equity.timestamps || [];
+          const sym = this.equity.meta?.chart_symbol_display || 'symbol';
+          const bh = this.equity.meta?.buy_and_hold_asset || sym.split(' · ')[0];
           this.charts.equity = new Chart(ctx, {
             type: 'line',
             data: {
               labels,
               datasets: [
-                { label: 'Strategy', data: this.equity.equity || [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.05 },
-                { label: 'Buy & Hold', data: this.equity.buy_and_hold || [], borderColor: '#71717a', borderWidth: 1.5, borderDash: [4, 4], pointRadius: 0, fill: false, tension: 0.05 },
+                { label: 'Strategy · ' + sym, data: this.equity.equity || [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.05 },
+                { label: 'Buy & hold · ' + bh, data: this.equity.buy_and_hold || [], borderColor: '#71717a', borderWidth: 1.5, borderDash: [4, 4], pointRadius: 0, fill: false, tension: 0.05 },
               ],
             },
             options: {
