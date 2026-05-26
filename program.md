@@ -292,29 +292,14 @@ When the loop calls you, respond with **exactly two sections**, nothing else:
 <one short sentence — appears in results.tsv and the git commit>
 
 ## <path>
-```diff
---- a/<path>
-+++ b/<path>
-@@ -N,M +N,M @@
- context line
--removed line
-+added line
- context line
-```
-````
-
-Output a **unified diff** of your change — only the lines that change, plus 3 lines of context on each side. Do NOT output the entire file; a diff is 10–100 tokens versus ~800 for the full file.
-
-If your change is a complete structural rewrite, you may fall back to a full Python block instead:
-
-````
-## <path>
 ```python
-<complete new contents of the active strategy file>
+<the complete new contents of the active strategy file>
 ```
 ````
+
+**CRITICAL WARNING:** Do NOT be lazy. You MUST output the ENTIRE file verbatim, including all imports and helper functions, even if you did not change them. Do NOT use placeholders like `# ... (existing code)` or `# ... rest of file`. If you omit code, Python will throw an `IndentationError` or `NameError`, causing an immediate crash and discard.
 
 `<path>` should match the path you were shown at the top of the prompt
-(e.g. `## strategies/stocks.py`). The loop will apply the diff (or overwrite
-if a full Python block), commit with the description, and run the backtest.
-No prose outside those sections.
+(e.g. `## strategies/stocks.py`). The loop will overwrite that file
+verbatim with your code block, commit with the description, and run the
+backtest. No prose outside those sections.

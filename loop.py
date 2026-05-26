@@ -33,13 +33,12 @@ Environment knobs (all optional):
                            "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d").
                            N=1 → single mode; N≥2 → basket mode with overfit penalty.
     OPENROUTER_MODEL       any model slug from openrouter.ai/models. Defaults to
-                           minimax/minimax-m2.7. Examples:
-                             anthropic/claude-haiku-4-5
+                           anthropic/claude-haiku-4-5. Examples:
+                             anthropic/claude-sonnet-4-6
                              openai/gpt-5
                              deepseek/deepseek-r1
                              google/gemini-2.5-pro
-    MAX_OUTPUT_TOKENS      LLM reply cap (default 8000). Set in .env. Do not set
-                           below 4096 when program.md requests unified diffs.
+    MAX_OUTPUT_TOKENS      LLM reply cap (default 8000). Set in .env.
 
 Usage:
     python loop.py --iters 50
@@ -48,8 +47,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import math
 import os
 import re
@@ -90,7 +87,7 @@ if not Path(PYTHON).exists():
     PYTHON = sys.executable
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "minimax/minimax-m2.7"  # any model slug from openrouter.ai/models
+DEFAULT_MODEL = "anthropic/claude-haiku-4-5"  # any model slug from openrouter.ai/models
 _DEFAULT_MAX_OUTPUT_TOKENS = 8000
 
 
@@ -220,7 +217,7 @@ def git_short_sha() -> str:
 
 
 def git_commit_strategy(description: str) -> str | None:
-    """Commit the active strategy file. Returns None if the LLM returned
+    """Commit the active strategy file. Returns None if Claude wrote
     bytes-identical content (no diff) — the caller must treat this as
     a no-op iteration, not a crash."""
     _git("add", str(STRATEGY))
@@ -422,35 +419,32 @@ def _parse_summary(out: str) -> dict:
 
 
 def run_backtest() -> dict:
-    """Run backtest in-process (skips subprocess cold-start overhead).
+    """Run backtest.py in a subprocess, parse summary block, return metrics.
     Inherits DSR_BENCHMARK, SYMBOLS, and BASKET_PENALTY env vars from the caller."""
-    buf = io.StringIO()
-    err_buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err_buf):
-        try:
-            _bt_module.run()
-        except SystemExit:
-            pass
-        except Exception:
-            import traceback as _tb
-            _tb.print_exc(file=err_buf)
-    out = buf.getvalue()
-    RUN_LOG.write_text(out + "\n----- STDERR -----\n" + err_buf.getvalue(), encoding="utf-8")
+    proc = subprocess.run(
+        [PYTHON, "backtest.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    out = proc.stdout
+    RUN_LOG.write_text(out + "\n----- STDERR -----\n" + proc.stderr, encoding="utf-8")
     return _parse_summary(out)
 
 
 # ──────────────────────── crash feed-forward ─────────────────────────
 
 # When a backtest crashes, the loop reverts the offending strategy.py via
-# git_reset_last(). The next iteration's LLM call would otherwise see
+# git_reset_last(). The next iteration's Claude call would otherwise see
 # only `status=crash` in the history row — no traceback, no idea what broke.
-# We rebuild the crash context on demand at call_llm time:
+# We rebuild the crash context on demand at call_claude time:
 #   - source: git_show on the crashed SHA from results.tsv
 #       (commit object survives the reset; lives in reflog + as a loose
 #        object until git-gc, ~90d default — plenty of time for one tick)
 #   - stderr: tail of run.log
-#       (overwritten only inside run_backtest(), which runs after call_llm
-#        each iteration, so at call_llm time it still holds prior stderr)
+#       (overwritten only inside run_backtest(), which runs after call_claude
+#        each iteration, so at call_claude time it still holds prior stderr)
 
 
 def _read_stderr_tail() -> str:
@@ -525,67 +519,9 @@ DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL
 # `## strategies/stocks.py`, `## strategies/crypto.py`, etc. — so the
 # section label matches whatever file is actively being edited.
 CODE_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
-DIFF_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```diff\s*\n(.*?)\n```", re.DOTALL)
-_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
-def _apply_unified_diff(src: str, diff_text: str) -> str:
-    """Apply unified diff in-process (GNU patch is not on Windows PATH by default)."""
-    lines = src.splitlines(keepends=True)
-    if src and not src.endswith(("\n", "\r")):
-        if lines:
-            lines[-1] = lines[-1] + "\n"
-        else:
-            lines = ["\n"]
-    diff_lines = diff_text.strip().splitlines()
-    i = 0
-    while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
-        i += 1
-    if i >= len(diff_lines):
-        raise ValueError("diff has no @@ hunk headers")
-
-    out: list[str] = []
-    src_i = 0
-    while i < len(diff_lines):
-        m = _HUNK_RE.match(diff_lines[i])
-        if not m:
-            i += 1
-            continue
-        old_start = int(m.group(1)) - 1
-        i += 1
-        while src_i < old_start:
-            if src_i >= len(lines):
-                raise ValueError(f"diff past end of file at line {old_start + 1}")
-            out.append(lines[src_i])
-            src_i += 1
-        while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
-            row = diff_lines[i]
-            if row.startswith(("---", "+++")):
-                i += 1
-                continue
-            if not row:
-                i += 1
-                continue
-            tag, body = row[0], row[1:] if len(row) > 1 else ""
-            if tag == " ":
-                if src_i >= len(lines) or lines[src_i].rstrip("\r\n") != body:
-                    raise ValueError(f"diff context mismatch at line {src_i + 1}")
-                out.append(lines[src_i])
-                src_i += 1
-            elif tag == "-":
-                if src_i >= len(lines) or lines[src_i].rstrip("\r\n") != body:
-                    raise ValueError(f"diff removal mismatch at line {src_i + 1}")
-                src_i += 1
-            elif tag == "+":
-                out.append(body + ("\n" if not body.endswith("\n") else ""))
-            else:
-                raise ValueError(f"unexpected diff line: {row!r}")
-            i += 1
-    out.extend(lines[src_i:])
-    return "".join(out)
-
-
-def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
+def call_claude(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
     """Returns (description, new_strategy_source).
 
     Uses OpenRouter (https://openrouter.ai) as the LLM backend. Any model
@@ -663,36 +599,23 @@ def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[
     user_msg += "Propose ONE change. Reply with the two required sections only."
 
     model = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL)
-    stream = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model=model,
         max_tokens=_max_output_tokens(),
-        stream=True,
         messages=[
             {"role": "system", "content": program_src},
             {"role": "user", "content": user_msg},
         ],
     )
-    chunks: list[str] = []
-    print("[loop] streaming LLM response: ", end="", flush=True)
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-        if delta.content:
-            print(delta.content, end="", flush=True)
-            chunks.append(delta.content)
-    print()
-    text = "".join(chunks)
+    text = resp.choices[0].message.content or ""
 
     desc_m = DESCRIPTION_RE.search(text)
-    diff_m = DIFF_RE.search(text)
     code_m = CODE_RE.search(text)
-    if not desc_m or (not diff_m and not code_m):
+    if not desc_m or not code_m:
         raise ValueError(f"could not parse LLM response:\n{text[:1000]}")
 
     description = desc_m.group(1).strip().splitlines()[0][:200]
-    if diff_m:
-        new_code = _apply_unified_diff(strategy_src, diff_m.group(1))
-    else:
-        new_code = code_m.group(1)
+    new_code = code_m.group(1)
     return description, new_code
 
 
@@ -705,22 +628,22 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
     history = last_n_rows(10)
 
     if history and history[-1].get("status") == "crash":
-        print(f"[loop] feeding back last crash (commit {history[-1].get('commit', '?')}) to LLM")
+        print(f"[loop] feeding back last crash (commit {history[-1].get('commit', '?')}) to Claude")
 
-    print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking LLM…")
+    print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking Claude…")
     try:
-        description, new_code = call_llm(strategy_src, program_src, history)
+        description, new_code = call_claude(strategy_src, program_src, history)
     except Exception as e:
-        print(f"[loop] llm error: {e}")
-        return "llm_error", best_metric
+        print(f"[loop] claude error: {e}")
+        return "claude_error", best_metric
 
     print(f"[loop] proposed: {description}")
     STRATEGY.write_text(new_code, encoding="utf-8")
     sha = git_commit_strategy(description)
     if sha is None:
-        # LLM returned bytes-identical strategy.py — degenerate mutation.
+        # Claude regenerated bytes-identical strategy.py — degenerate mutation.
         # No commit was made; nothing to revert. Skip the backtest entirely.
-        print("[loop] no-change → skipping (LLM returned identical strategy)")
+        print("[loop] no-change → skipping (Claude returned identical strategy)")
         return "noop", best_metric
     print(f"[loop] committed {sha}, running backtest…")
 
@@ -819,7 +742,7 @@ def main() -> int:
 
             if status == "keep":
                 consecutive_regressions = 0
-            elif status == "llm_error":
+            elif status == "claude_error":
                 time.sleep(10)
             elif status == "noop":
                 # No real attempt made (identical code) — don't count toward streak.
