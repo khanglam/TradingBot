@@ -337,7 +337,7 @@
         </div>
         <div x-show="!currentVersion" class="p-8 text-center text-ink-300 text-sm">
           No promoted versions yet for <span x-text="activeCampaign" class="font-mono"></span>.
-          Strategies become "deployed" only after promote.py copies them to main.
+          Strategies become "deployed" on main after the daily dev → main merge.
         </div>
         <div x-show="currentVersion" class="p-5 grid grid-cols-1 md:grid-cols-5 gap-5">
           <div class="md:col-span-2">
@@ -629,7 +629,7 @@
             </tbody>
           </table>
           <div x-show="!versionStatsList.length" class="p-8 text-center text-ink-300 text-sm">
-            No version history yet — once promote.py runs on main, each commit appears here.
+            No version history yet — once dev is merged to main, each commit appears here.
           </div>
         </div>
       </section>
