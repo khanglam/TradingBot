@@ -202,7 +202,7 @@ def git_commit_results() -> bool:
         return False
     # `git commit -- <pathspec>` filters the staged set by pathspec, so any
     # other staged changes from an outer workflow stay staged.
-    _git("commit", "-m", "chore: checkpoint experiment log",
+    _git("commit", "-m", "experiment: checkpoint experiment log",
          "--no-verify", "--", "results/")
     print("[loop] committed pending results.tsv rows")
     return True
