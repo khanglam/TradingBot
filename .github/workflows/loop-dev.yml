@@ -1,7 +1,7 @@
 # Reusable autoresearch loop job. Called by loop-stocks.yml and loop-crypto.yml.
-# Main is NEVER touched — promotion happens via sync_branches.yml.
+# Runs on dev — main is NEVER touched; promotion happens via sync_branches.yml.
 
-name: Autoresearch loop (campaign)
+name: Autoresearch loop (dev)
 
 on:
   workflow_call:
@@ -13,7 +13,7 @@ on:
       iters:
         description: 'Number of mutations to attempt'
         required: false
-        default: '8'
+        default: '10'
         type: string
       optimize_metric:
         description: 'val_sharpe | calmar | dsr'
@@ -31,7 +31,7 @@ jobs:
 
     env:
       CAMPAIGN: ${{ inputs.campaign }}
-      BRANCH: autoresearch/${{ inputs.campaign }}
+      BRANCH: dev
       ITERS: ${{ inputs.iters }}
       OPTIMIZE_METRIC: ${{ inputs.optimize_metric }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -40,10 +40,10 @@ jobs:
       PYTHONIOENCODING: 'utf-8'
 
     steps:
-      - name: Checkout campaign branch (full history for resets)
+      - name: Checkout dev (full history for resets)
         uses: actions/checkout@v4
         with:
-          ref: autoresearch/${{ inputs.campaign }}
+          ref: dev
           fetch-depth: 0
           persist-credentials: true
 
@@ -132,13 +132,10 @@ jobs:
       - name: Run autoresearch loop
         run: python loop.py --iters "$ITERS"
 
-      - name: Push back to campaign branch
+      - name: Push back to dev
         env:
-          BRANCH: autoresearch/${{ inputs.campaign }}
+          BRANCH: dev
         run: |
-          # Single-writer branch — no rebase needed. If push fails it means
-          # someone pushed to this branch manually; surface that as an error
-          # rather than silently rebasing over their work.
           if [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then
             echo "No new commits from loop; nothing to push"
             exit 0

@@ -1,13 +1,10 @@
 name: Autoresearch loop (stocks)
 
-# Runs the autoresearch loop on autoresearch/stocks (single writer = this workflow).
+# Runs the autoresearch loop on dev (single writer = this workflow).
 # Main is NEVER touched — promotion to main happens via sync_branches.yml.
 #
-# Schedule (UTC): 04:00 daily (= 21:00 PST previous day, well outside US market
-# hours so paper/scan on main never see a strategy file mid-mutation).
-#
-# Disable this workflow in GitHub Actions to pause stocks research without
-# affecting loop-crypto.yml or promote/scan/paper.
+# Schedule: 11:00 UTC daily = 03:00 PST (04:00 PDT during daylight saving).
+# Avoid running locally at the same time to prevent push races on dev.
 #
 # Required repo secrets:
 #   OPENROUTER_API_KEY  — used by loop.py to call the LLM
@@ -16,13 +13,13 @@ name: Autoresearch loop (stocks)
 
 on:
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 11 * * *'
   workflow_dispatch:
     inputs:
       iters:
         description: 'Number of mutations to attempt'
         required: false
-        default: '8'
+        default: '10'
         type: string
       optimize_metric:
         description: 'val_sharpe | calmar | dsr'
@@ -38,14 +35,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: autoresearch-loop-stocks
+  group: loop-stocks-dev
   cancel-in-progress: false
 
 jobs:
   loop:
-    uses: ./.github/workflows/loop-campaign.yml
+    uses: ./.github/workflows/loop-dev.yml
     secrets: inherit
     with:
       campaign: stocks
-      iters: ${{ github.event.inputs.iters || '8' }}
+      iters: ${{ github.event.inputs.iters || '10' }}
       optimize_metric: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}

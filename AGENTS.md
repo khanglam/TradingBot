@@ -14,87 +14,64 @@ file, runs a backtest, and keeps or discards the change. Good strategies are pro
 
 ---
 
-## Three-Branch Structure
+## Two-Branch Structure
 
 ### `main` — deployment surface & frozen strategies
 
-The only branch humans and CI workflows interact with directly for deployment.
-Never mutated by the loop. Only updated by `sync_branches.py` (strategy promotion)
-and manual commits.
+Never mutated by the loop. Updated by `sync_branches.py` (strategy promotion) and
+manual commits. `paper.yml` and `live_trade.py` always read from here.
 
 | File / Dir | Purpose |
 |---|---|
-| `app.py` | FastAPI dashboard server (local dev only) |
-| `web/index.html` | Dashboard UI served by app.py |
-| `scan.py` | Daily signal scanner — emits BUY/SELL to webhook |
 | `live_trade.py` | Alpaca paper/live executor |
-| `sync_branches.py` | Promotion gate: candidate → main if it beats frozen |
-| `loop.py` | Autoresearch orchestrator (also synced to campaign branches) |
-| `backtest.py` | Evaluation harness (also synced to campaign branches) |
-| `data_fetch.py` | OHLCV downloader (also synced to campaign branches) |
-| `program.md` | LLM system prompt for the loop (also synced) |
-| `requirements.txt` | Python dependencies (also synced) |
-| `AGENTS.md` | This file (also synced) |
-| `configs.toml` | Campaign config — **lives only on main**; campaign branches read it via `git show origin/main:configs.toml` |
-| `strategies/crypto.py` | **Frozen** crypto strategy — promoted from `autoresearch/crypto` |
-| `strategies/stocks.py` | **Frozen** stocks strategy — promoted from `autoresearch/stocks` |
+| `sync_branches.py` | Promotion gate: dev candidate → main if it beats frozen |
+| `configs.toml` | Campaign config — **lives only on main**; dev reads via `git show origin/main:configs.toml` |
+| `strategies/crypto.py` | **Frozen** crypto strategy — promoted from `dev` |
+| `strategies/stocks.py` | **Frozen** stocks strategy — promoted from `dev` |
 | `.github/workflows/` | All CI workflow definitions — GitHub reads these from main |
-| `.claude/` | Claude Code skills and local settings |
-| `README.md`, `.gitignore`, `.env.example`, `.cursorrules` | Docs and local config |
+| `README.md`, `.gitignore`, `.env.example` | Docs and local config |
 
-### `autoresearch/crypto` — crypto research loop
+Harness files (`loop.py`, `backtest.py`, etc.) may exist on `main` for promotion
+backtests; primary development happens on `dev`. Merge `dev` → `main` when harness
+should stay in sync.
 
-The loop runs here. `strategies/crypto.py` is mutated every iteration; bad experiments
-are `git reset --hard`'d away. Only `strategies/crypto.py` and `results/*.tsv` change.
-Everything else arrives via harness sync from main.
+### `dev` — research branch
 
-| File / Dir | Purpose |
-|---|---|
-| `strategies/crypto.py` | **Mutable** — the strategy being evolved |
-| `results/crypto-*.tsv` | Experiment ledger (keep/discard rows appended by loop) |
-| `results/.gitkeep` | Keeps the results/ dir in git |
-| `loop.py`, `backtest.py`, `data_fetch.py` | Harness — synced from main, do not edit here |
-| `program.md`, `requirements.txt`, `AGENTS.md` | Harness — synced from main |
-| `.gitignore`, `.env.example`, `.cursorrules`, `README.md` | Config/docs |
-
-**Does NOT contain:** `app.py`, `scan.py`, `live_trade.py`, `sync_branches.py`, `web/`,
-`.github/`, `.claude/`, `archive/`, `strategies/stocks.py`, `configs.toml`.
-
-### `autoresearch/stocks` — stocks research loop
-
-Mirror of `autoresearch/crypto` for the stocks campaign.
+All loop mutations, experiment logs, and harness edits. The loop runs here only;
+bad experiments are `git reset --hard`'d away.
 
 | File / Dir | Purpose |
 |---|---|
-| `strategies/stocks.py` | **Mutable** — the strategy being evolved |
-| `results/stocks-*.tsv` | Experiment ledger |
-| Everything else | Same as crypto branch above |
+| `strategies/crypto.py` | **Mutable** crypto candidate |
+| `strategies/stocks.py` | **Mutable** stocks candidate |
+| `results/*.tsv` | Per-campaign experiment ledger |
+| `loop.py`, `backtest.py`, `data_fetch.py`, `program.md` | Harness — edit here |
+| `app.py`, `web/` | Local dashboard (dev checkout) |
 
-**Does NOT contain:** same exclusions as crypto branch, plus `strategies/crypto.py`.
+**Does NOT deploy to paper:** strategies on `dev` are candidates until promoted.
 
 ---
 
 ## Sync Rules
 
-### main → campaign (harness sync, daily via `sync_branches.yml`)
-Only these files are copied from main to campaign branches:
-```
-loop.py  backtest.py  program.md  data_fetch.py  requirements.txt  AGENTS.md
-```
-**Do not add** `app.py`, `scan.py`, `live_trade.py`, `sync_branches.py`, `web/`,
-`.github/`, or `configs.toml` to this list.
+### dev → main (promotion, daily via `sync_branches.yml`)
 
-### campaign → main (promotion, daily via `sync_branches.yml`)
-Only `strategies/<campaign>.py` is copied from a campaign branch to main, and only
-if the candidate beats the frozen strategy on the val window AND clears the lockbox
-sanity floors (configurable via `PROMOTION_MARGIN`, `LOCKBOX_MIN_SHARPE`, `LOCKBOX_MAX_DD`).
+Only `strategies/<campaign>.py` is copied from `dev` to `main`, and only if the
+candidate beats the frozen strategy on the val window AND clears lockbox sanity floors
+(`PROMOTION_MARGIN`, `LOCKBOX_MIN_SHARPE`, `LOCKBOX_MAX_DD`).
 
 ### configs.toml — main only
-`configs.toml` lives exclusively on `main`. Campaign branches and CI read it with:
+
+`configs.toml` lives exclusively on `main`. `dev` CI and local tools read it with:
+
 ```python
 subprocess.run(["git", "show", "origin/main:configs.toml"], ...)
 ```
-Never commit `configs.toml` to a campaign branch. Never add it to the harness sync list.
+
+### Harness — manual merge
+
+There is no automated harness sync. After changing `loop.py` / `backtest.py` on `dev`,
+merge to `main` when promotion should use the same harness version.
 
 ---
 
@@ -102,24 +79,19 @@ Never commit `configs.toml` to a campaign branch. Never add it to the harness sy
 
 | Workflow | Triggers | Checks out | What it does |
 |---|---|---|---|
-| `loop-stocks.yml` | Daily 04:00 UTC | — | Calls `loop-campaign.yml` with `campaign=stocks` |
-| `loop-crypto.yml` | Every 6h | — | Calls `loop-campaign.yml` with `campaign=crypto` |
-| `loop-campaign.yml` | `workflow_call` | `autoresearch/<campaign>` | Fetches `origin/main` for config, runs `loop.py`, pushes commits back |
-| `sync_branches.yml` | Daily 12:00 UTC | `main` (+ fetches campaign) | Runs `sync_branches.py`; if promoted, commits to main; syncs harness to campaign |
-| `scan.yml` | Stocks 13:30 UTC weekdays; crypto every 4h | `main` | Runs `scan.py`, posts signals to webhook |
-| `paper.yml` | Stocks 13:35 UTC weekdays; crypto every 4h | `main` | Runs `live_trade.py`, submits Alpaca orders |
+| `loop-stocks.yml` | Daily 11:00 UTC (03:00 PST) | `dev` | 10 loop iters for stocks campaign |
+| `loop-crypto.yml` | Daily 11:00 UTC (03:00 PST) | `dev` | 10 loop iters for crypto campaign |
+| `loop-dev.yml` | `workflow_call` | `dev` | Reusable loop job |
+| `sync_branches.yml` | Daily 12:00 UTC | `main` (+ fetch `dev`) | Promotion gauntlet; push main if passed |
+| `paper.yml` | Stocks weekdays 13:35 UTC; crypto every 4h | `main` | `live_trade.py` against frozen strategies |
 
 ---
 
 ## Key Invariants
 
-1. **The loop never touches main.** All mutations stay on the campaign branch until
-   `sync_branches.py` explicitly promotes them.
-2. **Campaign branches are single-writer.** Only the loop workflow commits to them.
-   Do not push directly to `autoresearch/crypto` or `autoresearch/stocks`.
+1. **The loop never touches main.** All mutations stay on `dev` until `sync_branches.py` promotes them.
+2. **Avoid local loop runs at 03:00 PST** when scheduled GHA loops push to `dev`.
 3. **`strategies/<campaign>.py` on main is always the last promoted (frozen) version.**
-   `scan.py` and `live_trade.py` always read from main.
-4. **`backtest.py` is immutable once stable.** Changing it mid-experiment makes runs
-   incomparable. Treat it as a fixed harness.
-5. **`configs.toml` changes take effect immediately** — CI reads from `origin/main` at
-   runtime, so a pushed config change is live on the next loop run without any branch sync.
+   `live_trade.py` always reads from main.
+4. **`backtest.py` is immutable once stable** within a research session. Treat harness changes as deliberate.
+5. **`configs.toml` changes on main take effect immediately** for CI via `origin/main` at runtime.

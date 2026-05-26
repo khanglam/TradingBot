@@ -1,16 +1,12 @@
 name: Sync branches
 
-# Daily sync. For each campaign:
-#   1. Fetch autoresearch/<campaign>
-#   2. sync_branches.py: backtest candidate vs frozen on val window, then lockbox.
-#   3. If it clears the gauntlet, sync_branches.py overwrites strategies/<campaign>.py
-#      in the working tree on main; this workflow commits + pushes.
-#   4. Sync harness files (loop.py, backtest.py, etc.) from main → campaign branch.
+# Daily promotion. For each campaign:
+#   1. Fetch dev
+#   2. sync_branches.py: backtest candidate (dev) vs frozen (main) on val, then lockbox.
+#   3. If it clears the gauntlet, overwrite strategies/<campaign>.py on main; commit + push.
 #
-# Schedule: 12:00 UTC daily (= 04:00 PST / 05:00 PDT). Runs after
-# loop-stocks.yml (04:00 UTC) and before stocks paper (13:35 UTC).
-# Crypto promotions use the same daily cadence; loop-crypto.yml (every 6h)
-# on autoresearch/crypto is independent — promote only reads that branch.
+# Schedule: 12:00 UTC daily (= 04:00 PST / 05:00 PDT). Runs after loop-stocks/crypto
+# at 11:00 UTC (03:00 PST) and before stocks paper (13:35 UTC).
 #
 # Required repo secrets: none beyond GITHUB_TOKEN.
 # Optional env knobs: PROMOTION_MARGIN, LOCKBOX_MIN_SHARPE, LOCKBOX_MAX_DD.
@@ -71,9 +67,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Fetch campaign branch
+      - name: Fetch dev
         if: steps.gate.outputs.skip != 'true'
-        run: git fetch origin "autoresearch/${{ matrix.campaign }}:autoresearch/${{ matrix.campaign }}"
+        run: git fetch origin dev:dev
 
       - name: Setup Python
         if: steps.gate.outputs.skip != 'true'
@@ -160,41 +156,12 @@ jobs:
         env:
           CAMPAIGN: ${{ matrix.campaign }}
         run: |
-          SHA=$(git rev-parse --short=7 "autoresearch/$CAMPAIGN")
+          SHA=$(git rev-parse --short=7 dev)
           git add "strategies/${CAMPAIGN}.py"
           git commit -m "promote ${CAMPAIGN} ${SHA}" --no-verify
-          # main has many readers (paper/scan workflows). Rebase + retry
-          # in case a parallel manual change landed.
           for i in 1 2 3; do
             git pull --rebase origin main && git push origin main && exit 0
             sleep 5
           done
           echo "::error ::Failed to push promotion after 3 attempts"
           exit 1
-
-      - name: Sync harness files from main to campaign branch
-        if: steps.gate.outputs.skip != 'true'
-        env:
-          CAMPAIGN: ${{ matrix.campaign }}
-        run: |
-          BRANCH="autoresearch/${CAMPAIGN}"
-          MAIN_SHA=$(git rev-parse --short=7 main)
-
-          git checkout "${BRANCH}"
-
-          # Copy harness files from main — never touch strategies/ (campaign owns that)
-          # app.py, scan.py, live_trade.py, sync_branches.py are main-only and must NOT be synced
-          git checkout main -- \
-            loop.py backtest.py program.md \
-            data_fetch.py requirements.txt AGENTS.md
-
-          if git diff --cached --quiet; then
-            echo "[sync] ${BRANCH}: harness already up to date with main ${MAIN_SHA}"
-            git checkout main
-            exit 0
-          fi
-
-          git commit -m "chore: sync harness from main ${MAIN_SHA}" --no-verify
-          git push origin "${BRANCH}"
-          echo "[sync] ${BRANCH}: pushed harness sync from main ${MAIN_SHA}"
-          git checkout main

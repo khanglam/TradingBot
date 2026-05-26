@@ -1,11 +1,11 @@
 """Promotion gate — copy a campaign's candidate strategy onto main if it
 clears the validation gauntlet.
 
-The autoresearch loop runs on autoresearch/<campaign> branches and never
-touches main. main's strategies/<campaign>.py is the frozen version that
-scan.py / live_trade.py read. This script is the only path between the two:
+The autoresearch loop runs on dev and never touches main. main's
+strategies/<campaign>.py is the frozen version that live_trade.py reads.
+This script is the only path between the two:
 
-  1. Read the candidate strategy from autoresearch/<campaign> HEAD.
+  1. Read the candidate strategy from dev HEAD.
   2. If identical to frozen → no-op.
   3. Run backtest on candidate (val window) — must beat frozen by PROMOTION_MARGIN.
   4. Run backtest on candidate (lockbox window) — sanity floors:
@@ -22,8 +22,8 @@ Usage:
     python sync_branches.py --campaign stocks
     python sync_branches.py --campaign crypto
 
-The script must be run from a checkout of main with autoresearch/<campaign>
-fetched (the workflow handles the fetch).
+The script must be run from a checkout of main with dev fetched (the workflow
+handles the fetch).
 """
 from __future__ import annotations
 
@@ -101,13 +101,13 @@ def promote(campaign: str) -> int:
 
     rel_path = CAMPAIGN_FILES[campaign]
     frozen_path = ROOT / rel_path
-    branch = f"autoresearch/{campaign}"
+    branch = "dev"
 
     try:
         candidate_src = _git("show", f"{branch}:{rel_path}")
         candidate_sha = _git("rev-parse", "--short=7", branch)
     except subprocess.CalledProcessError as e:
-        print(f"[promote] {campaign}: cannot read {branch} — fetch it first ({e})",
+        print(f"[promote] {campaign}: cannot read origin/{branch} — fetch it first ({e})",
               file=sys.stderr)
         return 2
 

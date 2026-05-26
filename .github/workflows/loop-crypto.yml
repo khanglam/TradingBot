@@ -1,12 +1,10 @@
 name: Autoresearch loop (crypto)
 
-# Runs the autoresearch loop on autoresearch/crypto (single writer = this workflow).
+# Runs the autoresearch loop on dev (single writer = this workflow).
 # Main is NEVER touched — promotion to main happens via sync_branches.yml.
 #
-# Schedule (UTC): every 6h (24/7 markets; scan/paper crypto read frozen main).
-#
-# Disable this workflow in GitHub Actions to pause crypto research without
-# affecting loop-stocks.yml or promote/scan/paper.
+# Schedule: 11:00 UTC daily = 03:00 PST (04:00 PDT during daylight saving).
+# Stocks and crypto run at the same time but edit different strategy files.
 #
 # Required repo secrets:
 #   OPENROUTER_API_KEY  — used by loop.py to call the LLM
@@ -15,13 +13,13 @@ name: Autoresearch loop (crypto)
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 11 * * *'
   workflow_dispatch:
     inputs:
       iters:
         description: 'Number of mutations to attempt'
         required: false
-        default: '8'
+        default: '10'
         type: string
       optimize_metric:
         description: 'val_sharpe | calmar | dsr'
@@ -37,14 +35,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: autoresearch-loop-crypto
+  group: loop-crypto-dev
   cancel-in-progress: false
 
 jobs:
   loop:
-    uses: ./.github/workflows/loop-campaign.yml
+    uses: ./.github/workflows/loop-dev.yml
     secrets: inherit
     with:
       campaign: crypto
-      iters: ${{ github.event.inputs.iters || '8' }}
+      iters: ${{ github.event.inputs.iters || '10' }}
       optimize_metric: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}

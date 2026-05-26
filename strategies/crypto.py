@@ -1,4 +1,4 @@
-"""Crypto campaign strategy. Mutated by the autoresearch loop when
+"""Crypto campaign strategy. Mutated by the autoresearch loop on dev when
 STRATEGY_FILE points here (default for the crypto matrix shard).
 
 Baseline: Donchian-breakout trend-following (Turtle System One on 4h bars).

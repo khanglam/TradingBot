@@ -42,7 +42,7 @@ and overfitting to validation will be caught there.
    `# Current <path>`). This is `strategies/stocks.py` for the stocks
    campaign, `strategies/crypto.py` for the crypto campaign. Do not
    touch `backtest.py`, `loop.py`, `data_fetch.py`, `live_trade.py`,
-   `scan.py`, the windows, or any harness internals.
+   the time windows, or any harness internals.
 2. **One change per experiment.** A "change" is a single coherent idea
    (e.g. "add an RSI filter" or "switch to Bollinger exits"), not a bundle.
 3. **No look-ahead.** Only use bars `[0..current]`. No `shift(-1)`, no

@@ -1,4 +1,4 @@
-"""Stocks campaign strategy. Mutated by the autoresearch loop when
+"""Stocks campaign strategy. Mutated by the autoresearch loop on dev when
 STRATEGY_FILE points here (default for the stocks matrix shard).
 
 Baseline: long-only EMA(15) / EMA(45) crossover with ADX(14) trend filter.

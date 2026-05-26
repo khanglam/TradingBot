@@ -1,9 +1,8 @@
 """Autoresearch orchestrator — the karpathy-style loop.
 
-The loop ALWAYS runs on a campaign-specific branch (autoresearch/<campaign>),
-never on main. main carries only the frozen, promoted strategy files that
-scan.py / live_trade.py read; the loop's mutations and git resets stay
-quarantined on the campaign branch and only land on main via sync_branches.py.
+The loop ALWAYS runs on the dev branch, never on main. main carries only the
+frozen, promoted strategy files that live_trade.py reads; the loop's mutations
+and git resets stay on dev and only land on main via sync_branches.py.
 
 Each iteration:
   1. Read STRATEGY_FILE + last 10 rows of per-campaign results.tsv + program.md
@@ -24,7 +23,7 @@ Each iteration:
 Requires:
     OPENROUTER_API_KEY in env (or .env file). Get one at https://openrouter.ai/keys
     A clean git working tree on entry (so we can reset cleanly)
-    HEAD on an autoresearch/<campaign> branch (set ALLOW_LOOP_ON_MAIN=1 to override)
+    HEAD on the dev branch (set ALLOW_LOOP_ON_MAIN=1 to override)
 
 Environment knobs (all optional):
     OPTIMIZE_METRIC        val_sharpe (default) | calmar | dsr
@@ -92,7 +91,7 @@ _DEFAULT_MAX_OUTPUT_TOKENS = 8000
 
 
 def _load_dotenv_files() -> None:
-    """Load .env from cwd and repo root (required for .worktrees/* runs)."""
+    """Load .env from cwd and repo root."""
     try:
         from dotenv import load_dotenv
     except ImportError:
@@ -167,19 +166,16 @@ def git_current_branch() -> str:
     return _git("rev-parse", "--abbrev-ref", "HEAD")
 
 
-def assert_research_branch() -> None:
-    """The loop mutates and resets HEAD; it must run on a campaign branch
-    (autoresearch/<name>), never on main. Set ALLOW_LOOP_ON_MAIN=1 to override
-    for one-off local experiments where you intentionally want to commit to
-    whatever branch you're on."""
+def assert_dev_branch() -> None:
+    """The loop mutates and resets HEAD; it must run on dev, never on main.
+    Set ALLOW_LOOP_ON_MAIN=1 to override for one-off local experiments."""
     if os.environ.get("ALLOW_LOOP_ON_MAIN") == "1":
         return
     branch = git_current_branch()
-    if branch in ("main", "master") or not branch.startswith("autoresearch/"):
+    if branch != "dev":
         raise SystemExit(
-            f"ERROR: loop.py refuses to run on branch {branch!r}. Switch to an "
-            f"autoresearch/<campaign> branch (e.g. `git checkout autoresearch/stocks`) "
-            f"or set ALLOW_LOOP_ON_MAIN=1 to override."
+            f"ERROR: loop.py refuses to run on branch {branch!r}. "
+            f"Switch to dev (`git checkout dev`) or set ALLOW_LOOP_ON_MAIN=1 to override."
         )
 
 
@@ -711,8 +707,8 @@ def main() -> int:
         )
         return 2
 
-    # Refuse to mutate main — loop runs on autoresearch/<campaign> only.
-    assert_research_branch()
+    # Refuse to mutate main — loop runs on dev only.
+    assert_dev_branch()
 
     # Layer 1 — checkpoint anything left dirty by a prior aborted session
     # so the dirty-check below sees a clean tree.

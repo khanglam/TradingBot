@@ -42,15 +42,13 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "web" / "index.html"
-WORKTREE_ROOT = ROOT / ".worktrees"
-
 _active_campaign: str = "crypto"
 os.environ.setdefault("CAMPAIGN", "crypto")  # backtest.py reads this at import time
 
 
 def _results_path() -> Path:
-    """Per-campaign results.tsv path inside the active campaign's worktree.
-    Recomputed each call so the dashboard follows env changes without restart."""
+    """Per-campaign results.tsv path. Recomputed each call so the dashboard
+    follows env changes without restart."""
     import backtest as bt
     rel = bt.results_path().relative_to(ROOT)
     return _campaign_root() / rel
@@ -59,7 +57,7 @@ DATA_DIR = ROOT / "data"
 
 
 def _strategy_path() -> Path:
-    """Per-campaign strategy file path inside the active campaign's worktree."""
+    """Per-campaign strategy file path on the dev checkout."""
     import backtest as bt
     return _campaign_root() / bt.STRATEGY_FILE
 
@@ -70,25 +68,31 @@ if not PYTHON.exists():
 app = FastAPI(title="TradingBot Autoresearch UI")
 
 
-# ────────────────────── campaign worktree helpers ─────────────────────────
-# The autoresearch loop runs on autoresearch/<campaign> branches, each
-# checked out as its own git worktree under .worktrees/. The dashboard
-# never runs `git checkout` on the main repo — it just resolves paths
-# into the right worktree based on the active campaign.
-
-def _worktree_for(campaign: str) -> Path:
-    return WORKTREE_ROOT / campaign
-
+# ────────────────────── campaign / branch helpers ─────────────────────────
+# The autoresearch loop runs on the dev branch. Run app.py from a dev checkout.
 
 def _campaign_root(campaign: str | None = None) -> Path:
-    """Filesystem root for reads/writes that follow the active campaign.
-    Defaults to the campaign worktree; falls back to ROOT if the worktree
-    is missing so the dashboard never 500s on a fresh clone — the user
-    sees stale main data plus the setup hint instead."""
-    if campaign is None:
-        campaign = _active_campaign
-    wt = _worktree_for(campaign)
-    return wt if wt.exists() else ROOT
+    """Filesystem root for reads/writes (always the repo root on dev)."""
+    return ROOT
+
+
+def _git_branch() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _require_dev_branch() -> None:
+    branch = _git_branch()
+    if branch != "dev":
+        raise RuntimeError(
+            f"Loop must run on branch 'dev' (current: {branch!r}). "
+            f"Run `git checkout dev` from the repo root."
+        )
 
 
 def _campaign_or_400() -> str:
@@ -268,16 +272,11 @@ class LoopProc:
         with self.lock:
             if self.is_running():
                 raise RuntimeError("Loop already running.")
-            wt = _worktree_for(campaign)
-            if not wt.exists():
-                raise RuntimeError(
-                    f"Worktree {wt} does not exist. One-time setup: "
-                    f"`git worktree add .worktrees/{campaign} autoresearch/{campaign}`"
-                )
+            _require_dev_branch()
             self.buffer.clear()
             self.current_iter = 0
             self.total_iters = iters
-            self._append(f"[ui] starting loop.py --iters {iters}  (cwd={wt})")
+            self._append(f"[ui] starting loop.py --iters {iters}  (cwd={ROOT})")
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
             env = os.environ.copy()
             env["CAMPAIGN"] = campaign
@@ -285,7 +284,7 @@ class LoopProc:
             env["PYTHONUTF8"] = "1"
             self.proc = subprocess.Popen(
                 [str(PYTHON), "loop.py", "--iters", str(int(iters))],
-                cwd=wt, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, creationflags=flags,
                 encoding="utf-8", errors="replace", env=env,
             )
@@ -484,9 +483,8 @@ def program_source() -> dict:
 
 @app.get("/api/git-log")
 def git_log(n: int = 20) -> dict:
-    # Show commit history for the active campaign's strategy file on its
-    # research branch. Run `git log` from inside the worktree so HEAD is
-    # the campaign branch. Pre-split commits used "strategy.py" — include
+    # Show commit history for the active campaign's strategy file on dev.
+    # Pre-split commits used "strategy.py" — include
     # it as a fallback path so older history still appears.
     import backtest as bt
     rel = bt.STRATEGY_FILE  # e.g. "strategies/stocks.py"
@@ -521,8 +519,7 @@ def get_equity():
     importlib.reload(bt_module)
     from backtesting import Backtest
     from backtesting.lib import FractionalBacktest
-    # Load the candidate from the active campaign's worktree, not main's
-    # frozen copy — this is the dashboard's "current research" view.
+    # Load the candidate strategy on dev (not main's frozen copy).
     UserStrategy = bt_module.load_strategy_class(_campaign_root() / bt_module.STRATEGY_FILE)
 
     # Equity curve is single-asset by definition: pick the first symbol
@@ -607,12 +604,10 @@ def set_campaign(name: str) -> dict:
     import importlib
     import backtest as _bt
     importlib.reload(_bt)
-    wt = _worktree_for(name)
     return {
         "ok": True,
         "campaign": name,
-        "worktree": str(wt),
-        "worktree_ready": wt.exists(),
+        "git_branch": _git_branch(),
     }
 
 
@@ -635,8 +630,7 @@ def setup_status() -> dict:
                 "size_kb": f.stat().st_size // 1024,
             })
 
-    # Check dirty state in the active campaign's worktree — that's the one
-    # the loop will operate on. Falls back to ROOT if no campaign is selected.
+    # Check dirty state on dev — the loop operates on this checkout.
     git_dirty = False
     try:
         out = subprocess.run(
@@ -697,7 +691,6 @@ def loop_start(req: LoopStartRequest) -> dict:
     try:
         loop_proc.start(req.iters, campaign)
     except RuntimeError as e:
-        # Surface worktree-missing as 409 so the UI can offer guidance.
         raise HTTPException(409, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))

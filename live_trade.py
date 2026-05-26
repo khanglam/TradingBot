@@ -8,7 +8,7 @@ encodes is what gets paper-traded, automatically.
 
 Unlike the previous Lumibot-based implementation (which hard-coded an EMA
 crossover that drifted from strategy.py the moment the loop changed it), this
-executor reuses the exact same evaluation path as scan.py:
+executor reuses the same backtesting.py evaluation path as the harness:
 
     1. Fetch recent bars (yfinance for stocks, alpaca-py CryptoHistoricalData
        for crypto — free, no API key needed for crypto bars).

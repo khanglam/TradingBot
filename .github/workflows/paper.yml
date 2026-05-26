@@ -1,12 +1,10 @@
 name: Paper trade (Alpaca)
 
-# Runs live_trade.py against the configured watchlists and submits paper
-# orders to Alpaca whenever the current strategy.py emits a fresh BUY/SELL
-# signal. Uses the SAME backtesting.py harness as scan.py, so the executor
-# automatically tracks whatever the autoresearch loop optimized last.
+# Runs live_trade.py on main (frozen strategies only). Submits paper orders
+# when the promoted strategy emits a fresh BUY/SELL signal.
 #
 # Two scheduled jobs:
-#   - stocks: weekdays 13:35 UTC (5 minutes after scan.yml fires at 13:30)
+#   - stocks: weekdays 13:35 UTC
 #   - crypto: every 4 hours (markets never close)
 #
 # Required repo secrets:
@@ -72,8 +70,10 @@ jobs:
       PYTHONIOENCODING: 'utf-8'
 
     steps:
-      - name: Checkout (current strategy.py)
+      - name: Checkout main (frozen strategies)
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Python
         uses: actions/setup-python@v5

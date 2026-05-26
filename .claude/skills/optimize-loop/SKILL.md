@@ -323,12 +323,10 @@ Print one line:
 
 ## Phase 3 — Final report + loop smoke test (mandatory)
 
-After all Phase 2 iterations, if **any change was kept**, run these from a **campaign worktree** (same cwd the dashboard uses):
+After all Phase 2 iterations, if **any change was kept**, run from a **`dev`** checkout at repo root:
 
 ```bash
-# Example: crypto campaign
-cd .worktrees/crypto
-# Ensure repo-root .env is loaded (loop.py walks up to configs.toml parent)
+git checkout dev
 python loop.py --iters 1
 ```
 
@@ -339,7 +337,7 @@ Requirements for PASS:
 
 If `OPENROUTER_API_KEY` is missing, run **Phase 1c-A** + **1c-B** instead and print: `[integrity] loop smoke test skipped (no API key)`.
 
-Sync kept harness changes to worktrees if you edited `loop.py` on main only: copy `loop.py`, `program.md` to `.worktrees/crypto` and `.worktrees/stocks`, or tell the user to run `/sync-branches`.
+If harness files were edited, ensure you are on **`dev`** and tell the user to merge `dev` → `main` when promotion should use the same harness.
 
 ```
 ===== /optimize-loop complete =====
