@@ -1,6 +1,6 @@
 """Download OHLCV data and cache as Parquet.
 
-Crypto via CCXT (Binance public API, free, no key required).
+Crypto via CCXT (KuCoin public API, free, no key required).
 Stocks via yfinance (free, scraped from Yahoo).
 
 Output layout:
@@ -36,7 +36,7 @@ def _bn_timeframe_ms(tf: str) -> int:
 
 def fetch_crypto(
     symbol: str = "BTC/USDT",
-    exchange: str = "kraken",
+    exchange: str = "kucoin",
     timeframe: str = "4h",
     start: str = "2019-01-01",
     end: str | None = None,
