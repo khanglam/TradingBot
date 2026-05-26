@@ -75,15 +75,13 @@ def _sma(series: pd.Series, n: int) -> np.ndarray:
     return pd.Series(series).rolling(n).mean().to_numpy()
 
 
-def _volume_roc(volume: pd.Series, n: int = 10) -> np.ndarray:
-    """Volume Rate-of-Change: percentage change in volume over N bars.
-    Positive ROC = volume expanding (momentum building). Used to confirm
-    breakouts — sudden volume surges distinguish real breakouts from
-    slow grindouts that reverse quickly. Returns ROC values; positive ROC
-    indicates accelerating participation."""
-    vol = pd.Series(volume)
-    roc = vol.pct_change(periods=n) * 100
-    return roc.fillna(0).replace([np.inf, -np.inf], 0).to_numpy()
+def _volume_sma(volume: pd.Series, n: int = 20) -> np.ndarray:
+    """20-bar SMA of volume — compares current volume to its rolling average.
+    Unlike the prior 10-bar ROC which was noisy (comparing to bar N-10 ago,
+    susceptible to one-off volume spikes), this smooths volume into a
+    rolling mean. Signals when today's volume exceeds the 20-bar average,
+    capturing sustained participation rather than single-bar anomalies."""
+    return pd.Series(volume).rolling(n).mean().bfill().to_numpy()
 
 
 class Strategy(_BTStrategy):
@@ -116,9 +114,9 @@ class Strategy(_BTStrategy):
     # ADX momentum confirmation: require ADX > 25 on entry bars to confirm
     # the market is trending. Unlike the 200-bar SMA regime filter which
     # crashed with 0 trades (too restrictive for 4h crypto data), ADX is
-    # a momentum indicator that filters out ranging chop at the bar level
-    # without blocking entire regime windows. This strengthens the entry
-    # signal by requiring trend strength, not trend direction.
+    # a momentum indicator that filters at the bar level without blocking
+    # entire regime windows. This strengthens the entry signal by requiring
+    # trend strength, not trend direction.
     adx_period = 14
     adx_threshold = 25.0
 
@@ -154,15 +152,6 @@ class Strategy(_BTStrategy):
     # oscillating sharpe 0.45–1.35 with 10+ entry-filter mutations exhausted.
     max_bars_in_trade = 40
 
-    # Volume momentum confirmation: require 10-bar Rate-of-Change in volume
-    # to be positive (> 0%) — i.e., today's volume exceeds the volume from
-    # 10 bars ago. This fires on sudden volume surges rather than static MA
-    # crossing, capturing momentum acceleration rather than just participation.
-    # Structurally different from the prior volume SMA filter (which compared
-    # to a rolling 20-bar average), and from the ATR/ADX filters (which measure
-    # price momentum, not volume momentum).
-    volume_roc_period = 10
-
     def init(self) -> None:
         high = self.data.High
         low = self.data.Low
@@ -177,7 +166,7 @@ class Strategy(_BTStrategy):
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.sma = self.I(_sma, close, self.sma_period)
-        self.volume_roc = self.I(_volume_roc, pd.Series(self.data.Volume), self.volume_roc_period)
+        self.volume_sma = self.I(_volume_sma, pd.Series(self.data.Volume), 20)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -194,10 +183,11 @@ class Strategy(_BTStrategy):
 
         # Entry: close breaks above the prior bar's N-bar high AND
         # current volatility (ATR) is elevated vs its 50-bar MA.
-        # Also require volume momentum confirmation: today's volume must
-        # exceed the volume from 10 bars ago (positive ROC). This fires on
-        # sudden volume surges rather than static threshold crossing,
-        # capturing momentum acceleration rather than just participation.
+        # Also require volume confirmation: today's volume must exceed
+        # the 20-bar rolling average. Replaced the noisy 10-bar ROC
+        # (which compared to bar N-10 ago and was prone to one-off spikes)
+        # with a rolling average that smooths volume into a cleaner signal,
+        # capturing genuine participation surges without the noise.
         # And require ADX momentum confirmation: ADX > 25 confirms the
         # market is trending, not ranging. Unlike the 200-bar SMA filter
         # which crashed (too restrictive on 4h crypto), ADX filters at
@@ -206,13 +196,13 @@ class Strategy(_BTStrategy):
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
-        volume_momentum = self.volume_roc[-1] > 0  # positive ROC = volume expanding
+        volume_confirm = self.data.Volume[-1] > self.volume_sma[-1]  # vol above 20-bar SMA
         momentum_confirm = self.adx[-1] > self.adx_threshold
         # Regime filter: price above 200-bar SMA = uptrend. Skips breakouts
         # in bear regimes where countertrend trades have poor odds.
         uptrend_regime = close > self.sma[-1]
 
-        if breakout and vol_regime_high and volume_momentum and momentum_confirm and uptrend_regime and not self.position:
+        if breakout and vol_regime_high and volume_confirm and momentum_confirm and uptrend_regime and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
