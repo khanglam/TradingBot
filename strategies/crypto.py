@@ -70,6 +70,21 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> np.n
     return adx.fillna(0).bfill().to_numpy().copy()
 
 
+def _di(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> tuple[np.ndarray, np.ndarray]:
+    """Returns (plus_di, minus_di) — Directional Indicators.
+    Plus_DI > Minus_DI indicates bullish momentum; opposite for bearish.
+    Used to filter only breakouts that align with the dominant direction."""
+    high, low, close = pd.Series(high), pd.Series(low), pd.Series(close)
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+    atr = _atr(high, low, close, n)
+    plus_di = 100 * (plus_dm.rolling(n).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(n).mean() / atr)
+    return plus_di.fillna(50).to_numpy().copy(), minus_di.fillna(50).to_numpy().copy()
+
+
 def _sma(series: pd.Series, n: int) -> np.ndarray:
     """Simple moving average."""
     return pd.Series(series).rolling(n).mean().to_numpy().copy()
@@ -158,6 +173,7 @@ class Strategy(_BTStrategy):
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
+        self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
         self.volume_sma = self.I(_volume_sma, pd.Series(self.data.Volume), 20)
 
         # Highest price since entry — drives the trailing stop. Reset on
@@ -185,14 +201,17 @@ class Strategy(_BTStrategy):
         # market is trending, not ranging. ADX filters at the bar level
         # without blocking regime participation, unlike the 200-bar SMA
         # filter which was too restrictive on 4h crypto data.
+        # And require directional alignment: +DI > -DI ensures breakout
+        # is in the direction of dominant momentum, not counter-trend.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         volume_confirm = self.data.Volume[-1] > self.volume_sma[-1]  # vol above 20-bar SMA
         momentum_confirm = self.adx[-1] > self.adx_threshold
+        bullish_di = self.plus_di[-1] > self.minus_di[-1]
 
-        if breakout and vol_regime_high and volume_confirm and momentum_confirm and not self.position:
+        if breakout and vol_regime_high and volume_confirm and momentum_confirm and bullish_di and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
