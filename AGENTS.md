@@ -42,7 +42,7 @@ All loop work happens here.
 
 ## dev → main
 
-**Daily at 06:00 PDT** (`sync_branches.yml`): `git merge origin/dev` into `main` and push.
+**Daily at 06:00 California** (`sync_branches.yml`): `git merge origin/dev` into `main` and push.
 No per-file promotion gate — whatever is on `dev` becomes `main`.
 
 `configs.toml` on `dev` is what the loop and dashboard use; merge `dev` → `main` daily so paper/CI match.
@@ -53,9 +53,9 @@ No per-file promotion gate — whatever is on `dev` becomes `main`.
 
 | Workflow | Schedule | What it does |
 |---|---|---|
-| `loop-stocks.yml` | 10:00 UTC (03:00 PDT) | Loop on `dev`, stocks (disable workflow in Actions to pause) |
-| `loop-crypto.yml` | 10:00 UTC (03:00 PDT) | Loop on `dev`, crypto (disable workflow in Actions to pause) |
-| `sync_branches.yml` | 13:00 UTC (06:00 PDT) | Merge `dev` → `main` |
+| `loop-stocks.yml` | 03:00 `America/Los_Angeles` | Loop on `dev`, stocks (disable workflow in Actions to pause) |
+| `loop-crypto.yml` | 03:00 `America/Los_Angeles` | Loop on `dev`, crypto (disable workflow in Actions to pause) |
+| `sync_branches.yml` | 06:00 `America/Los_Angeles` | Merge `dev` → `main` |
 | `paper.yml` | Weekdays / every 4h | `live_trade.py` on `main` |
 
 ---
@@ -65,4 +65,4 @@ No per-file promotion gate — whatever is on `dev` becomes `main`.
 1. **The loop only runs on `dev`.**
 2. **`main` updates via daily merge** (or manual `git merge dev` on `main`).
 3. **`live_trade.py` / paper CI always use `main`.**
-4. Avoid local loop runs at 03:00 PDT when GHA pushes to `dev`.
+4. Avoid local loop runs at 03:00 California when GHA pushes to `dev`.
