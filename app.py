@@ -282,8 +282,9 @@ class LoopProc:
             env["CAMPAIGN"] = campaign
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
+            env["PYTHONUNBUFFERED"] = "1"
             self.proc = subprocess.Popen(
-                [str(PYTHON), "loop.py", "--iters", str(int(iters))],
+                [str(PYTHON), "-u", "loop.py", "--iters", str(int(iters))],
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, creationflags=flags,
                 encoding="utf-8", errors="replace", env=env,
