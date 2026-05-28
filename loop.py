@@ -40,7 +40,11 @@ Environment knobs (all optional):
                            "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d").
                            N=1 → single mode; N≥2 → basket mode with overfit penalty.
     OPENROUTER_MODEL       any model slug from openrouter.ai/models. Defaults to
-                           anthropic/claude-haiku-4-5.
+                           deepseek/deepseek-v4-flash. Examples:
+                             anthropic/claude-sonnet-4-6
+                             openai/gpt-5
+                             deepseek/deepseek-r1
+                             google/gemini-2.5-pro
     MAX_OUTPUT_TOKENS      LLM reply cap (default 8000). Set in .env.
 
 Usage:
@@ -78,7 +82,7 @@ if not Path(PYTHON).exists():
     PYTHON = sys.executable
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "anthropic/claude-haiku-4-5"  # any model slug from openrouter.ai/models
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"  # any model slug from openrouter.ai/models
 _DEFAULT_MAX_OUTPUT_TOKENS = 8000
 
 

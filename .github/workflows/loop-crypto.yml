@@ -4,6 +4,9 @@ name: Autoresearch loop (crypto)
 # Disable in GitHub: Actions → this workflow → ⋯ → Disable workflow.
 #
 # Schedule: 03:00 America/Los_Angeles daily (California local time).
+#
+# Optional repo variable (Settings → Secrets and variables → Actions → Variables):
+#   ITERS — mutations per scheduled run (default 10 if unset)
 
 on:
   schedule:
@@ -40,10 +43,10 @@ jobs:
 
     env:
       CAMPAIGN: crypto
-      ITERS: ${{ github.event.inputs.iters || '10' }}
+      ITERS: ${{ github.event.inputs.iters || vars.ITERS || '10' }}
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-4-5' }}
+      OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash' }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
