@@ -10,6 +10,13 @@ import numpy as np
 import pandas as pd
 from backtesting import Strategy as _BTStrategy
 
+# Minimum bars live_trade.py must fetch before evaluating this strategy.
+# Covers the longest indicator lookback × 3 for EWMA stabilization. Keep this
+# defined at module scope — backtest.strategy_min_bars() reads it to size
+# the live bar window so live indicator state matches backtest. Falls back to
+# 200 if removed.
+MIN_BARS_REQUIRED = 200
+
 
 def _ema(series: pd.Series, n: int) -> np.ndarray:
     return pd.Series(series).ewm(span=n, adjust=False).mean().to_numpy()

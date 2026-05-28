@@ -1,50 +1,53 @@
 """Fixed evaluation harness — DO NOT MODIFY once stable.
 
-The autoresearch loop calls this, parses the printed summary block, and uses
-the configured OPTIMIZE_METRIC to decide keep-vs-discard. Changing this file
+The autoresearch loop calls this with --window train+val, parses the printed
+summary block, and uses OPTIMIZE_METRIC on the train side as the optimization
+gradient while val acts as an anti-overfit holdout gate. Changing this file
 mid-experiment makes runs incomparable. Treat as immutable.
 
 Usage:
-    python backtest.py                              # default: crypto/BTC_USDT_4h, val window
+    python backtest.py                              # default symbols, val window
     python backtest.py --symbols crypto/BTC_USDT_4h
-    python backtest.py --symbols stocks/TSLA_1d,stocks/NVDA_1d,stocks/AAPL_1d
-    python backtest.py --window train               # eval on training window
-    python backtest.py --window lockbox             # held-out 2025+ window (manual only)
+    python backtest.py --symbols stocks/TSLA_1d,stocks/NVDA_1d
+    python backtest.py --window train               # train alone (manual)
+    python backtest.py --window train+val           # both, loop's default
+    python backtest.py --window lockbox             # held-out window — for
+                                                    #   manual peek; promote.py
+                                                    #   is the only sanctioned
+                                                    #   automated consumer
 
 Environment variables (read at runtime, override file defaults):
     SYMBOLS         comma-separated parquet stems under data/ (without .parquet
-                    suffix). Examples:
-                      crypto/BTC_USDT_4h                       (single)
-                      stocks/TSLA_1d,stocks/NVDA_1d,stocks/AAPL_1d  (basket)
-                    N=1 → single mode (MIN_TRADES=20). N≥2 → basket mode
-                    (MIN_BASKET_TRADES=5, scored with the overfit penalty).
-                    Empty/unset → DEFAULT_SYMBOLS.
+                    suffix). N=1 → single mode (MIN_TRADES=20). N≥2 → basket
+                    mode (MIN_BASKET_TRADES=5, scored with overfit penalty).
     BASKET_PENALTY  stdev penalty in basket scoring (default 0.5).
                     score = mean(sharpe) - penalty * std(sharpe).
     DSR_BENCHMARK   per-bar Sharpe benchmark for DSR (default 0; loop sets
                     this from prior-trial variance to correct for multiple
                     testing — see loop.py:compute_dsr_benchmark).
+    WARMUP_BARS     leading bars dropped from every slice so indicator state
+                    is stable before any trade signal counts (default 150).
 
-Windows:
-  train   : 2019-01-01 → 2022-12-31  (agent reasons about it; not the metric)
-  val     : 2023-01-01 → 2024-12-31  (loop optimizes against this)
-  lockbox : 2025-01-01 → end-of-data (NEVER touched by loop; only inspected
-            manually before promoting a strategy to paper trading)
+Windows (defaults; per-campaign overrides live in configs.toml):
+  train   : optimization signal — what OPTIMIZE_METRIC is computed against
+  val     : anti-overfit gate — val_sharpe must not regress by more than
+            VAL_TOLERANCE on a kept commit, and val_sub_min must clear
+            SUB_PERIOD_MIN_SHARPE (per-period regime check)
+  lockbox : never touched by the loop; promote.py is the only consumer
 
-Output (printed to stdout, parsed by loop.py):
+Output (printed to stdout, parsed by loop._parse_summary):
     ---
-    val_sharpe:        1.234567
-    sortino:           1.890123
-    sharpe_ann_4h:     1.728618
-    calmar:            1.910234
-    psr:               0.876543
-    dsr:               0.654321
-    skew:              0.123
-    kurtosis:          5.4
-    max_drawdown:      12.34
-    win_rate:          0.456
-    total_trades:      87
-    total_return_pct:  45.67
+    train_sharpe:        0.720   (only present when window=train+val)
+    train_calmar:        2.683
+    train_max_drawdown:  4.08
+    train_total_trades:  56
+    val_sharpe:          2.259   (or whatever window=single ran)
+    sortino:             5.212
+    ... (sharpe_ann_4h, calmar, psr, dsr, skew, kurtosis,
+         max_drawdown, win_rate, total_trades, total_return_pct)
+    val_sub_min:         0.022   (worst sub-period Sharpe — val-only)
+    val_sub_std:         0.032
+    val_sub_neg_count:   0
     ---
 
 In basket mode (N≥2 symbols):
@@ -54,6 +57,8 @@ In basket mode (N≥2 symbols):
     total_return_pct = simple mean across surviving symbols.
   - max_drawdown = max (worst case across the basket).
   - total_trades = sum across the basket.
+  - val_sub_min = min across the basket (weakest link gates).
+  - val_sub_neg_count = sum across the basket.
 
 Crashes or insufficient trades print val_sharpe: 0.000000.
 """
@@ -142,10 +147,10 @@ STRATEGY_FILE = strategy_file()
 DEFAULT_SYMBOLS = _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
 
 
-def load_strategy_class(path: str | Path) -> type:
-    """Load the user `Strategy` class from an arbitrary file path. Used by
-    every consumer (loop, backtest, scan, live_trade, app) so the file
-    being optimized can be selected at runtime via STRATEGY_FILE."""
+def _load_strategy_module(path: str | Path):
+    """Import the strategy file as a module. Used by load_strategy_class and
+    strategy_min_bars so live_trade.py can size its bar fetch to whatever
+    the active strategy declares it needs."""
     import importlib.util
     p = Path(path)
     if not p.is_absolute():
@@ -157,9 +162,32 @@ def load_strategy_class(path: str | Path) -> type:
         raise ImportError(f"cannot load strategy from {p}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+def load_strategy_class(path: str | Path) -> type:
+    """Load the user `Strategy` class from an arbitrary file path. Used by
+    every consumer (loop, backtest, scan, live_trade, app) so the file
+    being optimized can be selected at runtime via STRATEGY_FILE."""
+    mod = _load_strategy_module(path)
     if not hasattr(mod, "Strategy"):
-        raise ImportError(f"{p} has no `Strategy` class")
+        raise ImportError(f"{path} has no `Strategy` class")
     return mod.Strategy
+
+
+def strategy_min_bars(path: str | Path | None = None) -> int:
+    """Return the active strategy's MIN_BARS_REQUIRED, or a safe default.
+
+    Used by live_trade.py to size its bar fetch so live indicator state
+    matches backtest. The loop's LLM rewrites strategy files freely; if
+    MIN_BARS_REQUIRED ever gets deleted the default below kicks in.
+    """
+    try:
+        mod = _load_strategy_module(path or strategy_file())
+        return int(getattr(mod, "MIN_BARS_REQUIRED", 200))
+    except Exception as e:
+        print(f"# strategy_min_bars: falling back to 200 ({e})", file=sys.stderr)
+        return 200
 
 
 STARTING_CASH = int(_cfg("STARTING_CASH", "1000000"))
@@ -244,13 +272,26 @@ def _ann_factor_for(df: pd.DataFrame) -> float:
 
 
 def _slice(df: pd.DataFrame, window: str) -> pd.DataFrame:
+    """Slice the full parquet to a window, then drop the leading WARMUP_BARS so
+    indicator state has stabilized before any trade signal counts. Without the
+    purge, the first ~50–150 bars of each window have noisy EMA/ADX/ATR values
+    that backtest.py would happily trade on — biasing reported Sharpe relative
+    to live trading where those bars are also unstable.
+    """
+    warmup = int(_cfg("WARMUP_BARS", "150"))
     if window == "train":
-        return df.loc[_cfg("TRAIN_START", "2018-01-01"): _cfg("TRAIN_END", "2019-12-31")]
-    if window == "val":
-        return df.loc[_cfg("VAL_START", "2020-01-01"): _cfg("VAL_END", "2024-12-31")]
-    if window == "lockbox":
-        return df.loc[_cfg("LOCKBOX_START", "2025-01-01"):]
-    raise ValueError(f"unknown window: {window}")
+        s = df.loc[_cfg("TRAIN_START", "2018-01-01"): _cfg("TRAIN_END", "2019-12-31")]
+    elif window == "val":
+        s = df.loc[_cfg("VAL_START", "2020-01-01"): _cfg("VAL_END", "2024-12-31")]
+    elif window == "lockbox":
+        s = df.loc[_cfg("LOCKBOX_START", "2025-01-01"):]
+    else:
+        raise ValueError(f"unknown window: {window}")
+    # If the slice is shorter than the warmup buffer we return an empty frame;
+    # the 100-bar floor in _run_single then bails the run cleanly. Returning
+    # the un-purged slice here would silently re-introduce the bias we're
+    # purging to eliminate.
+    return s.iloc[warmup:]
 
 
 def _psr(sharpe_per_bar: float, n: int, skew: float, excess_kurt: float, sr_benchmark: float = 0.0) -> float:
@@ -272,11 +313,19 @@ def _psr(sharpe_per_bar: float, n: int, skew: float, excess_kurt: float, sr_benc
 
 _ZERO_EXTRA = {"sharpe_ann_4h": 0.0, "calmar": 0.0, "psr": 0.0, "dsr": 0.0, "skew": 0.0, "kurtosis": 0.0}
 
+# Per-period robustness (regime stability) metrics — see _per_period_metrics.
+_ZERO_SUB = {"val_sub_min": 0.0, "val_sub_std": 0.0, "val_sub_neg_count": 0}
+
 ZERO_METRICS = {
     "val_sharpe": 0.0, "sortino": 0.0, "sharpe_ann_4h": 0.0, "calmar": 0.0,
     "psr": 0.0, "dsr": 0.0, "skew": 0.0, "kurtosis": 0.0,
     "max_drawdown": 0.0, "win_rate": 0.0, "total_trades": 0, "total_return_pct": 0.0,
+    "val_sub_min": 0.0, "val_sub_std": 0.0, "val_sub_neg_count": 0,
 }
+
+# Number of equal-length sub-periods to slice val into for regime stability scoring.
+# Default 4 ≈ yearly granularity on a 4-year window; cheap enough to compute per run.
+SUB_PERIODS = int(_cfg("SUB_PERIODS", "4"))
 
 
 def _extra_metrics(stats_obj, total_return: float, max_dd: float, ann_factor: float) -> dict:
@@ -343,6 +392,43 @@ def _extra_metrics(stats_obj, total_return: float, max_dd: float, ann_factor: fl
 
 # ─────────────────────────── single-symbol run ──────────────────────────
 
+def _per_period_metrics(stats_obj, df: pd.DataFrame, n_periods: int = SUB_PERIODS) -> dict:
+    """Slice the equity curve into `n_periods` equal-length chunks by bar index
+    and compute per-chunk Sharpe. Returns the worst-chunk Sharpe, the stdev
+    across chunks, and the count of chunks with non-positive Sharpe.
+
+    Why: a single contiguous Sharpe over 3–4 years can hide "great 2023, dead
+    2024" patterns. The loop uses these to reject regime-fragile candidates
+    that win on average only because one sub-period dominates the rest.
+    Cheap (no re-fit); we just resample the equity curve we already produced.
+    """
+    try:
+        eq = stats_obj["_equity_curve"]["Equity"]
+        rets = eq.pct_change().dropna()
+        if len(rets) < n_periods * 5:
+            # Not enough bars to compute meaningful per-chunk stats.
+            return dict(_ZERO_SUB)
+        chunks = np.array_split(rets.values, n_periods)
+        sharpes = []
+        for c in chunks:
+            if len(c) < 2:
+                continue
+            sd = float(np.std(c, ddof=1))
+            if sd <= 0:
+                continue
+            sharpes.append(float(np.mean(c) / sd))
+        if not sharpes:
+            return dict(_ZERO_SUB)
+        return {
+            "val_sub_min": float(min(sharpes)),
+            "val_sub_std": float(np.std(sharpes, ddof=1)) if len(sharpes) > 1 else 0.0,
+            "val_sub_neg_count": int(sum(1 for s in sharpes if s <= 0.0)),
+        }
+    except Exception as e:
+        print(f"# per-period metrics error: {e}", file=sys.stderr)
+        return dict(_ZERO_SUB)
+
+
 def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | None:
     """Run a single backtest. Returns metrics dict (or None on crash).
     Does not print; printing is handled at the caller level."""
@@ -388,21 +474,36 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
         return None
 
     n_trades = int(stats.get("# Trades", 0) or 0)
-    # MIN_TRADES gate exists to make val-window Sharpe statistically meaningful
-    # for the loop's keep/discard decision. For lockbox (manual inspection),
-    # show whatever numbers we have — the user will judge sample-size adequacy.
+    # MIN_TRADES gate makes train/val Sharpe statistically meaningful for the
+    # loop's keep/discard decision. For lockbox the gate is enforced one level
+    # up in promote.py (which has the lockbox-specific MIN_TRADES + bar-count
+    # gates) so manual `--window lockbox` inspection still returns metrics.
     if window != "lockbox" and n_trades < min_trades:
         print(f"# only {n_trades} trades for {data_path} (min {min_trades})", file=sys.stderr)
         return None
 
-    sharpe = float(stats.get("Sharpe Ratio", 0.0) or 0.0)
-    sortino = float(stats.get("Sortino Ratio", 0.0) or 0.0)
-    max_dd = abs(float(stats.get("Max. Drawdown [%]", 0.0) or 0.0))
-    win_rate = float(stats.get("Win Rate [%]", 0.0) or 0.0) / 100.0
-    total_return = float(stats.get("Return [%]", 0.0) or 0.0)
+    def _finite(x, default=0.0):
+        """backtesting.py returns NaN/Inf for degenerate slices (zero-variance
+        returns, single-trade windows). NaN poisons basket aggregation via
+        statistics.pstdev; coerce to a clean zero so the gates handle it."""
+        try:
+            v = float(x or 0.0)
+            return v if math.isfinite(v) else default
+        except (TypeError, ValueError):
+            return default
+
+    sharpe = _finite(stats.get("Sharpe Ratio"))
+    sortino = _finite(stats.get("Sortino Ratio"))
+    max_dd = abs(_finite(stats.get("Max. Drawdown [%]")))
+    win_rate = _finite(stats.get("Win Rate [%]")) / 100.0
+    total_return = _finite(stats.get("Return [%]"))
 
     ann_factor = _ann_factor_for(df)
     extra = _extra_metrics(stats, total_return, max_dd, ann_factor)
+    # Sub-period stats are only meaningful on the val window — the regime check
+    # is "did this strategy survive a chopped-up val?" Train and lockbox slices
+    # get zeros (cheap; the caller decides whether to gate on them).
+    sub = _per_period_metrics(stats, df) if window == "val" else dict(_ZERO_SUB)
 
     return {
         "val_sharpe": sharpe,
@@ -417,6 +518,9 @@ def _run_single(data_path: str | Path, window: str, min_trades: int) -> dict | N
         "win_rate": win_rate,
         "total_trades": n_trades,
         "total_return_pct": total_return,
+        "val_sub_min": sub["val_sub_min"],
+        "val_sub_std": sub["val_sub_std"],
+        "val_sub_neg_count": sub["val_sub_neg_count"],
     }
 
 
@@ -470,6 +574,12 @@ def _aggregate_basket(per_symbol: list[tuple[str, dict]], penalty: float) -> dic
         "win_rate": avg("win_rate"),
         "total_trades": int(sum(m["total_trades"] for _, m in per_symbol)),
         "total_return_pct": avg("total_return_pct"),
+        # Per-period regime stability — take the basket-wide WORST sub-period
+        # and SUM of negative counts. Averaging would hide a strategy that's
+        # fragile on one symbol; the basket score must reflect the weakest link.
+        "val_sub_min": float(min((m["val_sub_min"] for _, m in per_symbol), default=0.0)),
+        "val_sub_std": avg("val_sub_std"),
+        "val_sub_neg_count": int(sum(m["val_sub_neg_count"] for _, m in per_symbol)),
     }
 
 
@@ -521,12 +631,66 @@ def _run_basket(resolved: list[tuple[str, Path]], window: str, penalty: float) -
 
 # ─────────────────────────── public run() ───────────────────────────────
 
+def _run_window(resolved: list[tuple[str, Path]], window: str) -> dict:
+    """Run a single window (train|val|lockbox) against an already-resolved
+    symbol set. Returns flat metrics dict with the canonical key names
+    (val_sharpe, sortino, ...). Caller is responsible for re-keying to
+    add a train_/val_/lockbox_ prefix when combining windows.
+    """
+    if len(resolved) == 0:
+        return dict(ZERO_METRICS)
+    if len(resolved) == 1:
+        m = _run_single(resolved[0][1], window, min_trades=MIN_TRADES)
+        return m if m is not None else dict(ZERO_METRICS)
+    try:
+        penalty = float(os.environ.get("BASKET_PENALTY", "0.5") or 0.5)
+    except ValueError:
+        penalty = 0.5
+    return _run_basket(resolved, window, penalty)
+
+
+# Keys that get a per-window prefix when running train+val together. We don't
+# prefix `val_sub_*` because those fields are val-only by construction.
+_PREFIXED_KEYS = (
+    "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
+    "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+    "total_return_pct",
+)
+
+
+def _combine_train_val(train_m: dict, val_m: dict) -> dict:
+    """Merge train and val window dicts into a single flat dict.
+
+    Conventions:
+      - val window keeps its current key names for backward compatibility
+        (val_sharpe, sortino, max_drawdown, ...) — every existing caller
+        of run() already reads these.
+      - train window gets a `train_` prefix on every shared key; the
+        primary Sharpe specifically becomes `train_sharpe` (not
+        `train_val_sharpe`, which would be nonsense).
+      - val_sub_* are val-only and pass through unprefixed.
+    """
+    out = dict(val_m)  # val fields keep their existing names
+    for k in _PREFIXED_KEYS:
+        if k == "val_sharpe":
+            # The "val_sharpe" key in train_m is actually the train-window
+            # Sharpe — rename to train_sharpe for clarity.
+            out["train_sharpe"] = train_m.get(k, 0.0)
+        else:
+            out[f"train_{k}"] = train_m.get(k, 0.0 if k != "total_trades" else 0)
+    return out
+
+
 def run(symbols: str | None = None, window: str = "val") -> dict:
     """Single entrypoint. N=1 → single mode; N≥2 → basket mode with overfit penalty.
 
     `symbols` is a comma-separated string of parquet stems under data/
     (e.g. "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d"). When None,
     falls back to $SYMBOLS then DEFAULT_SYMBOLS.
+
+    `window` accepts "train", "val", "lockbox", or "train+val". The
+    "train+val" mode runs both slices and prints/returns a combined dict
+    so the loop can optimize on train while gating on val.
     """
     spec = symbols if symbols is not None else (
         os.environ.get("SYMBOLS") or _cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
@@ -534,38 +698,52 @@ def run(symbols: str | None = None, window: str = "val") -> dict:
     resolved = _resolve_symbols(spec)
     _ensure_symbol_data(resolved)
 
-    if len(resolved) == 0:
-        metrics = dict(ZERO_METRICS)
-    elif len(resolved) == 1:
-        metrics = _run_single(resolved[0][1], window, min_trades=MIN_TRADES)
-        if metrics is None:
-            metrics = dict(ZERO_METRICS)
+    if window == "train+val":
+        train_m = _run_window(resolved, "train")
+        val_m = _run_window(resolved, "val")
+        metrics = _combine_train_val(train_m, val_m)
     else:
-        try:
-            penalty = float(os.environ.get("BASKET_PENALTY", "0.5") or 0.5)
-        except ValueError:
-            penalty = 0.5
-        metrics = _run_basket(resolved, window, penalty)
+        metrics = _run_window(resolved, window)
 
     _print_summary(metrics)
     return metrics
 
 
 def _print_summary(m: dict) -> None:
-    """Print the summary block in the canonical order the loop parses."""
+    """Print the summary block in the canonical order the loop parses.
+    When train_sharpe is present (i.e., we ran train+val), print the train
+    block first, then val, then val-only sub-period metrics. The single
+    `---` framing is preserved so _parse_summary in loop.py still works."""
     print("---")
-    print(f"{'val_sharpe:':<18}{m['val_sharpe']:.6f}")
-    print(f"{'sortino:':<18}{m['sortino']:.6f}")
-    print(f"{'sharpe_ann_4h:':<18}{m['sharpe_ann_4h']:.6f}")
-    print(f"{'calmar:':<18}{m['calmar']:.6f}")
-    print(f"{'psr:':<18}{m['psr']:.6f}")
-    print(f"{'dsr:':<18}{m['dsr']:.6f}")
-    print(f"{'skew:':<18}{m['skew']:.3f}")
-    print(f"{'kurtosis:':<18}{m['kurtosis']:.3f}")
-    print(f"{'max_drawdown:':<18}{m['max_drawdown']:.2f}")
-    print(f"{'win_rate:':<18}{m['win_rate']:.3f}")
-    print(f"{'total_trades:':<18}{m['total_trades']}")
-    print(f"{'total_return_pct:':<18}{m['total_return_pct']:.2f}")
+    if "train_sharpe" in m:
+        print(f"{'train_sharpe:':<22}{m['train_sharpe']:.6f}")
+        print(f"{'train_calmar:':<22}{m.get('train_calmar', 0.0):.6f}")
+        print(f"{'train_max_drawdown:':<22}{m.get('train_max_drawdown', 0.0):.2f}")
+        print(f"{'train_total_trades:':<22}{int(m.get('train_total_trades', 0))}")
+    print(f"{'val_sharpe:':<22}{m['val_sharpe']:.6f}")
+    print(f"{'sortino:':<22}{m['sortino']:.6f}")
+    print(f"{'sharpe_ann_4h:':<22}{m['sharpe_ann_4h']:.6f}")
+    print(f"{'calmar:':<22}{m['calmar']:.6f}")
+    print(f"{'psr:':<22}{m['psr']:.6f}")
+    print(f"{'dsr:':<22}{m['dsr']:.6f}")
+    print(f"{'skew:':<22}{m['skew']:.3f}")
+    print(f"{'kurtosis:':<22}{m['kurtosis']:.3f}")
+    print(f"{'max_drawdown:':<22}{m['max_drawdown']:.2f}")
+    print(f"{'win_rate:':<22}{m['win_rate']:.3f}")
+    print(f"{'total_trades:':<22}{m['total_trades']}")
+    print(f"{'total_return_pct:':<22}{m['total_return_pct']:.2f}")
+    # Sub-period stats are val-only by construction (_run_single skips them
+    # for train/lockbox). Suppressing the zero rows keeps single-window
+    # manual runs honest — printing `val_sub_min: 0.000000` for a train
+    # run would imply we measured regime stability on train when we didn't.
+    if any((
+        m.get("val_sub_min", 0.0),
+        m.get("val_sub_std", 0.0),
+        m.get("val_sub_neg_count", 0),
+    )):
+        print(f"{'val_sub_min:':<22}{m.get('val_sub_min', 0.0):.6f}")
+        print(f"{'val_sub_std:':<22}{m.get('val_sub_std', 0.0):.6f}")
+        print(f"{'val_sub_neg_count:':<22}{int(m.get('val_sub_neg_count', 0))}")
     print("---")
 
 
@@ -574,6 +752,6 @@ if __name__ == "__main__":
     p.add_argument("--symbols", default=None,
                    help="comma-sep parquet stems under data/ (e.g. crypto/BTC_USDT_4h). "
                         "Defaults to $SYMBOLS or DEFAULT_SYMBOLS.")
-    p.add_argument("--window", choices=["train", "val", "lockbox"], default="val")
+    p.add_argument("--window", choices=["train", "val", "lockbox", "train+val"], default="val")
     args = p.parse_args()
     run(args.symbols, args.window)

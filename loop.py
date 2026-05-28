@@ -9,14 +9,18 @@ Each iteration:
   2. Ask the LLM for a single mutation (returns description + new strategy file)
   3. Write strategy file, git commit
   4. Compute DSR benchmark from prior trial variance, set DSR_BENCHMARK env
-  5. Run backtest.py (subprocess), parse summary block
-  6. Apply keep/discard rules:
-       - constraints fail (max_dd, min_trades) → discard
-       - DSR_GATE_THRESHOLD enabled and dsr < threshold → discard
-       - OPTIMIZE_METRIC > best_so_far → keep
-       - else → discard (regression)
+  5. Run backtest.py --window train+val (subprocess), parse summary block
+  6. Apply keep/discard rules (in order):
+       - both windows: max_dd ≥ MAX_DRAWDOWN_LIMIT  → discard
+       - both windows: total_trades < MIN_TRADES    → discard
+       - DSR_GATE_THRESHOLD enabled & dsr < gate    → discard
+       - val_sub_min < SUB_PERIOD_MIN_SHARPE        → discard (regime gate)
+       - val_sub_neg_count > SUB_PERIODS // 2       → discard (regime gate)
+       - val_sharpe < best_val_sharpe - VAL_TOLERANCE → discard (holdout gate)
+       - OPTIMIZE_METRIC (on train) > best_so_far   → keep
+       - else                                        → discard (regression)
        discard / crash → git reset --hard HEAD~1
-  7. Append a row to results.tsv
+  7. Append a row to results.tsv (22-col schema; see RESULTS_COLS)
   8. Repeat until --iters reached (or human interrupt; karpathy-style)
   9. Session end: commit accumulated tsv rows in one chore commit.
 
@@ -26,17 +30,17 @@ Requires:
     HEAD on the dev branch (set ALLOW_LOOP_ON_MAIN=1 to override)
 
 Environment knobs (all optional):
-    OPTIMIZE_METRIC        val_sharpe (default) | calmar | dsr
+    OPTIMIZE_METRIC        train_sharpe (default) | train_calmar | train_dsr
+    VAL_TOLERANCE          val-Sharpe regression allowed on a keep (default 0.10)
+    SUB_PERIOD_MIN_SHARPE  per-period regime floor on val (default -0.5)
+    SUB_PERIODS            val sub-period count (default 4; backtest.py reads it)
+    WARMUP_BARS            leading-bars purge per window (default 150)
     DSR_GATE_THRESHOLD     reject if dsr below this; 0 disables (default)
     SYMBOLS                comma-sep parquet stems under data/ (e.g.
                            "crypto/BTC_USDT_4h" or "stocks/TSLA_1d,stocks/NVDA_1d").
                            N=1 → single mode; N≥2 → basket mode with overfit penalty.
     OPENROUTER_MODEL       any model slug from openrouter.ai/models. Defaults to
-                           anthropic/claude-haiku-4-5. Examples:
-                             anthropic/claude-sonnet-4-6
-                             openai/gpt-5
-                             deepseek/deepseek-r1
-                             google/gemini-2.5-pro
+                           anthropic/claude-haiku-4-5.
     MAX_OUTPUT_TOKENS      LLM reply cap (default 8000). Set in .env.
 
 Usage:
@@ -121,20 +125,39 @@ MAX_REGRESSIONS = int(os.environ.get("MAX_REGRESSIONS", 0))
 # convert logged sharpe_ann_4h values back to per-bar units for DSR variance.
 ANN_FACTOR_4H = math.sqrt(365 * 6)
 
-# OPTIMIZE_METRIC env var picks the keep/discard scalar.
-# Allowed:
-#   val_sharpe (default; backtesting.py reported Sharpe)
-#   calmar     (total_return / max_drawdown — return-aware)
-#   dsr        (Deflated Sharpe Ratio — multiple-testing-corrected; not
-#               recommended as primary metric until N ≥ 50 non-crash trials,
-#               since DSR is unstable at small N)
+# OPTIMIZE_METRIC env var picks the keep/discard gradient — computed on the
+# TRAIN window. val is treated as a non-degradation gate, not an objective.
+# This is the holdout discipline fix: with thousands of LLM-driven iterations,
+# optimizing directly on val turns val into a de-facto training set. Train is
+# now the surface we descend; val is the brake.
+# Allowed (each suffixed with the train_ window):
+#   train_sharpe (default) — backtesting.py reported Sharpe on train
+#   train_calmar          — train return / train drawdown
+#   train_dsr             — Deflated Sharpe on train (use only at N ≥ 50 trials)
 # All metrics are logged to results.tsv regardless; this just picks the gradient.
-ALLOWED_METRICS = {"val_sharpe", "calmar", "dsr"}
-OPTIMIZE_METRIC = os.environ.get("OPTIMIZE_METRIC", "val_sharpe")
+ALLOWED_METRICS = {"train_sharpe", "train_calmar", "train_dsr"}
+OPTIMIZE_METRIC = os.environ.get("OPTIMIZE_METRIC", "train_sharpe")
 if OPTIMIZE_METRIC not in ALLOWED_METRICS:
     raise SystemExit(
         f"OPTIMIZE_METRIC must be one of {sorted(ALLOWED_METRICS)}, got {OPTIMIZE_METRIC!r}"
     )
+
+# How much the val-window Sharpe is allowed to drop on a "kept" train improvement.
+# Set to 0 to require strict val improvement (textbook holdout); the default 0.10
+# leaves room for honest variance while still vetoing trades that improve train
+# at val's expense.
+try:
+    VAL_TOLERANCE = float(os.environ.get("VAL_TOLERANCE", "0.10") or 0.10)
+except ValueError:
+    VAL_TOLERANCE = 0.10
+
+# Per-period regime-stability gates (P2).
+# SUB_PERIOD_MIN_SHARPE: floor for the worst sub-period of val. Below it, the
+# strategy is regime-fragile and gets rejected regardless of overall Sharpe.
+try:
+    SUB_PERIOD_MIN_SHARPE = float(os.environ.get("SUB_PERIOD_MIN_SHARPE", "-0.5") or -0.5)
+except ValueError:
+    SUB_PERIOD_MIN_SHARPE = -0.5
 
 # DSR_GATE_THRESHOLD: if > 0, any trial with dsr below this is discarded
 # regardless of OPTIMIZE_METRIC improvement. Disabled (0) by default —
@@ -238,6 +261,8 @@ def git_reset_last() -> None:
 RESULTS_COLS = [
     "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
     "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+    "train_sharpe", "train_calmar", "train_max_drawdown", "train_total_trades",
+    "val_sub_min", "val_sub_std", "val_sub_neg_count",
     "status", "timestamp", "description",
 ]
 RESULTS_HEADER = "\t".join(RESULTS_COLS) + "\n"
@@ -260,6 +285,12 @@ LEGACY_SCHEMAS = [
         "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
         "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
         "status", "description",
+    ],
+    # v3 — added timestamp (current pre-train-window schema)
+    [
+        "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
+        "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+        "status", "timestamp", "description",
     ],
 ]
 
@@ -325,6 +356,13 @@ def append_result(sha: str, metrics: dict, status: str, description: str) -> Non
         f"{metrics.get('max_drawdown', 0.0):.2f}",
         f"{metrics.get('win_rate', 0.0):.3f}",
         f"{metrics.get('total_trades', 0)}",
+        f"{metrics.get('train_sharpe', 0.0):.6f}",
+        f"{metrics.get('train_calmar', 0.0):.6f}",
+        f"{metrics.get('train_max_drawdown', 0.0):.2f}",
+        f"{metrics.get('train_total_trades', 0)}",
+        f"{metrics.get('val_sub_min', 0.0):.6f}",
+        f"{metrics.get('val_sub_std', 0.0):.6f}",
+        f"{metrics.get('val_sub_neg_count', 0)}",
         status,
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         description,
@@ -384,6 +422,12 @@ SUMMARY_FIELDS = {
     "calmar": float, "psr": float, "dsr": float, "skew": float, "kurtosis": float,
     "max_drawdown": float, "win_rate": float, "total_trades": int,
     "total_return_pct": float,
+    # P1 — train window companion metrics (loop optimizes on train_sharpe and
+    # uses val_sharpe as a non-degradation gate).
+    "train_sharpe": float, "train_calmar": float,
+    "train_max_drawdown": float, "train_total_trades": int,
+    # P2 — per-period regime-stability metrics computed on val.
+    "val_sub_min": float, "val_sub_std": float, "val_sub_neg_count": int,
 }
 
 
@@ -413,9 +457,13 @@ def _parse_summary(out: str) -> dict:
 
 def run_backtest() -> dict:
     """Run backtest.py in a subprocess, parse summary block, return metrics.
-    Inherits DSR_BENCHMARK, SYMBOLS, and BASKET_PENALTY env vars from the caller."""
+    Inherits DSR_BENCHMARK, SYMBOLS, and BASKET_PENALTY env vars from the caller.
+
+    Always uses --window train+val so the loop has both Sharpes to gate on:
+    train is the optimization signal; val is the anti-overfit selector.
+    """
     proc = subprocess.run(
-        [PYTHON, "backtest.py"],
+        [PYTHON, "backtest.py", "--window", "train+val"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -614,8 +662,18 @@ def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[
 
 # ──────────────────────────────── main ─────────────────────────────────
 
-def one_iteration(best_metric: float) -> tuple[str, float]:
-    """Run one experiment. Returns (status, new_best_for_active_metric)."""
+def one_iteration(best_metric: float, best_val_sharpe: float) -> tuple[str, float, float]:
+    """Run one experiment. Returns (status, new_best_train_metric, new_best_val_sharpe).
+
+    Optimization signal: OPTIMIZE_METRIC on TRAIN (default train_sharpe).
+    Anti-overfit gates (a candidate must pass ALL):
+      - val_sharpe ≥ best_val_sharpe - VAL_TOLERANCE     (val brake)
+      - val_sub_min ≥ SUB_PERIOD_MIN_SHARPE              (regime brake)
+      - val_sub_neg_count ≤ SUB_PERIODS // 2             (regime brake)
+      - max_drawdown on BOTH windows < MAX_DRAWDOWN_LIMIT
+      - total_trades on BOTH windows ≥ MIN_TRADES
+      - existing DSR multiple-testing gate (on the optimize-side dsr)
+    """
     strategy_src = STRATEGY.read_text(encoding="utf-8")
     program_src = PROGRAM.read_text(encoding="utf-8")
     history = last_n_rows(10)
@@ -623,12 +681,15 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
     if history and history[-1].get("status") == "crash":
         print(f"[loop] feeding back last crash (commit {history[-1].get('commit', '?')}) to LLM")
 
-    print(f"\n[loop] optimize={OPTIMIZE_METRIC}  best_so_far={best_metric:.4f}  asking LLM…")
+    print(
+        f"\n[loop] optimize={OPTIMIZE_METRIC}  best={best_metric:.4f}  "
+        f"best_val_sharpe={best_val_sharpe:.4f}  asking LLM…"
+    )
     try:
         description, new_code = call_llm(strategy_src, program_src, history)
     except Exception as e:
         print(f"[loop] llm error: {e}")
-        return "llm_error", best_metric
+        return "llm_error", best_metric, best_val_sharpe
 
     print(f"[loop] proposed: {description}")
     STRATEGY.write_text(new_code, encoding="utf-8")
@@ -637,7 +698,7 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
         # LLM returned bytes-identical strategy.py — degenerate mutation.
         # No commit was made; nothing to revert. Skip the backtest entirely.
         print("[loop] no-change → skipping (LLM returned identical strategy)")
-        return "noop", best_metric
+        return "noop", best_metric, best_val_sharpe
     print(f"[loop] committed {sha}, running backtest…")
 
     # Set DSR benchmark from prior-trial variance before invoking backtest.py.
@@ -648,32 +709,65 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
         print(f"[loop] DSR benchmark (per-bar SR*) = {dsr_benchmark:.6f}")
 
     metrics = run_backtest()
-    sharpe = metrics["val_sharpe"]
+    val_sharpe = metrics["val_sharpe"]
     calmar = metrics["calmar"]
     dsr = metrics.get("dsr", 0.0)
-    max_dd = metrics["max_drawdown"]
-    n_trades = metrics["total_trades"]
+    val_max_dd = metrics["max_drawdown"]
+    val_trades = metrics["total_trades"]
     win_rate = metrics["win_rate"]
+    train_sharpe = metrics.get("train_sharpe", 0.0)
+    train_max_dd = metrics.get("train_max_drawdown", 0.0)
+    train_trades = int(metrics.get("train_total_trades", 0))
+    sub_min = metrics.get("val_sub_min", 0.0)
+    sub_neg = int(metrics.get("val_sub_neg_count", 0))
 
     score = float(metrics.get(OPTIMIZE_METRIC, 0.0))
 
     print(
-        f"[loop] result: sharpe={sharpe:.4f}  calmar={calmar:.4f}  dsr={dsr:.4f}  "
-        f"max_dd={max_dd:.2f}%  trades={n_trades}  win_rate={win_rate:.3f}  "
-        f"→ {OPTIMIZE_METRIC}={score:.4f}"
+        f"[loop] train: sharpe={train_sharpe:.4f}  dd={train_max_dd:.2f}%  trades={train_trades}\n"
+        f"[loop] val:   sharpe={val_sharpe:.4f}  dd={val_max_dd:.2f}%  trades={val_trades}  "
+        f"win_rate={win_rate:.3f}\n"
+        f"[loop] sub:   min={sub_min:.4f}  neg={sub_neg}/{_bt_module.SUB_PERIODS}  "
+        f"calmar={calmar:.4f}  dsr={dsr:.4f}\n"
+        f"[loop] → {OPTIMIZE_METRIC}={score:.4f}"
     )
 
-    if sharpe == 0.0 and n_trades == 0:
+    sub_neg_limit = _bt_module.SUB_PERIODS // 2
+
+    # Crash detection: both windows zero-Sharpe AND zero-trades signals an
+    # actual failure (vs. constraint violation, which would have a nonzero
+    # value somewhere).
+    if train_sharpe == 0.0 and val_sharpe == 0.0 and train_trades == 0 and val_trades == 0:
         status = "crash"
-    elif max_dd >= MAX_DRAWDOWN_LIMIT:
+    elif val_max_dd >= MAX_DRAWDOWN_LIMIT or train_max_dd >= MAX_DRAWDOWN_LIMIT:
         status = "discard"
-    elif n_trades < MIN_TRADES:
+        print(f"[loop] dd gate: train={train_max_dd:.2f}% val={val_max_dd:.2f}% limit={MAX_DRAWDOWN_LIMIT}")
+    elif val_trades < MIN_TRADES or train_trades < MIN_TRADES:
         status = "discard"
+        print(f"[loop] trade-count gate: train={train_trades} val={val_trades} min={MIN_TRADES}")
     elif DSR_GATE_THRESHOLD > 0 and dsr < DSR_GATE_THRESHOLD:
         # Multiple-testing gate: reject "lucky" candidates that pass raw Sharpe
         # but fail the trial-count-adjusted significance check.
         status = "discard"
-        print(f"[loop] DSR gate: {dsr:.4f} < {DSR_GATE_THRESHOLD:.4f} → reject")
+        print(f"[loop] dsr gate: {dsr:.4f} < {DSR_GATE_THRESHOLD:.4f} → reject")
+    elif sub_min < SUB_PERIOD_MIN_SHARPE:
+        # P2 regime gate: one of the val sub-periods is too negative —
+        # strategy is regime-fragile, reject even if aggregate looks fine.
+        status = "discard"
+        print(f"[loop] regime gate: val_sub_min={sub_min:.4f} < {SUB_PERIOD_MIN_SHARPE:.4f}")
+    elif sub_neg > sub_neg_limit:
+        # P2 regime gate: more than half of val sub-periods are losing.
+        status = "discard"
+        print(f"[loop] regime gate: val_sub_neg_count={sub_neg} > {sub_neg_limit}")
+    elif val_sharpe < best_val_sharpe - VAL_TOLERANCE:
+        # P1 val-degradation gate: train can improve all it wants, but val
+        # is the canary. If val drops more than VAL_TOLERANCE relative to
+        # the best val we've seen on a kept commit, we're overfitting train.
+        status = "discard"
+        print(
+            f"[loop] val-degradation gate: val_sharpe={val_sharpe:.4f} < "
+            f"best_val={best_val_sharpe:.4f} - tol={VAL_TOLERANCE:.4f}"
+        )
     elif score > best_metric + KEEP_THRESHOLD:
         status = "keep"
     else:
@@ -684,10 +778,14 @@ def one_iteration(best_metric: float) -> tuple[str, float]:
         print(f"[loop] {status} → reverted")
     else:
         best_metric = score
-        print(f"[loop] KEEP — new best {OPTIMIZE_METRIC}={score:.4f}")
+        # Only ratchet val high-water if we kept the commit. A discarded
+        # candidate's val_sharpe doesn't get to set the bar for future runs.
+        if val_sharpe > best_val_sharpe:
+            best_val_sharpe = val_sharpe
+        print(f"[loop] KEEP — new best {OPTIMIZE_METRIC}={score:.4f}  val_sharpe={val_sharpe:.4f}")
 
     append_result(sha, metrics, status, description)
-    return status, best_metric
+    return status, best_metric, best_val_sharpe
 
 
 def main() -> int:
@@ -716,12 +814,15 @@ def main() -> int:
 
     _ensure_results()
     best = best_metric_so_far(OPTIMIZE_METRIC)
+    best_val_sharpe = best_metric_so_far("val_sharpe")
     gate_msg = f"  DSR_GATE={DSR_GATE_THRESHOLD:.2f}" if DSR_GATE_THRESHOLD > 0 else ""
     print(
         f"[loop] campaign={STRATEGY_REL}  symbols={_bt_module._cfg('SYMBOLS', '')}\n"
         f"[loop] results={RESULTS.relative_to(ROOT)}  "
+        f"train={_bt_module._cfg('TRAIN_START', '')}→{_bt_module._cfg('TRAIN_END', '')}  "
         f"val={_bt_module._cfg('VAL_START', '')}→{_bt_module._cfg('VAL_END', '')}\n"
-        f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}{gate_msg}"
+        f"[loop] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  starting best={best:.4f}  "
+        f"best_val_sharpe={best_val_sharpe:.4f}  VAL_TOLERANCE={VAL_TOLERANCE:.2f}{gate_msg}"
     )
     consecutive_regressions = 0
 
@@ -732,7 +833,7 @@ def main() -> int:
     try:
         for i in range(1, args.iters + 1):
             print(f"\n========== iteration {i}/{args.iters} ==========")
-            status, best = one_iteration(best)
+            status, best, best_val_sharpe = one_iteration(best, best_val_sharpe)
 
             if status == "keep":
                 consecutive_regressions = 0
