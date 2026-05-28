@@ -96,15 +96,6 @@ def _sma(series: pd.Series, n: int) -> np.ndarray:
     return pd.Series(series).rolling(n).mean().to_numpy().copy()
 
 
-def _volume_sma(volume: pd.Series, n: int = 20) -> np.ndarray:
-    """20-bar SMA of volume — compares current volume to its rolling average.
-    Unlike the prior 10-bar ROC which was noisy (comparing to bar N-10 ago,
-    susceptible to one-off volume spikes), this smooths volume into a
-    rolling mean. Signals when today's volume exceeds the 20-bar average,
-    capturing sustained participation rather than single-bar anomalies."""
-    return pd.Series(volume).rolling(n).mean().bfill().to_numpy().copy()
-
-
 class Strategy(_BTStrategy):
     # Turtle System One: 24-bar breakout entry, 15-bar opposite exit.
     # On 4h bars this is ~4-day entry confirmation, ~2.5-day exit signal.
@@ -182,7 +173,6 @@ class Strategy(_BTStrategy):
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
-        self.volume_sma = self.I(_volume_sma, pd.Series(self.data.Volume), 20)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -200,11 +190,6 @@ class Strategy(_BTStrategy):
 
         # Entry: close breaks above the prior bar's N-bar high AND
         # current volatility (ATR) is elevated vs its 50-bar MA.
-        # Also require volume confirmation: today's volume must exceed
-        # the 20-bar rolling average. Replaced the noisy 10-bar ROC
-        # (which compared to bar N-10 ago and was prone to one-off spikes)
-        # with a rolling average that smooths volume into a cleaner signal,
-        # capturing genuine participation surges without the noise.
         # And require ADX momentum confirmation: ADX > 25 confirms the
         # market is trending, not ranging. ADX filters at the bar level
         # without blocking regime participation, unlike the 200-bar SMA
@@ -215,11 +200,10 @@ class Strategy(_BTStrategy):
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
-        volume_confirm = self.data.Volume[-1] > self.volume_sma[-1]  # vol above 20-bar SMA
         momentum_confirm = self.adx[-1] > self.adx_threshold
         bullish_di = self.plus_di[-1] > self.minus_di[-1]
 
-        if breakout and vol_regime_high and volume_confirm and momentum_confirm and bullish_di and not self.position:
+        if breakout and vol_regime_high and momentum_confirm and bullish_di and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
