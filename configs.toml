@@ -1,11 +1,17 @@
+# Windows rolled forward 2026-05 so lockbox has meaningful data today and
+# train+val cover the most recent regimes (rate shock 2022, AI bull 2023-2024).
+# Prior layout (train 2019-2022, val 2023-2025, lockbox 2026+) left lockbox
+# mechanically empty — promote.py was unreachable. Cost of this roll-forward
+# is that historical results.tsv Sharpes are no longer comparable to new ones.
+
 [crypto]
 symbols = "crypto/BTC_USDT_4h"
 strategy_file = "strategies/crypto.py"
-val_start = "2023-01-01"
-val_end = "2025-12-31"
-train_start = "2019-01-01"
+train_start = "2020-01-01"
 train_end = "2022-12-31"
-lockbox_start = "2026-01-01"
+val_start = "2023-01-01"
+val_end = "2024-12-31"
+lockbox_start = "2025-01-01"
 commission = 0.001
 min_trades = 20
 max_drawdown_limit = 35.0
@@ -14,11 +20,11 @@ data_fetch_start = "2019-01-01"
 [stocks]
 symbols = "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d"
 strategy_file = "strategies/stocks.py"
-val_start = "2022-01-01"
-val_end = "2025-12-31"
-train_start = "2018-01-01"
-train_end = "2021-12-31"
-lockbox_start = "2026-01-01"
+train_start = "2019-01-01"
+train_end = "2022-12-31"
+val_start = "2023-01-01"
+val_end = "2024-12-31"
+lockbox_start = "2025-01-01"
 commission = 0.001
 min_trades = 20
 max_drawdown_limit = 30.0

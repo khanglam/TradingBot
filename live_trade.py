@@ -190,21 +190,64 @@ def _fetch_bars(symbol: str, asset: str, days: int, timeframe: str = "4h") -> pd
 
 # ─────────────────────────── signal extraction ──────────────────────────
 
+def _bars_per_day(asset: str, timeframe: str) -> int:
+    """Approximate trading bars per day. Used to convert the strategy's
+    MIN_BARS_REQUIRED (count of bars) into a `days=` window the bar
+    fetchers understand. Crypto trades 24/7; stocks ~252/365 days/year but
+    we treat 1d bars as 1 bar/day for the fetch window (yfinance returns
+    bar-aligned data anyway)."""
+    if asset != "crypto":
+        return 1
+    tf = timeframe.strip().lower()
+    if tf.endswith("h") or tf.endswith("hr") or tf.endswith("hour"):
+        try:
+            hours = int(''.join(c for c in tf if c.isdigit()))
+            return max(1, 24 // hours)
+        except ValueError:
+            pass
+    if tf.endswith("d") or tf.endswith("day"):
+        return 1
+    if tf.endswith("m") or tf.endswith("min") or tf.endswith("minute"):
+        try:
+            minutes = int(''.join(c for c in tf if c.isdigit()))
+            return max(1, (24 * 60) // minutes)
+        except ValueError:
+            pass
+    return 6  # 4h default
+
+
+def _required_days(asset: str, timeframe: str, extra_tail: int = 50) -> int:
+    """Days of history live_trade.py needs to fetch so indicator state at the
+    most recent bar matches what backtest sees. extra_tail is the live
+    signal-firing tail; MIN_BARS_REQUIRED is the warmup window before it."""
+    import backtest as _bt
+    bars_needed = _bt.strategy_min_bars() + extra_tail
+    return int(-(-bars_needed // _bars_per_day(asset, timeframe)))  # ceil division
+
+
 def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: float, timeframe: str = "4h") -> dict:
     """Run strategy.py against recent bars and return the signal dict.
 
     Mirrors scan._scan_symbol so behaviour is identical across alerts and
     paper execution. Returned dict keys:
-        symbol, signal ("BUY"/"SELL"/None), last_close, last_bar,
+        symbol, signal ("BUY"/"SELL"/None), last_close, last_bar, bars_fetched,
         entry_price/entry_time or exit_price/exit_time, error
+
+    `days` is the floor — the actual fetch is max(days, strategy_required_days)
+    so indicator state at fetch[-1] is stable regardless of what the user
+    passed via --days.
     """
     out: dict = {"symbol": symbol, "signal": None, "last_bar": None}
+    required_days = _required_days(asset, timeframe)
+    effective_days = max(days, required_days)
+    out["bars_required"] = required_days
     try:
-        df = _fetch_bars(symbol, asset, days, timeframe)
+        df = _fetch_bars(symbol, asset, effective_days, timeframe)
     except Exception as e:
         out["error"] = f"data fetch failed: {e}"
         return out
 
+    out["bars_fetched"] = len(df)
     if len(df) < 30:
         out["error"] = f"only {len(df)} bars; need at least 30"
         return out
@@ -216,7 +259,7 @@ def _scan_symbol(symbol: str, asset: str, days: int, fresh_bars: int, cash: floa
         from backtesting import Backtest
         from backtesting.lib import FractionalBacktest
         from backtest import load_strategy_class
-        
+
         strategy_file = "strategies/crypto.py" if asset == "crypto" else "strategies/stocks.py"
         UserStrategy = load_strategy_class(strategy_file)
         
@@ -461,13 +504,41 @@ def main() -> int:
 
     mode = "DRY" if args.dry else ("PAPER" if paper else "LIVE")
     print(f"[paper] mode={mode}  asset={args.asset}  symbols={','.join(symbols)}")
+
+    # Lockbox promotion gate. The current HEAD must have a PASS row in
+    # results/promotions.tsv before any non-dry trading is allowed. This
+    # is the only place the loop's optimization is forced through a real
+    # holdout check — bypass with ALLOW_UNPROMOTED=1 for tinkering only.
+    if not args.dry and os.environ.get("ALLOW_UNPROMOTED") != "1":
+        try:
+            import promote
+            import subprocess
+            head = subprocess.run(
+                ["git", "rev-parse", "--short=7", "HEAD"],
+                cwd=ROOT, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            if not promote.has_promotion(head):
+                print(
+                    f"\nERROR: current commit {head} has not been lockbox-promoted.\n"
+                    f"Run `python promote.py` first, or set ALLOW_UNPROMOTED=1 to bypass\n"
+                    f"(bypass is for tinkering — never on LIVE).",
+                    file=sys.stderr,
+                )
+                return 4
+        except Exception as e:
+            print(f"WARN: promotion gate check failed ({e}); proceeding.", file=sys.stderr)
     
     strategy_file = "strategies/crypto.py" if args.asset == "crypto" else "strategies/stocks.py"
     strat_path = (ROOT / strategy_file)
     head = strat_path.read_text(encoding="utf-8").splitlines()[0] if strat_path.exists() else "(missing)"
     print(f"[paper] strategy file: {strategy_file}  | first line: {head}")
     tf_display = f"  timeframe={args.timeframe}" if args.asset == "crypto" else ""
-    print(f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={args.days}d  fresh={args.fresh}{tf_display}")
+    required_days = _required_days(args.asset, args.timeframe)
+    effective_days = max(args.days, required_days)
+    print(
+        f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={effective_days}d "
+        f"(strategy needs {required_days}d, --days={args.days})  fresh={args.fresh}{tf_display}"
+    )
 
     # If we're going to actually submit, fail fast on missing creds — the user
     # has explicit instructions: no fallbacks, only real data.

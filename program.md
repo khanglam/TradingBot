@@ -8,33 +8,35 @@ and either keeps or reverts based on the active optimization metric.
 
 ## Goal
 
-Maximize the active **`OPTIMIZE_METRIC`** on the configured validation window
-subject to:
+Maximize the active **`OPTIMIZE_METRIC`** on the **train** window subject to
+all of the following gates (applied to every commit):
 
-- `max_drawdown` < 30%
-- `total_trades` ≥ 20
-- `win_rate` > 0.30 (soft — used as sanity check)
+- `train_max_drawdown` < 30% and `val_max_drawdown` < 30%
+- `train_total_trades` ≥ 20 and `val_total_trades` ≥ 20
+- `val_sub_min` ≥ -0.5 (worst val sub-period — regime-stability check)
+- val sub-periods with non-positive Sharpe ≤ half (regime-stability check)
+- `val_sharpe` may regress at most `VAL_TOLERANCE` (default 0.10) from the
+  best kept val_sharpe — this is the holdout brake
 
 The active metric is one of:
-- `val_sharpe` (default) — risk-adjusted return; rewards smooth equity curves
-- `calmar` — `total_return / max_drawdown`; rewards strategies that compound
-  money without large drawdowns
-- `dsr` — Deflated Sharpe Ratio (Bailey & López de Prado); like Sharpe but
-  adjusted for the number of trials run, so winning here is statistically
-  significant rather than just lucky
+- `train_sharpe` (default) — risk-adjusted return on the train window
+- `train_calmar` — `train_return / train_max_drawdown`
+- `train_dsr` — Deflated Sharpe on train (multiple-testing-corrected)
 
-All metrics (`val_sharpe`, `sortino`, `sharpe_ann_4h`, `calmar`, `psr`, `dsr`,
-`skew`, `kurtosis`) are logged to `results.tsv`. Optimizing one generally
+All metrics (train_*, val_*, sortino, sharpe_ann_4h, calmar, psr, dsr, skew,
+kurtosis, val_sub_*) are logged to `results.tsv`. Optimizing one generally
 moves the others in the same direction.
 
-A **training window** exists implicitly in the time series but is *not* what
-the metric is measured on. You may reason about it when designing changes;
-you may not modify the windows.
+**Holdout discipline.** The loop optimizes on the **train** window and uses
+**val** purely as an anti-overfit gate. A commit that boosts train_sharpe at
+the cost of more than VAL_TOLERANCE on val_sharpe is rejected. Per-period
+regime checks on val catch strategies that win on average only because one
+sub-period dominates the rest.
 
-A **lockbox window** is held back and never evaluated by the loop. It is
-opened manually only when promoting a strategy to paper trading. **Do not**
-design strategies that target lockbox dates — the loop has no signal from it,
-and overfitting to validation will be caught there.
+A **lockbox window** is held back and never evaluated by the loop. The only
+sanctioned consumer is `promote.py`, run once per promotion candidate before
+live trading. **Do not** design strategies that target lockbox dates — the
+loop has no signal from it, and overfitting to train+val will be caught there.
 
 ## Hard Rules
 

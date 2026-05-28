@@ -79,17 +79,20 @@ Avoid running locally at **03:00 PDT** when GitHub Actions pushes to `dev`.
 
 ## Time windows
 
-Configured in `configs.toml` (rolled forward May 2026). Loop scores **`val` only**.
+Configured in `configs.toml` (rolled forward May 2026). Loop optimizes on
+**train** and uses **val** as an anti-overfit holdout gate; **lockbox** is
+the third holdout, consumed only by `promote.py` before paper trading.
 
-| Window | Crypto | Stocks |
-|--------|--------|--------|
-| `train` | 2019 → 2022 | 2018 → 2021 |
-| `val` | 2023 → 2025 | 2022 → 2025 |
-| `lockbox` | 2026 → present | 2026 → present |
+| Window | Crypto | Stocks | Role |
+|--------|--------|--------|------|
+| `train` | 2020 → 2022 | 2019 → 2022 | optimization signal |
+| `val` | 2023 → 2024 | 2023 → 2024 | holdout brake (≤ VAL_TOLERANCE regression) |
+| `lockbox` | 2025 → present | 2025 → present | promote.py only — blind to loop |
 
 ```bash
-.venv/Scripts/python.exe backtest.py --window val
-.venv/Scripts/python.exe backtest.py --window lockbox
+.venv/Scripts/python.exe backtest.py --window train+val   # loop's default
+.venv/Scripts/python.exe backtest.py --window lockbox     # manual peek
+.venv/Scripts/python.exe promote.py                       # one-shot gate
 ```
 
 ## GitHub Actions

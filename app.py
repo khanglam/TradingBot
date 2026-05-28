@@ -419,13 +419,22 @@ def summary() -> dict:
     keeps = df[df["status"] == "keep"]
     discards = df[df["status"] == "discard"]
     crashes = df[df["status"] == "crash"]
-    best = float(keeps["val_sharpe"].max()) if not keeps.empty else 0.0
+    best_val = float(keeps["val_sharpe"].max()) if not keeps.empty else 0.0
+    # train_sharpe column is post-migration (empty cells in legacy rows); guard
+    # the cast so a pre-migration tsv doesn't 500 the endpoint.
+    if "train_sharpe" in keeps.columns and not keeps.empty:
+        best_train = float(
+            pd.to_numeric(keeps["train_sharpe"], errors="coerce").fillna(0.0).max()
+        )
+    else:
+        best_train = 0.0
     latest = None
     if not df.empty:
         last = df.iloc[-1].to_dict()
         latest = {
             "commit": last["commit"],
             "val_sharpe": float(last["val_sharpe"] or 0.0),
+            "train_sharpe": float(last.get("train_sharpe") or 0.0),
             "max_drawdown": float(last["max_drawdown"] or 0.0),
             "status": last["status"],
             "description": last["description"],
@@ -434,7 +443,9 @@ def summary() -> dict:
 
     symbols_spec = bt_module._cfg("SYMBOLS", "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d")
     return {
-        "best_sharpe": best,
+        "best_sharpe": best_val,  # kept name for FE back-compat; this is best val
+        "best_train_sharpe": best_train,
+        "best_val_sharpe": best_val,
         "total": int(len(df)),
         "keeps": int(len(keeps)),
         "discards": int(len(discards)),
@@ -443,8 +454,13 @@ def summary() -> dict:
         "latest": latest,
         "model": _active_model(),
         "symbols": symbols_spec,
+        "train_window": (
+            f"{bt_module._cfg('TRAIN_START', '2018-01-01')} → "
+            f"{bt_module._cfg('TRAIN_END', '2019-12-31')}"
+        ),
         "val_window": (
-            f"{bt_module._cfg('VAL_START', '2020-01-01')} → {bt_module._cfg('VAL_END', '2024-12-31')}"
+            f"{bt_module._cfg('VAL_START', '2020-01-01')} → "
+            f"{bt_module._cfg('VAL_END', '2024-12-31')}"
         ),
         "results_file": _results_path().relative_to(ROOT).as_posix(),
     }

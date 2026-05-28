@@ -22,19 +22,22 @@ manual commits. `paper.yml` and `live_trade.py` read from here.
 
 | File / Dir | Purpose |
 |---|---|
-| `live_trade.py` | Alpaca paper/live executor |
+| `live_trade.py` | Alpaca paper/live executor. Refuses to start unless HEAD has a PASS row in `results/promotions.tsv` (bypass with `ALLOW_UNPROMOTED=1`). |
+| `promote.py` | One-shot lockbox gate. Run manually before paper trading; appends to `results/promotions.tsv`. |
 | `configs.toml` | Campaign config for crypto/stocks (`CAMPAIGN` env); read from the checked-out branch |
 | `strategies/*.py` | What paper trades — copy of dev after daily merge |
 | `.github/workflows/` | CI definitions (read from default branch) |
 
 ### `dev` — research branch
 
-All loop work happens here.
+All loop work happens here. The loop optimizes on **train** and gates on
+**val** (with regime-stability sub-period checks); **lockbox** is the third
+holdout, consumed only by `promote.py`.
 
 | File / Dir | Purpose |
 |---|---|
-| `strategies/*.py` | Mutable strategies |
-| `results/*.tsv` | Experiment ledger |
+| `strategies/*.py` | Mutable strategies (declare `MIN_BARS_REQUIRED` for live fetch sizing) |
+| `results/*.tsv` | Experiment ledger (22-col schema; `promotions.tsv` is the lockbox audit) |
 | `loop.py`, `backtest.py`, `data_fetch.py`, `program.md` | Harness |
 | `app.py`, `web/` | Local dashboard |
 

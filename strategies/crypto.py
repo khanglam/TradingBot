@@ -23,6 +23,13 @@ import numpy as np
 import pandas as pd
 from backtesting import Strategy as _BTStrategy
 
+# Minimum bars live_trade.py must fetch before evaluating this strategy.
+# Covers ATR(14) chained into ATR-MA(50) plus Donchian(24) × ~3 for full
+# warm-up. Keep this defined at module scope — backtest.strategy_min_bars()
+# reads it to size the live bar window so live indicator state matches
+# backtest. Falls back to 200 if removed.
+MIN_BARS_REQUIRED = 250
+
 
 def _donchian(high: pd.Series, low: pd.Series, n: int = 20) -> tuple[np.ndarray, np.ndarray]:
     """Donchian channels: rolling N-bar high and N-bar low.
