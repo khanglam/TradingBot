@@ -1,4 +1,7 @@
 <!DOCTYPE html>
+<!-- This dashboard is dark-only by design. The `class="dark"` below is
+     intentional and pairs with `darkMode: 'class'` in the Tailwind config —
+     no light-mode toggle is planned. Remove only if you're adding one. -->
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
@@ -93,7 +96,15 @@
             <span class="text-ink-300">model</span>
             <span class="text-ink-100 ml-1.5" x-text="summary.model || '...'"></span>
           </div>
-          <div class="text-sm text-ink-300">best&nbsp;<span class="font-mono font-semibold text-ink-100" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></span></div>
+          <div class="flex items-center gap-3 text-sm text-ink-300">
+            <span title="Best train_sharpe across all kept commits. Train is what the loop optimizes against — the gradient.">
+              best train&nbsp;<span class="font-mono font-semibold text-emerald-400" x-text="fmtSharpe(summary.best_train_sharpe)"></span>
+            </span>
+            <span class="text-ink-600">·</span>
+            <span title="Best val_sharpe across all kept commits. Val is a holdout brake; the loop discards commits that regress val by more than VAL_TOLERANCE.">
+              best val&nbsp;<span class="font-mono font-semibold text-ink-100" x-text="fmtSharpe(summary.best_val_sharpe ?? summary.best_sharpe)"></span>
+            </span>
+          </div>
           <div class="flex items-center gap-2 text-sm">
             <span class="relative flex h-2 w-2">
               <span class="absolute inline-flex h-full w-full rounded-full opacity-75" :class="loop.running ? 'bg-accent-run animate-ping' : 'bg-ink-500'"></span>
@@ -132,7 +143,7 @@
       <!-- KPI cards -->
       <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <template x-for="card in kpiCards" :key="card.label">
-          <div class="bg-ink-900 border border-ink-800 rounded-lg p-4">
+          <div class="bg-ink-900 border border-ink-800 rounded-lg p-4" :title="card.title || ''">
             <div class="text-xs uppercase tracking-wider text-ink-300 font-mono" x-text="card.label"></div>
             <div class="text-2xl font-semibold mt-2" :class="card.color || 'text-ink-100'" x-text="card.value"></div>
             <div class="text-xs text-ink-300 mt-1" x-text="card.sub || ''"></div>
@@ -149,10 +160,18 @@
                'bg-accent-crash': summary.latest?.status === 'crash',
              }"></div>
         <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-3 text-sm">
+          <div class="flex items-center gap-3 text-sm flex-wrap">
             <span class="font-mono text-ink-300" x-text="summary.latest?.commit"></span>
-            <span class="font-mono font-semibold" x-text="(summary.latest?.val_sharpe ?? 0).toFixed(4)"></span>
+            <span class="font-mono text-xs text-ink-300"
+                  title="Train Sharpe (optimization signal) for this commit. '—' if logged before the train+val schema migration.">
+              train <span class="font-semibold text-emerald-400" x-text="fmtSharpe(summary.latest?.train_sharpe)"></span>
+            </span>
+            <span class="font-mono text-xs text-ink-300"
+                  title="Val Sharpe (anti-overfit gate) for this commit.">
+              val <span class="font-semibold text-ink-100" x-text="fmtSharpe(summary.latest?.val_sharpe)"></span>
+            </span>
             <span class="text-xs px-2 py-0.5 rounded font-mono uppercase"
+                  :title="summary.latest?.status === 'keep' ? 'Improved train_sharpe without violating val/regime/drawdown/trades gates. Commit kept; live tree advanced.' : summary.latest?.status === 'discard' ? 'Failed one of the gates (val regression, regime, drawdown, trade count, or no train improvement). Commit reverted via git reset.' : 'Backtest threw an exception. Commit reverted; the next iteration will see the traceback in its prompt.'"
                   :class="{
                     'bg-emerald-500/20 text-accent-keep': summary.latest?.status === 'keep',
                     'bg-red-500/20 text-accent-discard': summary.latest?.status === 'discard',
@@ -168,10 +187,14 @@
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
           <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
             <div class="min-w-0">
-              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Equity Curve</div>
+              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Equity Curve · Val window</div>
               <div class="text-sm text-ink-100 font-mono mt-0.5"
                    x-text="equity.meta?.chart_symbol_display ? ('Preview · ' + equity.meta.chart_symbol_display) : 'Preview backtest'"></div>
-              <div class="text-xs text-ink-300 mt-0.5" x-text="equity.meta?.val_window || summary.val_window || ''"></div>
+              <div class="text-xs text-ink-300 mt-0.5 font-mono"
+                   :title="'Train window: ' + (summary.train_window || '—') + '. The loop optimizes against train; the equity chart below shows the val backtest only.'">
+                <span x-text="'val ' + (equity.meta?.val_window || summary.val_window || '—')"></span>
+                <span class="text-ink-500" x-show="summary.train_window">  ·  <span x-text="'train ' + summary.train_window"></span></span>
+              </div>
             </div>
             <div class="flex items-center gap-2 shrink-0">
               <label x-show="equitySymbolOptions.length > 1" class="flex items-center gap-2 text-xs text-ink-300 font-mono">
@@ -190,47 +213,54 @@
           </div>
           <div class="relative" style="height: 288px;">
             <canvas id="chart-equity"></canvas>
-            <div x-show="equityLoading" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm bg-ink-900/80">running backtest…</div>
+            <div x-show="equityLoading && !equityError" class="absolute inset-0 flex items-center justify-center text-ink-300 text-sm bg-ink-900/80">running backtest…</div>
+            <div x-show="equityError && !equityLoading"
+                 class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center bg-ink-900/90">
+              <div class="text-accent-discard text-sm font-mono">equity preview failed</div>
+              <div class="text-ink-300 text-xs font-mono break-all" x-text="equityError"></div>
+              <button @click="reloadEquity()" class="mt-1 text-xs text-ink-200 hover:text-ink-100 px-2 py-1 rounded border border-ink-700 hover:border-ink-500 font-mono">↻ retry</button>
+            </div>
           </div>
           <div class="grid gap-3 mt-4 text-sm"
                :class="equity.meta?.basket_mode ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'">
-            <div x-show="equity.meta?.basket_mode" class="col-span-2 sm:col-span-4 rounded-md bg-ink-800/80 border border-ink-700 px-3 py-2">
-              <div class="text-xs text-ink-300 font-mono">BASKET SHARPE</div>
-              <div class="font-mono text-emerald-400" x-text="(summary.best_sharpe ?? 0).toFixed(4)"></div>
+            <div x-show="equity.meta?.basket_mode" class="col-span-2 sm:col-span-4 rounded-md bg-ink-800/80 border border-ink-700 px-3 py-2"
+                 title="Basket val Sharpe = mean(per-symbol Sharpes) − BASKET_PENALTY × stdev(per-symbol Sharpes). The stdev term penalizes strategies that win on one symbol and lose on others.">
+              <div class="text-xs text-ink-300 font-mono">BASKET VAL SHARPE</div>
+              <div class="font-mono text-emerald-400" x-text="fmtSharpe(summary.best_val_sharpe ?? summary.best_sharpe)"></div>
             </div>
-            <div>
-              <div class="text-xs text-ink-300 font-mono">SHARPE</div>
-              <div class="font-mono" x-text="(equity.metrics?.sharpe ?? 0).toFixed(3)"></div>
+            <div title="Risk-adjusted return on the val window. >1 is decent; >2 invites overfit suspicion. Optimization signal is train_sharpe — see header.">
+              <div class="text-xs text-ink-300 font-mono">VAL SHARPE</div>
+              <div class="font-mono" x-text="fmtSharpe(equity.metrics?.sharpe)"></div>
             </div>
-            <div>
+            <div title="Like Sharpe but only penalizes downside volatility. Often higher than Sharpe for asymmetric strategies.">
               <div class="text-xs text-ink-300 font-mono">SORTINO</div>
-              <div class="font-mono" x-text="(equity.metrics?.sortino ?? 0).toFixed(3)"></div>
+              <div class="font-mono" x-text="fmtSharpe(equity.metrics?.sortino)"></div>
             </div>
-            <div>
+            <div title="Maximum peak-to-trough drawdown over the window. Loop discards any commit at or above MAX_DRAWDOWN_LIMIT (see configs.toml).">
               <div class="text-xs text-ink-300 font-mono">MAX DD</div>
-              <div class="font-mono" x-text="(equity.metrics?.max_drawdown ?? 0).toFixed(2) + '%'"></div>
+              <div class="font-mono" x-text="fmtPct(equity.metrics?.max_drawdown, 2)"></div>
             </div>
-            <div>
+            <div title="Closed trades over the window. Loop discards commits with fewer than MIN_TRADES so Sharpe is statistically meaningful.">
               <div class="text-xs text-ink-300 font-mono">TRADES</div>
-              <div class="font-mono" x-text="equity.metrics?.total_trades ?? 0"></div>
+              <div class="font-mono" x-text="fmtCount(equity.metrics?.total_trades)"></div>
             </div>
-            <div>
+            <div title="Total return over the val window — strategy growth from starting cash to ending cash.">
               <div class="text-xs text-ink-300 font-mono">RETURN</div>
-              <div class="font-mono" x-text="(equity.metrics?.total_return ?? 0).toFixed(1) + '%'"></div>
+              <div class="font-mono" x-text="fmtPct(equity.metrics?.total_return, 1)"></div>
             </div>
-            <div>
+            <div :title="'Buy-and-hold return for ' + (equity.meta?.buy_and_hold_asset || 'the same asset') + ' over the val window. The strategy needs to beat this to add value.'">
               <div class="text-xs text-ink-300 font-mono"
                    x-text="'B&amp;H ' + (equity.meta?.buy_and_hold_asset || '')"></div>
-              <div class="font-mono" x-text="(equity.metrics?.buy_and_hold_return ?? 0).toFixed(1) + '%'"></div>
+              <div class="font-mono" x-text="fmtPct(equity.metrics?.buy_and_hold_return, 1)"></div>
             </div>
           </div>
         </div>
 
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
           <div class="flex items-center justify-between mb-4">
-            <div>
-              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Sharpe Progression</div>
-              <div class="text-sm text-ink-200">Best-so-far across kept experiments</div>
+            <div title="One point per kept commit; the green step line is the best val_sharpe seen so far. Val is a holdout brake — the loop optimizes train but the val curve tells you whether that train improvement generalized.">
+              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Val Sharpe Progression</div>
+              <div class="text-sm text-ink-200">Best-so-far val_sharpe across kept commits</div>
             </div>
           </div>
           <div class="relative" style="height: 288px;">
@@ -270,10 +300,20 @@
             <thead class="bg-ink-900 sticky top-0 z-10">
               <tr class="text-left text-ink-300 font-mono text-xs uppercase tracking-wider border-b border-ink-800">
                 <th class="px-5 py-2 cursor-pointer" @click="sortBy('commit')">Commit</th>
-                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('val_sharpe')">Sharpe</th>
-                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('max_drawdown')">Max DD</th>
-                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('win_rate')">Win Rate</th>
-                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('total_trades')">Trades</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('train_sharpe')"
+                    title="Sharpe on the train slice — the loop's optimization signal. '—' on rows logged before the train+val schema migration.">Train Sharpe</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('val_sharpe')"
+                    title="Sharpe on the val slice — the anti-overfit brake.">Val Sharpe</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('val_sub_min')"
+                    title="Worst val sub-period Sharpe (default 4 sub-periods). Loop discards if below SUB_PERIOD_MIN_SHARPE. Regime-stability check.">Val Sub-min</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('val_sub_neg_count')"
+                    title="Count of val sub-periods with non-positive Sharpe. Loop discards if more than half are negative.">Sub-neg</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('max_drawdown')"
+                    title="Max drawdown on val. Loop discards if ≥ MAX_DRAWDOWN_LIMIT.">Max DD</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('win_rate')"
+                    title="Fraction of trades closed at a profit. High win rate alone is not edge — could be many tiny wins and a few large losses.">Win Rate</th>
+                <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('total_trades')"
+                    title="Trade count on val. Loop discards if below MIN_TRADES so Sharpe is statistically meaningful.">Trades</th>
                 <th class="px-5 py-2 cursor-pointer" @click="sortBy('status')">Status</th>
                 <th class="px-5 py-2 cursor-pointer" @click="sortBy('timestamp')">Timestamp</th>
                 <th class="px-5 py-2">Description</th>
@@ -283,12 +323,16 @@
               <template x-for="row in filteredResults" :key="row.commit + row.description">
                 <tr class="border-b border-ink-800/60 hover:bg-ink-800/40 transition-colors">
                   <td class="px-5 py-2 font-mono text-ink-200" x-text="row.commit"></td>
-                  <td class="px-5 py-2 font-mono text-right" x-text="(row.val_sharpe ?? 0).toFixed(4)"></td>
-                  <td class="px-5 py-2 font-mono text-right" x-text="(row.max_drawdown ?? 0).toFixed(2)"></td>
-                  <td class="px-5 py-2 font-mono text-right" x-text="(row.win_rate ?? 0).toFixed(3)"></td>
-                  <td class="px-5 py-2 font-mono text-right" x-text="row.total_trades"></td>
+                  <td class="px-5 py-2 font-mono text-right text-emerald-400" x-text="fmtSharpe(row.train_sharpe)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="fmtSharpe(row.val_sharpe)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="fmtSharpe(row.val_sub_min)"></td>
+                  <td class="px-5 py-2 font-mono text-right text-xs" x-text="fmtCount(row.val_sub_neg_count)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="fmtPct(row.max_drawdown, 2)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="fmtWinRate(row.win_rate)"></td>
+                  <td class="px-5 py-2 font-mono text-right" x-text="fmtCount(row.total_trades)"></td>
                   <td class="px-5 py-2">
                     <span class="px-2 py-0.5 rounded text-xs font-mono uppercase"
+                          :title="row.status === 'keep' ? 'Train Sharpe improved without breaking any gate.' : row.status === 'discard' ? 'Failed a gate (val regression, regime, drawdown, trade count, or no train improvement).' : 'Backtest crashed — the LLM is shown the traceback next iteration.'"
                           :class="{
                             'bg-emerald-500/20 text-accent-keep': row.status === 'keep',
                             'bg-red-500/20 text-accent-discard': row.status === 'discard',
@@ -300,7 +344,9 @@
                 </tr>
               </template>
               <tr x-show="!filteredResults.length">
-                <td colspan="8" class="text-center text-ink-300 py-8">No experiments yet — launch the loop above.</td>
+                <td colspan="11" class="text-center text-ink-300 py-8">
+                  No experiments yet. Click <span class="font-mono text-emerald-400">▶ Launch loop</span> in the header to start, or <span class="font-mono text-ink-200">▶ run backtest</span> below to evaluate the current strategy once.
+                </td>
               </tr>
             </tbody>
           </table>
@@ -328,7 +374,9 @@
                 <div class="text-sm text-ink-200 mt-0.5" x-text="c.subject"></div>
               </li>
             </template>
-            <li x-show="!gitLog.length" class="text-center text-ink-300 py-8 text-sm">no commits touching strategy.py yet</li>
+            <li x-show="!gitLog.length" class="text-center text-ink-300 py-8 text-sm">
+              No commits touching <span class="font-mono text-ink-200" x-text="strategyPath || 'strategy.py'"></span> yet. They'll appear here as the loop keeps mutations.
+            </li>
           </ul>
         </div>
       </section>
@@ -534,8 +582,9 @@
              real recent market data?" using the same backtest harness the
              chart runs. The most useful diagnostic until paper.log fills in. -->
         <div class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
-          <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
-            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Simulated Performance</div>
+          <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3"
+               title="Re-runs the deployed strategy against the most recent bars (not the val window). 'Simulated' because no real orders fire — answers 'would this strategy have made money on the last N bars if it had been live?'">
+            <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Recent-bar Simulation</div>
             <span class="text-xs text-ink-500 font-mono"
                   x-text="chartData.bars?.length ? ('last ' + chartData.bars.length + ' bars · ' + chartData.timeframe) : ''"></span>
           </div>
@@ -574,10 +623,9 @@
                 <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Trades</div>
                 <div class="font-mono text-base" x-text="chartData.sim_trades_count ?? 0"></div>
               </div>
-              <div>
+              <div title="Fraction of simulated trades closed at a profit over the recent-bar window.">
                 <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Win Rate</div>
-                <div class="font-mono text-base"
-                     x-text="chartData.sim_win_rate != null ? Math.round(chartData.sim_win_rate*100) + '%' : '—'"></div>
+                <div class="font-mono text-base" x-text="fmtWinRate(chartData.sim_win_rate)"></div>
               </div>
               <div>
                 <div class="text-xs uppercase tracking-wider text-ink-300 font-mono mb-0.5">Position Now</div>
@@ -618,7 +666,7 @@
         </div>
         <div class="p-5">
           <div x-show="!paperEquity.points.length" class="py-12 text-center text-ink-300 text-sm">
-            No closed paper trades yet. The curve fills in as the strategy enters and exits positions.
+            No closed paper trades yet. The curve fills in as the strategy enters and exits positions; rows land in <span class="font-mono text-ink-200">results/paper.log</span> on every fill.
           </div>
           <div x-show="paperEquity.points.length" class="relative h-72">
             <canvas x-ref="paperEquityCanvas"></canvas>
@@ -665,14 +713,14 @@
                       :class="v.pnl > 0 ? 'text-emerald-400' : v.pnl < 0 ? 'text-accent-discard' : 'text-ink-500'"
                       x-text="v.trades ? formatPnl(v.pnl) : '—'"></td>
                   <td class="px-4 py-2 font-mono text-right text-xs text-ink-300"
-                      x-text="v.win_rate != null ? Math.round(v.win_rate*100) + '%' : '—'"></td>
+                      x-text="fmtWinRate(v.win_rate)"></td>
                   <td class="px-4 py-2 text-xs text-ink-400 truncate max-w-md" x-text="v.subject"></td>
                 </tr>
               </template>
             </tbody>
           </table>
           <div x-show="!versionStatsList.length" class="p-8 text-center text-ink-300 text-sm">
-            No version history yet — once dev is merged to main, each commit appears here.
+            No promoted versions yet. Strategies promote to main via <span class="font-mono text-ink-200">sync_branches.yml</span>; each promotion appears here once the daily merge runs.
           </div>
         </div>
       </section>
@@ -739,6 +787,7 @@
         equity: { metrics: {}, meta: {}, timestamps: [], equity: [], buy_and_hold: [], drawdown: [] },
         equityChartSymbol: '',
         equityLoading: false,
+        equityError: '',
         loop: { running: false, lines: 0 },
         loopProgress: { current: 0, total: 0 },
         consoleLines: [], consoleOpen: true, consoleId: 0, sse: null,
@@ -764,11 +813,33 @@
           const total = this.summary.total || 0;
           const keeps = this.summary.keeps || 0;
           const rate = total ? (keeps / total * 100).toFixed(0) : '—';
+          // Status is shown in the header (run indicator dot + progress). The
+          // four KPI slots are now: train high-water (the gradient), val high-
+          // water (the brake), trial count, keep rate. Best Train is green to
+          // signal "this is what the loop optimizes."
           return [
-            { label: 'Best Sharpe', value: (this.summary.best_sharpe ?? 0).toFixed(4), color: 'text-emerald-400' },
-            { label: 'Experiments', value: total, sub: `${keeps} kept · ${this.summary.discards} discarded · ${this.summary.crashes} crashed` },
-            { label: 'Keep rate', value: total ? `${rate}%` : '—' },
-            { label: 'Status', value: this.loop.running ? 'running' : 'idle', color: this.loop.running ? 'text-accent-run' : 'text-ink-100' },
+            {
+              label: 'Best Train Sharpe', color: 'text-emerald-400',
+              value: this.fmtSharpe(this.summary.best_train_sharpe),
+              sub: 'optimization signal',
+              title: 'Highest train_sharpe across all kept commits. Train is what the loop hill-climbs against.',
+            },
+            {
+              label: 'Best Val Sharpe',
+              value: this.fmtSharpe(this.summary.best_val_sharpe ?? this.summary.best_sharpe),
+              sub: 'holdout brake',
+              title: 'Highest val_sharpe across all kept commits. Val is a brake — commits that regress val by > VAL_TOLERANCE are discarded.',
+            },
+            {
+              label: 'Experiments', value: this.fmtCount(total),
+              sub: `${keeps} kept · ${this.summary.discards} discarded · ${this.summary.crashes} crashed`,
+              title: 'Total iterations logged to results.tsv (kept + discarded + crashed). Each is one LLM-proposed strategy mutation.',
+            },
+            {
+              label: 'Keep rate', value: total ? `${rate}%` : '—',
+              sub: 'commits that survived the gates',
+              title: 'Fraction of iterations the loop kept. Karpathy autoresearch hovers near 25%.',
+            },
           ];
         },
 
@@ -829,7 +900,7 @@
             pnl,
             pnl_display: this.formatPnl(pnl),
             wins, losses,
-            win_rate_display: t.length ? `${(wr * 100).toFixed(0)}%` : '—',
+            win_rate_display: this.fmtWinRate(wr),
           };
         },
 
@@ -837,6 +908,28 @@
           if (n == null || isNaN(n)) return '—';
           const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
           return `${sign}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        },
+
+        // Number-format helpers — single source of truth so we don't sprinkle
+        // .toFixed(3) here and .toFixed(4) there. All return '—' on null/empty
+        // (legacy results.tsv rows have empty train_sharpe cells after the
+        // schema migration; this prevents NaN from leaking into the DOM).
+        fmtSharpe(v) {
+          if (v == null || v === '' || isNaN(v)) return '—';
+          return Number(v).toFixed(3);
+        },
+        fmtPct(v, dp = 2) {
+          if (v == null || v === '' || isNaN(v)) return '—';
+          return Number(v).toFixed(dp) + '%';
+        },
+        // win_rate is stored as a fraction (0..1); displays as a percent.
+        fmtWinRate(v) {
+          if (v == null || v === '' || isNaN(v)) return '—';
+          return (Number(v) * 100).toFixed(1) + '%';
+        },
+        fmtCount(v) {
+          if (v == null || v === '' || isNaN(v)) return '—';
+          return Math.round(Number(v)).toLocaleString();
         },
 
         formatIndicatorValue(v) {
@@ -910,17 +1003,30 @@
             this.highlightStrategy();
           });
           this.connectSSE();
-          setInterval(() => { this.fetchSummary(); this.fetchResults(); }, 4000);
-          setInterval(() => { this.fetchSetup(); }, 15000);
-          setInterval(() => { if (this.activeTab==='trading') this.fetchTradeLog(); }, 15000);
-          setInterval(() => { if (this.activeTab==='trading') this.fetchAlpacaPositions(); }, 30000);
-          setInterval(() => { if (this.activeTab==='trading') this.fetchPaperEquity(); }, 30000);
+          // Pause every poll when the document is hidden (browser-tab backgrounded
+          // or screen locked). The SSE channels stay open and will wake the
+          // dashboard on real events when the tab returns.
+          const poll = (intervalMs, fn) => setInterval(() => {
+            if (document.visibilityState !== 'visible') return;
+            fn();
+          }, intervalMs);
+          poll(4000,  () => { this.fetchSummary(); this.fetchResults(); });
+          poll(15000, () => { this.fetchSetup(); });
+          poll(15000, () => { if (this.activeTab==='trading') this.fetchTradeLog(); });
+          poll(30000, () => { if (this.activeTab==='trading') this.fetchAlpacaPositions(); });
+          poll(30000, () => { if (this.activeTab==='trading') this.fetchPaperEquity(); });
           // Chart auto-refreshes on a longer cadence — bars only roll over
           // every 4h (crypto) or 1d (stocks), so polling faster is wasteful.
-          setInterval(() => { if (this.activeTab==='trading') this.fetchChartData(); }, 120000);
-          setInterval(() => { if (this.activeTab==='trading') this.fetchAnomalies(); }, 60000);
-          setInterval(() => { if (this.activeTab==='trading') this.fetchVersionStats(); }, 60000);
+          poll(120000, () => { if (this.activeTab==='trading') this.fetchChartData(); });
+          poll(60000,  () => { if (this.activeTab==='trading') this.fetchAnomalies(); });
+          poll(60000,  () => { if (this.activeTab==='trading') this.fetchVersionStats(); });
           this.connectTradeSse();
+          // Clean up SSE on unload so the server doesn't accumulate orphaned
+          // streams across reloads. Both EventSources are referenced on `this`.
+          window.addEventListener('beforeunload', () => {
+            try { this.sse?.close(); } catch {}
+            try { this.tradeSse?.close(); } catch {}
+          });
         },
 
         formatEquitySymbolLabel(stem) {
@@ -995,6 +1101,7 @@
 
         async reloadEquity() {
           this.equityLoading = true;
+          this.equityError = '';
           try {
             this.syncEquityChartSymbol();
             const params = new URLSearchParams();
@@ -1006,7 +1113,12 @@
             this.equity = r;
             if (r.meta?.chart_symbol) this.equityChartSymbol = r.meta.chart_symbol;
             this.renderEquity(); this.renderDrawdown();
-          } catch (e) { console.warn('equity fetch failed:', e); }
+          } catch (e) {
+            // Surface to the UI so the spinner doesn't hang forever on a failed
+            // backtest. Pre-fix, the user saw "running backtest…" indefinitely.
+            this.equityError = e.message || String(e);
+            console.warn('equity fetch failed:', e);
+          }
           finally { this.equityLoading = false; }
         },
 
@@ -1348,6 +1460,10 @@
         },
 
         connectSSE() {
+          // Close any prior connection — happens on Alpine re-init during dev
+          // reloads. Without this we silently accumulate EventSource handles
+          // and the browser caps total open streams per host (Chrome: 6).
+          if (this.sse) { try { this.sse.close(); } catch {} this.sse = null; }
           try {
             this.sse = new EventSource('/api/loop/stream');
             this.sse.addEventListener('line', e => {

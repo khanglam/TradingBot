@@ -39,3 +39,4 @@ logs/
 
 # Legacy campaign worktrees (removed — safe to delete locally if present)
 .worktrees/
+.playwright-mcp/
