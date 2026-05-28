@@ -2,3 +2,4 @@ timestamp	commit	symbols	lockbox_sharpe	lockbox_max_dd	lockbox_trades	lockbox_ba
 2026-05-27 18:00:01	b07716e	stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d	0.000000	0.00	0	0	REFUSED	lockbox_bars=0<200
 2026-05-27 18:28:06	b07716e	crypto/BTC_USDT_4h	-0.330454	1.64	5	698	FAIL	sharpe=-0.3305≤0;trades=5<20
 2026-05-27 18:28:38	b07716e	stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d	0.032146	14.79	1	180	FAIL	trades=1<20
+2026-05-27 21:39:46	95a0e94	crypto/BTC_USDT_4h	-0.330454	1.64	5	698	FAIL	sharpe=-0.3305≤0;trades=5<20

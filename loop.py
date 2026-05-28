@@ -20,7 +20,9 @@ Each iteration:
        - OPTIMIZE_METRIC (on train) > best_so_far   → keep
        - else                                        → discard (regression)
        discard / crash → git reset --hard HEAD~1
-  7. Append a row to results.tsv (22-col schema; see RESULTS_COLS)
+  7. Append a row to results.tsv (23-col schema; see RESULTS_COLS).
+     discard_reason captures which gate fired (crash | drawdown | min_trades
+     | dsr | regime_min | regime_neg | val_regression | no_improvement | '').
   8. Repeat until --iters reached (or human interrupt; karpathy-style)
   9. Session end: commit accumulated tsv rows in one chore commit.
 
@@ -267,7 +269,7 @@ RESULTS_COLS = [
     "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
     "train_sharpe", "train_calmar", "train_max_drawdown", "train_total_trades",
     "val_sub_min", "val_sub_std", "val_sub_neg_count",
-    "status", "timestamp", "description",
+    "status", "discard_reason", "timestamp", "description",
 ]
 RESULTS_HEADER = "\t".join(RESULTS_COLS) + "\n"
 
@@ -294,6 +296,16 @@ LEGACY_SCHEMAS = [
     [
         "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
         "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+        "status", "timestamp", "description",
+    ],
+    # v4 — added train_* and val_sub_* (the methodology-refresh schema, pre
+    # discard_reason). Legacy rows from this layout migrate with an empty
+    # discard_reason cell — the rejection histogram surfaces these as "—".
+    [
+        "commit", "val_sharpe", "sortino", "sharpe_ann_4h", "calmar", "psr", "dsr",
+        "skew", "kurtosis", "max_drawdown", "win_rate", "total_trades",
+        "train_sharpe", "train_calmar", "train_max_drawdown", "train_total_trades",
+        "val_sub_min", "val_sub_std", "val_sub_neg_count",
         "status", "timestamp", "description",
     ],
 ]
@@ -343,9 +355,12 @@ def _ensure_results() -> None:
     RESULTS.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
-def append_result(sha: str, metrics: dict, status: str, description: str) -> None:
+def append_result(sha: str, metrics: dict, status: str, description: str,
+                  discard_reason: str = "") -> None:
     """Append a row using the full new schema. metrics dict comes from
-    run_backtest() and is expected to contain every numeric column."""
+    run_backtest() and is expected to contain every numeric column.
+    `discard_reason` is one of the codes in DISCARD_REASONS (or '' for keeps
+    / crashes that don't fit the standard chain)."""
     _ensure_results()
     row = [
         sha,
@@ -368,6 +383,7 @@ def append_result(sha: str, metrics: dict, status: str, description: str) -> Non
         f"{metrics.get('val_sub_std', 0.0):.6f}",
         f"{metrics.get('val_sub_neg_count', 0)}",
         status,
+        discard_reason,
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         description,
     ]
@@ -741,33 +757,35 @@ def one_iteration(best_metric: float, best_val_sharpe: float) -> tuple[str, floa
     # Crash detection: both windows zero-Sharpe AND zero-trades signals an
     # actual failure (vs. constraint violation, which would have a nonzero
     # value somewhere).
+    discard_reason = ""
     if train_sharpe == 0.0 and val_sharpe == 0.0 and train_trades == 0 and val_trades == 0:
         status = "crash"
+        discard_reason = "crash"
     elif val_max_dd >= MAX_DRAWDOWN_LIMIT or train_max_dd >= MAX_DRAWDOWN_LIMIT:
-        status = "discard"
+        status = "discard"; discard_reason = "drawdown"
         print(f"[loop] dd gate: train={train_max_dd:.2f}% val={val_max_dd:.2f}% limit={MAX_DRAWDOWN_LIMIT}")
     elif val_trades < MIN_TRADES or train_trades < MIN_TRADES:
-        status = "discard"
+        status = "discard"; discard_reason = "min_trades"
         print(f"[loop] trade-count gate: train={train_trades} val={val_trades} min={MIN_TRADES}")
     elif DSR_GATE_THRESHOLD > 0 and dsr < DSR_GATE_THRESHOLD:
         # Multiple-testing gate: reject "lucky" candidates that pass raw Sharpe
         # but fail the trial-count-adjusted significance check.
-        status = "discard"
+        status = "discard"; discard_reason = "dsr"
         print(f"[loop] dsr gate: {dsr:.4f} < {DSR_GATE_THRESHOLD:.4f} → reject")
     elif sub_min < SUB_PERIOD_MIN_SHARPE:
         # P2 regime gate: one of the val sub-periods is too negative —
         # strategy is regime-fragile, reject even if aggregate looks fine.
-        status = "discard"
+        status = "discard"; discard_reason = "regime_min"
         print(f"[loop] regime gate: val_sub_min={sub_min:.4f} < {SUB_PERIOD_MIN_SHARPE:.4f}")
     elif sub_neg > sub_neg_limit:
         # P2 regime gate: more than half of val sub-periods are losing.
-        status = "discard"
+        status = "discard"; discard_reason = "regime_neg"
         print(f"[loop] regime gate: val_sub_neg_count={sub_neg} > {sub_neg_limit}")
     elif val_sharpe < best_val_sharpe - VAL_TOLERANCE:
         # P1 val-degradation gate: train can improve all it wants, but val
         # is the canary. If val drops more than VAL_TOLERANCE relative to
         # the best val we've seen on a kept commit, we're overfitting train.
-        status = "discard"
+        status = "discard"; discard_reason = "val_regression"
         print(
             f"[loop] val-degradation gate: val_sharpe={val_sharpe:.4f} < "
             f"best_val={best_val_sharpe:.4f} - tol={VAL_TOLERANCE:.4f}"
@@ -775,11 +793,11 @@ def one_iteration(best_metric: float, best_val_sharpe: float) -> tuple[str, floa
     elif score > best_metric + KEEP_THRESHOLD:
         status = "keep"
     else:
-        status = "discard"
+        status = "discard"; discard_reason = "no_improvement"
 
     if status != "keep":
         git_reset_last()
-        print(f"[loop] {status} → reverted")
+        print(f"[loop] {status} → reverted  ({discard_reason})")
     else:
         best_metric = score
         # Only ratchet val high-water if we kept the commit. A discarded
@@ -788,7 +806,7 @@ def one_iteration(best_metric: float, best_val_sharpe: float) -> tuple[str, floa
             best_val_sharpe = val_sharpe
         print(f"[loop] KEEP — new best {OPTIMIZE_METRIC}={score:.4f}  val_sharpe={val_sharpe:.4f}")
 
-    append_result(sha, metrics, status, description)
+    append_result(sha, metrics, status, description, discard_reason=discard_reason)
     return status, best_metric, best_val_sharpe
 
 

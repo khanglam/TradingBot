@@ -1343,6 +1343,119 @@ async def paper_trade_stream():
     return EventSourceResponse(event_gen())
 
 
+# ──────────────────────── promotion / lockbox ───────────────────────────
+# Three thin endpoints that expose the promote.py / live_trade.py gate state
+# to the UI. Reads from results/promotions.tsv via promote.py's own helpers
+# so the dashboard never duplicates the audit-trail file format.
+
+def _git_short_sha() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
+@app.get("/api/promotion-status")
+def promotion_status() -> dict:
+    """Current HEAD promotion state. The peek_count is the audit-trail
+    line count — surfaced to the UI so the Promote button can warn the
+    user before consuming another peek of the lockbox holdout."""
+    import promote
+    sha = _git_short_sha()
+    if not promote.PROMOTIONS.exists():
+        return {
+            "commit": sha, "promoted": False,
+            "last_promotion": None, "peek_count": 0,
+        }
+    lines = promote.PROMOTIONS.read_text(encoding="utf-8").splitlines()[1:]  # drop header
+    rows: list[dict] = []
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) >= len(promote.PROMOTIONS_COLS):
+            rows.append(dict(zip(promote.PROMOTIONS_COLS, parts)))
+    last_for_head = next(
+        (r for r in reversed(rows) if r.get("commit", "").startswith(sha)),
+        None,
+    )
+    promoted = any(
+        r.get("commit", "").startswith(sha) and r.get("decision") == "PASS"
+        for r in rows
+    )
+    return {
+        "commit": sha,
+        "promoted": promoted,
+        "last_promotion": last_for_head,
+        "peek_count": len(rows),
+    }
+
+
+@app.get("/api/lockbox-status")
+def lockbox_status() -> dict:
+    """Post-purge lockbox bar count vs the LOCKBOX_MIN_BARS threshold.
+    A reachable lockbox is the precondition for promote.py — without it
+    live_trade.py can never be cleared."""
+    import backtest, promote
+    spec = backtest._cfg("SYMBOLS", "")
+    lockbox_start = backtest._cfg("LOCKBOX_START", "")
+    if not spec:
+        return {
+            "symbols": "", "bars_post_purge": 0,
+            "min_bars": promote.LOCKBOX_MIN_BARS,
+            "status": "no_data", "lockbox_start": lockbox_start,
+        }
+    try:
+        bars = promote._lockbox_bar_count(spec)
+    except Exception as e:
+        return {
+            "symbols": spec, "bars_post_purge": 0,
+            "min_bars": promote.LOCKBOX_MIN_BARS,
+            "status": "no_data", "lockbox_start": lockbox_start,
+            "error": str(e),
+        }
+    if bars == 0:
+        status = "no_data"
+    elif bars >= promote.LOCKBOX_MIN_BARS:
+        status = "available"
+    else:
+        status = "below_threshold"
+    return {
+        "symbols": spec,
+        "bars_post_purge": bars,
+        "min_bars": promote.LOCKBOX_MIN_BARS,
+        "status": status,
+        "lockbox_start": lockbox_start,
+    }
+
+
+@app.post("/api/promote")
+def run_promote() -> dict:
+    """Run promote.py once and return its stdout + the freshly-appended
+    audit row. promote.py is itself idempotent (it just appends to
+    promotions.tsv); the UI consumes this to update the header badge."""
+    import promote
+    proc = subprocess.run(
+        [str(PYTHON), "promote.py"],
+        cwd=_campaign_root(), capture_output=True, text=True, timeout=180,
+    )
+    audit: dict | None = None
+    try:
+        if promote.PROMOTIONS.exists():
+            tail = promote.PROMOTIONS.read_text(encoding="utf-8").splitlines()
+            if len(tail) >= 2:
+                parts = tail[-1].split("\t")
+                if len(parts) >= len(promote.PROMOTIONS_COLS):
+                    audit = dict(zip(promote.PROMOTIONS_COLS, parts))
+    except Exception:
+        pass
+    return {
+        "stdout": proc.stdout, "stderr": proc.stderr,
+        "exit_code": proc.returncode, "audit": audit,
+    }
+
+
 # ─────────────────────────── entry point ─────────────────────────────
 
 if __name__ == "__main__":

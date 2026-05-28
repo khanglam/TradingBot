@@ -96,6 +96,17 @@
             <span class="text-ink-300">model</span>
             <span class="text-ink-100 ml-1.5" x-text="summary.model || '...'"></span>
           </div>
+          <!-- Promotion badge — green PROMOTED / amber UNPROMOTED / red FAILED.
+               Backed by /api/promotion-status which reads results/promotions.tsv.
+               Click to jump to the deployed-strategy card on the Trading tab. -->
+          <button x-show="promotionStatus.commit"
+                  @click="activeTab='trading'"
+                  class="text-xs font-mono px-2 py-1 rounded border transition-colors hover:brightness-110"
+                  :class="promotionBadgeClass()"
+                  :title="promotionBadgeTitle()">
+            <span x-text="promotionBadgeLabel()"></span>
+            <span class="text-ink-400 ml-1" x-text="promotionStatus.commit"></span>
+          </button>
           <div class="flex items-center gap-3 text-sm text-ink-300">
             <span title="Best train_sharpe across all kept commits. Train is what the loop optimizes against — the gradient.">
               best train&nbsp;<span class="font-mono font-semibold text-emerald-400" x-text="fmtSharpe(summary.best_train_sharpe)"></span>
@@ -258,9 +269,9 @@
 
         <div class="bg-ink-900 border border-ink-800 rounded-lg p-5">
           <div class="flex items-center justify-between mb-4">
-            <div title="One point per kept commit; the green step line is the best val_sharpe seen so far. Val is a holdout brake — the loop optimizes train but the val curve tells you whether that train improvement generalized.">
-              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Val Sharpe Progression</div>
-              <div class="text-sm text-ink-200">Best-so-far val_sharpe across kept commits</div>
+            <div title="Train (green) is the optimization signal — the loop hill-climbs against it. Val (blue) is the anti-overfit gate. The GAP between them is the overfit signature: train climbing while val flatlines = the loop is fitting noise the gate didn't catch.">
+              <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Train vs Val Progression</div>
+              <div class="text-sm text-ink-200">Per-commit Sharpe across kept iterations · watch the gap</div>
             </div>
           </div>
           <div class="relative" style="height: 288px;">
@@ -295,6 +306,29 @@
             </template>
           </div>
         </div>
+        <!-- Rejection histogram (D6.3). Computed reactively from this.results,
+             not a separate endpoint. Hidden when nothing has been discarded
+             with a recorded reason (legacy rows pre-D6.1 have empty cells). -->
+        <div x-show="rejectionBreakdown.length"
+             class="px-5 py-3 border-b border-ink-800 bg-ink-950/40"
+             title="Distribution of why discarded commits failed the gate chain. Use this to spot which gate is doing the most work — if val_regression dominates, the loop is overfitting train; if no_improvement dominates, the LLM is failing to find better strategies.">
+          <div class="text-[11px] uppercase tracking-wider text-ink-400 font-mono mb-2">Discard reasons</div>
+          <div class="space-y-1">
+            <template x-for="b in rejectionBreakdown" :key="b.code">
+              <div class="flex items-center gap-3 text-xs font-mono">
+                <div class="w-28 shrink-0 text-ink-200" x-text="b.label"></div>
+                <div class="flex-1 h-3 bg-ink-800 rounded-sm overflow-hidden">
+                  <div class="h-full rounded-sm" :class="b.tint" :style="'width: ' + b.pct + '%'"></div>
+                </div>
+                <div class="w-20 shrink-0 text-right text-ink-300">
+                  <span x-text="b.count"></span>
+                  <span class="text-ink-500">·</span>
+                  <span x-text="b.pct + '%'"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
         <div class="overflow-x-auto max-h-[480px] overflow-y-auto custom-scroll">
           <table class="w-full text-sm">
             <thead class="bg-ink-900 sticky top-0 z-10">
@@ -315,6 +349,8 @@
                 <th class="px-5 py-2 cursor-pointer text-right" @click="sortBy('total_trades')"
                     title="Trade count on val. Loop discards if below MIN_TRADES so Sharpe is statistically meaningful.">Trades</th>
                 <th class="px-5 py-2 cursor-pointer" @click="sortBy('status')">Status</th>
+                <th class="px-5 py-2 cursor-pointer" @click="sortBy('discard_reason')"
+                    title="Which gate fired for discarded commits. '—' for keeps and for legacy rows logged before D6.1 added the column.">Why</th>
                 <th class="px-5 py-2 cursor-pointer" @click="sortBy('timestamp')">Timestamp</th>
                 <th class="px-5 py-2">Description</th>
               </tr>
@@ -339,12 +375,13 @@
                             'bg-amber-500/20 text-accent-crash': row.status === 'crash',
                           }" x-text="row.status"></span>
                   </td>
+                  <td class="px-5 py-2 font-mono text-xs text-ink-300 whitespace-nowrap" x-text="fmtReason(row.discard_reason)"></td>
                   <td class="px-5 py-2 font-mono text-ink-300 text-xs whitespace-nowrap" x-text="row.timestamp ?? '—'"></td>
                   <td class="px-5 py-2 text-ink-200 max-w-md truncate" :title="row.description" x-text="row.description"></td>
                 </tr>
               </template>
               <tr x-show="!filteredResults.length">
-                <td colspan="11" class="text-center text-ink-300 py-8">
+                <td colspan="12" class="text-center text-ink-300 py-8">
                   No experiments yet. Click <span class="font-mono text-emerald-400">▶ Launch loop</span> in the header to start, or <span class="font-mono text-ink-200">▶ run backtest</span> below to evaluate the current strategy once.
                 </td>
               </tr>
@@ -413,7 +450,7 @@
       <!-- Current Version card — anchors the whole tab.
            Strategies mutate daily; every metric below is "since this version was deployed". -->
       <section class="bg-ink-900 border border-ink-800 rounded-lg overflow-hidden">
-        <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3">
+        <div class="px-5 py-3 border-b border-ink-800 flex items-center gap-3 flex-wrap">
           <div class="text-xs uppercase tracking-wider text-ink-300 font-mono">Currently Deployed Strategy</div>
           <span class="text-xs text-ink-500 font-mono" x-text="activeCampaign"></span>
           <!-- Anomaly: silent strategy detection. The most common failure mode is "no trades in N days when the backtest expected them". -->
@@ -424,6 +461,30 @@
           </span>
           <span x-show="anomalies.days_since_last_signal == null && paperEquity.summary.total_trades === 0"
                 class="ml-3 px-2 py-0.5 rounded text-xs font-mono bg-ink-800 text-ink-300">no signals yet</span>
+          <!-- Lockbox meter — surfaces the post-purge bar count of the held-out
+               window vs the LOCKBOX_MIN_BARS threshold. Below threshold means
+               promote.py will refuse to run; above means it's ready. -->
+          <span x-show="lockboxStatus.symbols"
+                class="ml-3 px-2 py-0.5 rounded text-xs font-mono"
+                :class="lockboxStatus.status === 'available' ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                  : lockboxStatus.status === 'below_threshold' ? 'bg-amber-500/15 text-accent-crash border border-amber-500/30'
+                  : 'bg-ink-800 text-ink-300 border border-ink-700'"
+                :title="'Post-purge bars in the lockbox slice (' + (lockboxStatus.lockbox_start || '?') + ' onward) across the basket. Threshold is LOCKBOX_MIN_BARS. promote.py refuses below threshold.'">
+            lockbox <span x-text="(lockboxStatus.bars_post_purge ?? 0) + '/' + (lockboxStatus.min_bars ?? 0)"></span>
+            <span class="uppercase ml-1" x-text="lockboxStatus.status === 'available' ? '· READY' : lockboxStatus.status === 'below_threshold' ? '· LOW' : '· NONE'"></span>
+          </span>
+          <!-- Promote button — opens a confirmation modal since every peek
+               of the lockbox erodes its holdout value. Disabled if the
+               lockbox isn't reachable. -->
+          <button @click="showPromote = true"
+                  :disabled="lockboxStatus.status !== 'available' || promoteRunning"
+                  class="ml-3 text-xs px-2.5 py-1 rounded font-mono border transition-colors"
+                  :class="lockboxStatus.status === 'available' && !promoteRunning
+                    ? 'bg-blue-500/15 text-accent-run border-blue-500/30 hover:bg-blue-500/25'
+                    : 'bg-ink-800 text-ink-500 border-ink-700 cursor-not-allowed'"
+                  :title="lockboxStatus.status === 'available' ? 'Run promote.py on current HEAD. Every run consumes lockbox blindness — see modal for peek count.' : 'Lockbox below threshold; cannot promote yet.'">
+            ▶ Promote
+          </button>
           <button @click="refreshTrading()" class="ml-auto text-xs text-ink-300 hover:text-ink-100 font-mono">↻ refresh</button>
         </div>
         <div x-show="!currentVersion" class="p-8 text-center text-ink-300 text-sm">
@@ -746,6 +807,75 @@
       </div>
     </div>
 
+    <!-- Promote modal — confirm + audit-count warning, then live promote.py stdout. -->
+    <div x-show="showPromote" x-transition.opacity
+         class="fixed inset-0 z-40 bg-ink-950/70 backdrop-blur-sm flex items-center justify-center p-4"
+         @keydown.escape.window="!promoteRunning && (showPromote = false)">
+      <div @click.outside="!promoteRunning && (showPromote = false)"
+           class="bg-ink-900 border border-ink-800 rounded-xl p-6 w-full max-w-lg shadow-2xl">
+        <div class="text-lg font-semibold">Promote current commit to live</div>
+        <div class="text-sm text-ink-300 mt-1">
+          <code class="font-mono text-ink-200" x-text="promotionStatus.commit"></code>
+          on <span class="font-mono text-ink-200" x-text="activeCampaign"></span>
+        </div>
+
+        <!-- Pre-confirmation: peek warning + last-decision summary -->
+        <div x-show="!promoteRunning && !promoteResult" class="mt-4 space-y-3">
+          <div class="text-sm text-ink-200">
+            Running <code class="font-mono text-amber-400">promote.py</code> backtests the strategy on the held-out <strong>lockbox</strong> window and writes a row to <code class="font-mono text-ink-300">results/promotions.tsv</code>. Every run consumes lockbox blindness — the more you peek, the less honest the holdout becomes.
+          </div>
+          <div class="bg-ink-800/60 border border-ink-700 rounded-md p-3 text-sm">
+            <div class="flex items-baseline gap-2">
+              <span class="text-ink-300">Total prior peeks:</span>
+              <span class="font-mono text-amber-400 text-base" x-text="promotionStatus.peek_count ?? 0"></span>
+              <span class="text-ink-500 text-xs">across all commits</span>
+            </div>
+            <div x-show="promotionStatus.last_promotion" class="mt-2 text-xs font-mono text-ink-400">
+              last: <span x-text="promotionStatus.last_promotion?.decision"></span>
+              <span class="text-ink-600">·</span>
+              <span x-text="promotionStatus.last_promotion?.ts"></span>
+              <div x-show="promotionStatus.last_promotion?.reasons" class="text-ink-500 mt-0.5"
+                   x-text="promotionStatus.last_promotion?.reasons"></div>
+            </div>
+          </div>
+          <div class="mt-2 flex gap-3 justify-end">
+            <button @click="showPromote = false"
+                    class="px-4 py-2 rounded-md text-sm text-ink-200 hover:bg-ink-800">Cancel</button>
+            <button @click="runPromote()"
+                    class="px-4 py-2 rounded-md text-sm font-medium bg-blue-500/20 text-accent-run border border-blue-500/40 hover:bg-blue-500/30">
+              ▶ Confirm — run promote.py
+            </button>
+          </div>
+        </div>
+
+        <!-- During run: spinner -->
+        <div x-show="promoteRunning" class="mt-4">
+          <div class="text-sm text-ink-300 font-mono">running promote.py… (lockbox backtest can take 30–90s)</div>
+          <div class="mt-3 h-1 w-full bg-ink-800 rounded overflow-hidden">
+            <div class="h-full w-1/3 bg-accent-run animate-pulse"></div>
+          </div>
+        </div>
+
+        <!-- Result: decision + reasons + stdout -->
+        <div x-show="promoteResult" class="mt-4 space-y-3">
+          <div class="flex items-center gap-3">
+            <span class="px-3 py-1 rounded font-mono text-sm font-semibold uppercase"
+                  :class="promoteResult?.audit?.decision === 'PASS' ? 'bg-emerald-500/20 text-accent-keep border border-emerald-500/40'
+                    : promoteResult?.audit?.decision === 'REFUSED' ? 'bg-ink-800 text-ink-300 border border-ink-700'
+                    : 'bg-red-500/20 text-accent-discard border border-red-500/40'"
+                  x-text="promoteResult?.audit?.decision || 'NO AUDIT'"></span>
+            <span x-show="promoteResult?.audit?.reasons" class="text-xs text-ink-400 font-mono"
+                  x-text="promoteResult?.audit?.reasons"></span>
+          </div>
+          <pre class="bg-ink-950 border border-ink-800 rounded-md p-3 font-mono text-xs leading-relaxed max-h-72 overflow-auto custom-scroll text-ink-200" x-text="promoteResult?.stdout || promoteResult?.stderr || '(no output)'"></pre>
+          <div class="flex justify-end">
+            <button @click="showPromote = false; promoteResult = null"
+                    class="px-4 py-2 rounded-md text-sm text-ink-200 hover:bg-ink-800">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Live console -->
     <div x-show="loop.running || consoleLines.length" x-transition class="fixed bottom-0 left-0 right-0 z-30 bg-ink-900 border-t border-ink-800">
       <div class="max-w-7xl mx-auto px-6 py-2 flex items-center gap-3">
@@ -776,6 +906,15 @@
     Chart.defaults.plugins.tooltip.borderColor = '#3f3f4a';
     Chart.defaults.plugins.tooltip.borderWidth = 1;
 
+    // Chart instances live outside the Alpine reactive scope on purpose.
+    // Chart.js objects have circular references (canvas → parent DOM → Alpine
+    // data stack → component → charts → canvas → ...). If we store them on
+    // `this.charts`, Alpine's reactive proxy walker recurses through them on
+    // every state mutation, eventually hitting "Maximum call stack size
+    // exceeded" and breaking the chart's mousemove handler. Module-scope is
+    // safe — Alpine never touches it.
+    const chartRegistry = { equity: null, progression: null, drawdown: null, paperEquity: null, live: null };
+
     function app() {
       return {
         summary: { best_sharpe: 0, total: 0, keeps: 0, discards: 0, crashes: 0, keep_rate: 0, latest: null },
@@ -793,7 +932,8 @@
         consoleLines: [], consoleOpen: true, consoleId: 0, sse: null,
         showLaunch: false, launchIters: 5,
         sortKey: '', sortDir: 'desc', filter: ['keep', 'discard', 'crash'],
-        charts: { equity: null, progression: null, drawdown: null, paperEquity: null, live: null },
+        // (Chart instances are stored in module-scope chartRegistry above to
+        //  avoid Alpine reactively proxying their circular DOM references.)
 
         // ── Trading tab state ──
         activeTab: 'autoresearch',
@@ -808,6 +948,11 @@
         chartSymbol: '', chartLoading: false, chartError: '',
         anomalies: { days_since_last_signal: null, last_signal_ts: null, last_signal_symbol: null, last_signal_kind: null },
         versionStatsList: [],
+
+        // ── Promotion / lockbox state (D7) ──
+        promotionStatus: { commit: '', promoted: false, last_promotion: null, peek_count: 0 },
+        lockboxStatus: { symbols: '', bars_post_purge: 0, min_bars: 150, status: 'no_data', lockbox_start: '' },
+        showPromote: false, promoteRunning: false, promoteResult: null,
 
         get kpiCards() {
           const total = this.summary.total || 0;
@@ -932,6 +1077,80 @@
           return Math.round(Number(v)).toLocaleString();
         },
 
+        // ── Discard-reason → human label map (D6.1). Used by the experiments
+        // table and the rejection histogram. Keep keys in sync with loop.py's
+        // DISCARD_REASONS / the keep/discard chain in one_iteration().
+        DISCARD_LABELS: {
+          crash:           'Crash',
+          drawdown:        'Drawdown',
+          min_trades:      'Min trades',
+          dsr:             'DSR gate',
+          regime_min:      'Regime min',
+          regime_neg:      'Regime neg',
+          val_regression:  'Val regression',
+          no_improvement:  'No improvement',
+        },
+        DISCARD_TINTS: {
+          crash:           'bg-amber-500/40',
+          drawdown:        'bg-red-500/50',
+          min_trades:      'bg-rose-500/40',
+          dsr:             'bg-fuchsia-500/40',
+          regime_min:      'bg-rose-500/40',
+          regime_neg:      'bg-rose-500/40',
+          val_regression:  'bg-orange-500/40',
+          no_improvement:  'bg-ink-500/40',
+        },
+        fmtReason(code) {
+          if (!code) return '—';
+          return this.DISCARD_LABELS[code] || code;
+        },
+
+        // ── Promotion badge helpers (D7.1) ──
+        promotionBadgeClass() {
+          const s = this.promotionStatus;
+          if (s.promoted) return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+          if (s.last_promotion && s.last_promotion.decision !== 'PASS')
+            return 'bg-red-500/15 text-accent-discard border-red-500/40';
+          return 'bg-amber-500/15 text-accent-crash border-amber-500/40';
+        },
+        promotionBadgeLabel() {
+          const s = this.promotionStatus;
+          if (s.promoted) return 'PROMOTED';
+          if (s.last_promotion && s.last_promotion.decision === 'FAIL') return 'FAILED';
+          if (s.last_promotion && s.last_promotion.decision === 'REFUSED') return 'REFUSED';
+          return 'UNPROMOTED';
+        },
+        promotionBadgeTitle() {
+          const s = this.promotionStatus;
+          if (s.promoted) return `Current HEAD has a PASS row in promotions.tsv. Safe to paper-trade. (peeks: ${s.peek_count})`;
+          if (s.last_promotion) {
+            return `Last promote.py result for this commit: ${s.last_promotion.decision} — ${s.last_promotion.reasons || '(no reasons)'}. Click to jump to the Trading tab. (peeks: ${s.peek_count})`;
+          }
+          return `Current HEAD has not been lockbox-promoted. Run promote.py before paper trading. (peeks: ${s.peek_count})`;
+        },
+
+        // ── Rejection histogram (D6.3) — computed from this.results. ──
+        get rejectionBreakdown() {
+          const buckets = {};
+          for (const r of this.results) {
+            const code = (r.discard_reason || '').trim();
+            if (!code) continue;  // empty cells (legacy rows or keeps) are excluded
+            buckets[code] = (buckets[code] || 0) + 1;
+          }
+          const total = Object.values(buckets).reduce((a, b) => a + b, 0) || 1;
+          const order = ['no_improvement', 'val_regression', 'regime_min', 'regime_neg',
+                         'drawdown', 'min_trades', 'dsr', 'crash'];
+          return order
+            .filter(code => buckets[code])
+            .map(code => ({
+              code,
+              label: this.DISCARD_LABELS[code] || code,
+              tint:  this.DISCARD_TINTS[code]  || 'bg-ink-500/40',
+              count: buckets[code],
+              pct:   Math.round((buckets[code] / total) * 100),
+            }));
+        },
+
         formatIndicatorValue(v) {
           if (v == null || isNaN(v)) return '—';
           // Big numbers (price-scale) get $ prefix and commas; small ones (ratios, ATRs) get more decimals.
@@ -992,6 +1211,7 @@
           await Promise.all([
             this.fetchTradeLog(), this.fetchAlpacaPositions(), this.fetchVersions(),
             this.fetchPaperEquity(), this.fetchAnomalies(), this.fetchVersionStats(),
+            this.fetchPromotionStatus(), this.fetchLockboxStatus(),
           ]);
           // Chart fetch is deferred — it's slow (network fetch) and not critical
           // for first paint of the rest of the tab.
@@ -1020,6 +1240,11 @@
           poll(120000, () => { if (this.activeTab==='trading') this.fetchChartData(); });
           poll(60000,  () => { if (this.activeTab==='trading') this.fetchAnomalies(); });
           poll(60000,  () => { if (this.activeTab==='trading') this.fetchVersionStats(); });
+          // Promotion + lockbox status refresh every 30s. Cheap (one file read
+          // each); we want the header badge to flip after the loop commits and
+          // the user runs promote.py without needing a full reload.
+          poll(30000,  () => { this.fetchPromotionStatus(); });
+          poll(60000,  () => { this.fetchLockboxStatus(); });
           this.connectTradeSse();
           // Clean up SSE on unload so the server doesn't accumulate orphaned
           // streams across reloads. Both EventSources are referenced on `this`.
@@ -1087,6 +1312,7 @@
                 this.fetchStrategy(), this.fetchGitLog(),
                 this.fetchVersions(), this.fetchPaperEquity(),
                 this.fetchAnomalies(), this.fetchVersionStats(),
+                this.fetchPromotionStatus(), this.fetchLockboxStatus(),
               ]);
               // Chart symbol is campaign-scoped; reset it so the new campaign's
               // watchlist head is picked up by fetchChartData's default-symbol path.
@@ -1342,12 +1568,12 @@
               },
             },
           };
-          if (this.charts.live) {
-            this.charts.live.data = cfg.data;
-            this.charts.live.options = cfg.options;
-            this.charts.live.update();
+          if (chartRegistry.live) {
+            chartRegistry.live.data = cfg.data;
+            chartRegistry.live.options = cfg.options;
+            chartRegistry.live.update();
           } else {
-            this.charts.live = new Chart(canvas.getContext('2d'), cfg);
+            chartRegistry.live = new Chart(canvas.getContext('2d'), cfg);
           }
         },
 
@@ -1402,11 +1628,11 @@
               },
             },
           };
-          if (this.charts.paperEquity) {
-            this.charts.paperEquity.data = cfg.data;
-            this.charts.paperEquity.update();
+          if (chartRegistry.paperEquity) {
+            chartRegistry.paperEquity.data = cfg.data;
+            chartRegistry.paperEquity.update();
           } else {
-            this.charts.paperEquity = new Chart(canvas.getContext('2d'), cfg);
+            chartRegistry.paperEquity = new Chart(canvas.getContext('2d'), cfg);
           }
         },
 
@@ -1416,6 +1642,31 @@
             if (r.error) this.alpaca = { account: null, positions: [], error: r.error };
             else this.alpaca = { account: r.account, positions: r.positions, error: null };
           } catch {}
+        },
+
+        async fetchPromotionStatus() {
+          try { this.promotionStatus = await fetch('/api/promotion-status').then(r => r.json()); }
+          catch {}
+        },
+
+        async fetchLockboxStatus() {
+          try { this.lockboxStatus = await fetch('/api/lockbox-status').then(r => r.json()); }
+          catch {}
+        },
+
+        async runPromote() {
+          this.promoteRunning = true;
+          this.promoteResult = null;
+          try {
+            const r = await fetch('/api/promote', { method: 'POST' }).then(r => r.json());
+            this.promoteResult = r;
+            // Refresh status so the header badge flips immediately.
+            await this.fetchPromotionStatus();
+          } catch (e) {
+            this.promoteResult = { stdout: '', stderr: 'promote request failed: ' + e, exit_code: -1, audit: null };
+          } finally {
+            this.promoteRunning = false;
+          }
         },
 
         async startTrader() {
@@ -1506,11 +1757,11 @@
 
         renderEquity() {
           const ctx = document.getElementById('chart-equity'); if (!ctx) return;
-          if (this.charts.equity) { this.charts.equity._sizeObserver?.disconnect?.(); this.charts.equity.destroy(); }
+          if (chartRegistry.equity) { chartRegistry.equity._sizeObserver?.disconnect?.(); chartRegistry.equity.destroy(); }
           const labels = this.equity.timestamps || [];
           const sym = this.equity.meta?.chart_symbol_display || 'symbol';
           const bh = this.equity.meta?.buy_and_hold_asset || sym.split(' · ')[0];
-          this.charts.equity = new Chart(ctx, {
+          chartRegistry.equity = new Chart(ctx, {
             type: 'line',
             data: {
               labels,
@@ -1529,13 +1780,13 @@
               plugins: { legend: { display: true, position: 'bottom' } },
             },
           });
-          this.observeChart(ctx, this.charts.equity);
+          this.observeChart(ctx, chartRegistry.equity);
         },
 
         renderDrawdown() {
           const ctx = document.getElementById('chart-drawdown'); if (!ctx) return;
-          if (this.charts.drawdown) { this.charts.drawdown._sizeObserver?.disconnect?.(); this.charts.drawdown.destroy(); }
-          this.charts.drawdown = new Chart(ctx, {
+          if (chartRegistry.drawdown) { chartRegistry.drawdown._sizeObserver?.disconnect?.(); chartRegistry.drawdown.destroy(); }
+          chartRegistry.drawdown = new Chart(ctx, {
             type: 'line',
             data: {
               labels: this.equity.timestamps || [],
@@ -1550,22 +1801,42 @@
               },
             },
           });
-          this.observeChart(ctx, this.charts.drawdown);
+          this.observeChart(ctx, chartRegistry.drawdown);
         },
 
         renderProgression() {
           const ctx = document.getElementById('chart-progression'); if (!ctx) return;
           const keeps = this.results.filter(r => r.status === 'keep');
-          let best = 0;
-          const data = keeps.map((r, i) => { best = Math.max(best, r.val_sharpe || 0); return { x: i + 1, sharpe: r.val_sharpe, best }; });
-          if (this.charts.progression) { this.charts.progression._sizeObserver?.disconnect?.(); this.charts.progression.destroy(); }
-          this.charts.progression = new Chart(ctx, {
+          // Legacy keeps (pre-train-window schema) have empty train_sharpe.
+          // Coerce '' to null so Chart.js draws a gap instead of a 0-spike.
+          const num = v => (v === '' || v == null || isNaN(Number(v))) ? null : Number(v);
+          const labels = keeps.map((_, i) => '#' + (i + 1));
+          const trainData = keeps.map(r => num(r.train_sharpe));
+          const valData   = keeps.map(r => num(r.val_sharpe));
+          if (chartRegistry.progression) { chartRegistry.progression._sizeObserver?.disconnect?.(); chartRegistry.progression.destroy(); }
+          chartRegistry.progression = new Chart(ctx, {
             type: 'line',
             data: {
-              labels: data.map(d => '#' + d.x),
+              labels,
               datasets: [
-                { label: 'Sharpe', data: data.map(d => d.sharpe), borderColor: '#3b82f6', backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 3, pointBackgroundColor: '#3b82f6', tension: 0 },
-                { label: 'Best so far', data: data.map(d => d.best), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.06)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0, stepped: true },
+                // Train first → drawn underneath; the green fill makes the
+                // optimization signal visually dominant.
+                {
+                  label: 'Train Sharpe (optimization)',
+                  data: trainData,
+                  borderColor: '#10b981',
+                  backgroundColor: 'rgba(16,185,129,0.10)',
+                  borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#10b981',
+                  spanGaps: false, fill: true, tension: 0,
+                },
+                {
+                  label: 'Val Sharpe (gate)',
+                  data: valData,
+                  borderColor: '#60a5fa',
+                  backgroundColor: 'transparent',
+                  borderWidth: 1.5, pointRadius: 3, pointBackgroundColor: '#60a5fa',
+                  spanGaps: false, fill: false, tension: 0,
+                },
               ],
             },
             options: {
@@ -1575,7 +1846,7 @@
               plugins: { legend: { display: true, position: 'bottom' } },
             },
           });
-          this.observeChart(ctx, this.charts.progression);
+          this.observeChart(ctx, chartRegistry.progression);
         },
 
         highlightStrategy() {
