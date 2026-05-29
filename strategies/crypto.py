@@ -138,6 +138,15 @@ class Strategy(_BTStrategy):
     vol_sma_period = 20
     vol_threshold = 1.2
 
+    # SMA regime filter: only enter when price is above its 200-bar SMA.
+    # This is a structural regime gate that filters out counter-trend trades
+    # during bear market phases, when breakouts are more likely to fail and
+    # drawdown risk is elevated. Replaced the +DI/-DI alignment filter which
+    # was redundant with ADX (both measure trend direction/strength) and
+    # added complexity without structural regime awareness. On 4h bars,
+    # 200-bar SMA ≈ 33 days — catches medium-term trend direction.
+    sma_regime_period = 200
+
     # Volatility-scaled position sizing: size INVERSELY proportional to
     # realized volatility. REVERSED from prior logic:
     # - High ATR (high-vol regime) → strong momentum but elevated risk → size DOWN
@@ -182,6 +191,7 @@ class Strategy(_BTStrategy):
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
         self.vol_sma = self.I(_sma, self.data.Volume, self.vol_sma_period)
+        self.sma_regime = self.I(_sma, close, self.sma_regime_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -203,20 +213,24 @@ class Strategy(_BTStrategy):
         # market is trending, not ranging. ADX filters at the bar level
         # without blocking regime participation, unlike the 200-bar SMA
         # filter which was too restrictive on 4h crypto data.
-        # And require directional alignment: +DI > -DI ensures breakout
-        # is in the direction of dominant momentum, not counter-trend.
         # And require volume confirmation: volume > 1.2x its 20-bar SMA
         # confirms the breakout has real market participation, not just
         # a price spike on thin volume.
+        # And require SMA regime filter: close > SMA200 ensures we're
+        # only trading with the structural uptrend, not catching falling
+        # knives in bear market rallies. This replaces the +DI/-DI
+        # alignment filter which was redundant with ADX — both measure
+        # trend direction/strength, so the DI filter added complexity
+        # without structural regime awareness.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         momentum_confirm = self.adx[-1] > self.adx_threshold
-        bullish_di = self.plus_di[-1] > self.minus_di[-1]
         volume_confirm = self.data.Volume[-1] > self.vol_sma[-1] * self.vol_threshold
+        sma_regime_bullish = close > self.sma_regime[-1]
 
-        if breakout and vol_regime_high and momentum_confirm and bullish_di and volume_confirm and not self.position:
+        if breakout and vol_regime_high and momentum_confirm and volume_confirm and sma_regime_bullish and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
