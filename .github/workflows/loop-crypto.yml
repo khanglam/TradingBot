@@ -44,7 +44,7 @@ jobs:
     env:
       CAMPAIGN: crypto
       ITERS: ${{ github.event.inputs.iters || vars.ITERS || '10' }}
-      OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'val_sharpe' }}
+      OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'train_sharpe' }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash' }}
       PYTHONUTF8: '1'
