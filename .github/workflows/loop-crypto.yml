@@ -20,14 +20,14 @@ on:
         default: '10'
         type: string
       optimize_metric:
-        description: 'val_sharpe | calmar | dsr'
+        description: 'train_sharpe | train_calmar | train_dsr'
         required: false
-        default: 'val_sharpe'
+        default: 'train_sharpe'
         type: choice
         options:
-          - val_sharpe
-          - calmar
-          - dsr
+          - train_sharpe
+          - train_calmar
+          - train_dsr
 
 permissions:
   contents: write
