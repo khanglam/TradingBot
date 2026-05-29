@@ -130,6 +130,14 @@ class Strategy(_BTStrategy):
     adx_period = 14
     adx_threshold = 25.0
 
+    # Volume confirmation: require current bar volume > 1.2x its 20-bar SMA
+    # to confirm the breakout is backed by real participation, not a thin-air
+    # spike. Volume is a fundamental trend-confirmation signal that captures
+    # whether the market genuinely endorses the price move — essential for
+    # filtering false breakouts that look good on price alone.
+    vol_sma_period = 20
+    vol_threshold = 1.2
+
     # Volatility-scaled position sizing: size INVERSELY proportional to
     # realized volatility. REVERSED from prior logic:
     # - High ATR (high-vol regime) → strong momentum but elevated risk → size DOWN
@@ -173,6 +181,7 @@ class Strategy(_BTStrategy):
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
+        self.vol_sma = self.I(_sma, self.data.Volume, self.vol_sma_period)
 
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
@@ -196,14 +205,18 @@ class Strategy(_BTStrategy):
         # filter which was too restrictive on 4h crypto data.
         # And require directional alignment: +DI > -DI ensures breakout
         # is in the direction of dominant momentum, not counter-trend.
+        # And require volume confirmation: volume > 1.2x its 20-bar SMA
+        # confirms the breakout has real market participation, not just
+        # a price spike on thin volume.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         momentum_confirm = self.adx[-1] > self.adx_threshold
         bullish_di = self.plus_di[-1] > self.minus_di[-1]
+        volume_confirm = self.data.Volume[-1] > self.vol_sma[-1] * self.vol_threshold
 
-        if breakout and vol_regime_high and momentum_confirm and bullish_di and not self.position:
+        if breakout and vol_regime_high and momentum_confirm and bullish_di and volume_confirm and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
