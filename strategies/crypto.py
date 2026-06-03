@@ -25,7 +25,7 @@ from backtesting import Strategy as _BTStrategy
 
 # Minimum bars live_trade.py must fetch before evaluating this strategy.
 # Covers ATR(14) chained into ATR-MA(50) plus Donchian(24) × ~3 for full
-# warm-up. Keep this defined at module scope — backtest.strategy_min_bars()
+# warm-up. Keep this at module scope — backtest.strategy_min_bars()
 # reads it to size the live bar window so live indicator state matches
 # backtest. Falls back to 200 if removed.
 MIN_BARS_REQUIRED = 250
@@ -108,6 +108,11 @@ class Strategy(_BTStrategy):
     atr_multiplier_low_vol = 3.0   # tight stop in calm markets
     atr_multiplier_high_vol = 3.6  # loose stop in trending volatility
 
+    # Profit-dependent trailing stop: once profit reaches this many ATR,
+    # tighten the trailing multiplier to lock in gains.
+    profit_atr_threshold = 2.0
+    tight_atr_multiplier = 2.0
+
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 0.95x the 50-bar moving average of ATR. Filters out breakfakes
     # in ranging regimes where volatility is suppressed and price motion
@@ -147,6 +152,7 @@ class Strategy(_BTStrategy):
         self.sma200 = self.I(_sma, close, self.sma_period)
 
         self.highest_price: float | None = None
+        self.entry_price: float | None = None
         self.entry_bar: int | None = None
 
     def next(self) -> None:
@@ -169,6 +175,7 @@ class Strategy(_BTStrategy):
             size = self.base_fraction * size_multiplier
             self.buy(size=size)
             self.highest_price = close
+            self.entry_price = close
             self.entry_bar = current_bar
         elif self.position:
             # Update running peak
@@ -178,6 +185,12 @@ class Strategy(_BTStrategy):
             # Regime-adaptive base multiplier
             is_high_vol = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
             base_mult = self.atr_multiplier_high_vol if is_high_vol else self.atr_multiplier_low_vol
+
+            # Profit-dependent tightening: once profit >= profit_atr_threshold,
+            # use a tighter trailing multiplier to lock gains.
+            profit_atr = (self.highest_price - self.entry_price) / max(self.atr[-1], 0.0001)
+            if profit_atr >= self.profit_atr_threshold:
+                base_mult = self.tight_atr_multiplier
 
             # ATR trailing stop (regime-adaptive only)
             trailing_stop = self.highest_price - self.atr[-1] * base_mult
@@ -189,4 +202,5 @@ class Strategy(_BTStrategy):
             if stop_hit or donchian_exit:
                 self.position.close()
                 self.highest_price = None
+                self.entry_price = None
                 self.entry_bar = None
