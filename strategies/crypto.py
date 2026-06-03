@@ -99,30 +99,25 @@ def _sma(series: pd.Series, n: int) -> np.ndarray:
 class Strategy(_BTStrategy):
     # Turtle System One: 28-bar breakout entry, 15-bar opposite exit.
     # On 4h bars this is ~4.7-day entry confirmation, ~2.5-day exit signal.
-    # Increased from 24 to 28 bars to require a stronger, more sustained
-    # price move before entering, aiming to filter out weaker breakouts
-    # that may not persist and break the plateau near 2.45 Sharpe.
     breakout_period = 28
     exit_period = 15
 
-    # ATR trailing stop — volatility-aware hard exit. Now regime-adaptive:
-    # use 2.5x ATR in low-vol regimes (ATR < MA) to protect capital aggressively,
-    # and 3.0x ATR in high-vol regimes (ATR > MA) to avoid whipsaws in volatile
-    # breakouts. This reduces false exits during volatility spikes while keeping
-    # tight stops in calm regimes, respecting the market regime without stacking
-    # new entry filters.
+    # ATR trailing stop — volatility-aware hard exit. Now regime-adaptive AND
+    # time-adaptive: multiplier increases with bars in position (up to +1.0
+    # at time_exit_bars). This lets strong trends run longer before being
+    # stopped out, reducing premature exits on early pullbacks.
     atr_period = 14
     atr_multiplier_low_vol = 3.0   # tight stop in calm markets (increased from 2.5)
     atr_multiplier_high_vol = 3.6  # loose stop in trending volatility
-    
+    atr_time_extra = 1.0           # max extra multiplier after time_exit_bars
+
     # Volatility-adaptive entry gate: only breakout when current ATR is
-    # above 1.0x the 50-bar moving average of ATR. Filters out breakfakes
+    # above 0.95x the 50-bar moving average of ATR. Filters out breakfakes
     # in ranging regimes where volatility is suppressed and price motion
-    # lacks persistence. Threshold relaxed from 1.1x to 1.0x to widen entry 
-    # set after repeated 0-trade crashes from over-constrained filter stack.
+    # lacks persistence.
     atr_ma_period = 50
     atr_vol_threshold = 0.95
-    
+
     # ADX momentum confirmation: require ADX > 25 on entry bars to confirm
     # the market is trending. ADX is a momentum indicator that filters at
     # the bar level without blocking regime windows, strengthening the entry
@@ -132,45 +127,22 @@ class Strategy(_BTStrategy):
 
     # Volume confirmation: require current bar volume > 1.2x its 20-bar SMA
     # to confirm the breakout is backed by real participation, not a thin-air
-    # spike. Volume is a fundamental trend-confirmation signal that captures
-    # whether the market genuinely endorses the price move — essential for
-    # filtering false breakouts that look good on price alone.
+    # spike.
     vol_sma_period = 20
     vol_threshold = 1.2
 
     # Long-term trend filter: close must be above 200-period SMA.
-    # Ensures we only take long breakouts in a confirmed uptrend regime,
-    # avoiding counter‑trend breakouts that are more likely to fail.
+    # Ensures we only take long breakouts in a confirmed uptrend regime.
     sma_period = 200
 
     # Volatility-scaled position sizing: size INVERSELY proportional to
-    # realized volatility. REVERSED from prior logic:
-    # - High ATR (high-vol regime) → strong momentum but elevated risk → size DOWN
-    # - Low ATR (low-vol regime) → calm chop, larger positions acceptable → size UP
-    # Rationale: proper risk management reduces exposure as volatility rises.
-    # The prior ATR/ATR_MA ratio paradoxically sized up during high-vol
-    # breakouts (the biggest risk events), which increased tail exposure.
-    vol_scale_floor = 0.20  # minimum size when ATR spikes (extreme vol = small size)
-    vol_scale_ceil = 1.05   # maximum size in calm regimes
-    
-    # Base fraction calibrated for inverse ATR scaling. When ATR >> ATR_MA
-    # (high vol), multiplier → floor → size ≈ 0.55 × 0.20 = 0.11 (tiny).
-    # When ATR << ATR_MA (low vol), multiplier → ceil → size ≈ 0.55 × 1.05 = 0.58.
-    # This keeps peak exposure bounded while allowing larger positions in calm
-    # chop where the strategy has more edge (price doesn't gap through stops).
+    # realized volatility. High ATR → small size, low ATR → larger size.
+    vol_scale_floor = 0.20
+    vol_scale_ceil = 1.05
     base_fraction = 0.55
 
     # Time-decay exit: exit after N bars in position, regardless of P&L.
-    # Replaces the ATR-based fixed R-multiple take-profit (3x ATR) which
-    # was redundant with the trailing stop and caused crashes when pushed
-    # to 4x (0 trades). The ATR take-profit rarely fires before the trailing
-    # stop does in trending markets — it's superseded by the ATR stop.
-    # Time exit is regime-insensitive: doesn't depend on current ATR, so
-    # it won't stretch in volatile regimes or compress in calm ones. On 4h
-    # bars, 30 bars ≈ 5 days — enough to capture a multi-day trend while
-    # preventing indefinite holding through chop.
-    # Increased to 40 bars to let stronger trends run longer before being
-    # forced to exit, potentially capturing larger moves.
+    # 40 bars ≈ 6-7 days on 4h chart.
     time_exit_bars = 40
 
     def init(self) -> None:
@@ -178,24 +150,15 @@ class Strategy(_BTStrategy):
         low = self.data.Low
         close = self.data.Close
 
-        # Long-side: upper band of the breakout window. Skip the "lower"
-        # output of _donchian by indexing — backtesting.py's self.I needs
-        # tuple unpacking via two separate calls, one per series.
         self.upper, _ = self.I(_donchian, high, low, self.breakout_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
         self.vol_sma = self.I(_sma, self.data.Volume, self.vol_sma_period)
-
-        # 200-period SMA for long-term trend filter
         self.sma200 = self.I(_sma, close, self.sma_period)
 
-        # Highest price since entry — drives the trailing stop. Reset on
-        # entry, updated each bar while in position.
         self.highest_price: float | None = None
-        
-        # Entry bar index — used for time-decay exit (bars in position).
         self.entry_bar: int | None = None
 
     def next(self) -> None:
@@ -205,18 +168,7 @@ class Strategy(_BTStrategy):
         close = self.data.Close[-1]
         current_bar = len(self.data) - 1
 
-        # Entry: close breaks above the prior bar's N-bar high AND
-        # current volatility (ATR) is elevated vs its 50-bar MA.
-        # And require ADX momentum confirmation: ADX > 25 confirms the
-        # market is trending, not ranging. ADX filters at the bar level
-        # without blocking regime participation, unlike the 200-bar SMA
-        # filter which was too restrictive on 4h crypto data.
-        # And require volume confirmation: volume > 1.2x its 20-bar SMA
-        # confirms the breakout has real market participation, not just
-        # a price spike on thin volume.
-        # And require price above 200-period SMA to avoid counter-trend breakouts.
-        # Use [-2] of the upper band so we're comparing against a value
-        # that does NOT include today's bar (no look-ahead).
+        # Entry conditions
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         momentum_confirm = self.adx[-1] > self.adx_threshold
@@ -224,13 +176,7 @@ class Strategy(_BTStrategy):
         trend_filter = close > self.sma200[-1]
 
         if breakout and vol_regime_high and momentum_confirm and volume_confirm and trend_filter and not self.position:
-            # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
-            # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
-            # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
-            # Rationale: proper risk management reduces exposure as volatility rises.
-            # High-vol breakouts have the highest tail risk (gap moves, slippage);
-            # sizing down protects capital. Low-vol chop is where larger positions
-            # are acceptable since price doesn't gap through stops as easily.
+            # Inverse volatility scaling
             vol_ratio = self.atr_ma[-1] / max(self.atr[-1], 0.0001)
             size_multiplier = max(self.vol_scale_floor, min(self.vol_scale_ceil, vol_ratio))
             size = self.base_fraction * size_multiplier
@@ -238,27 +184,22 @@ class Strategy(_BTStrategy):
             self.highest_price = close
             self.entry_bar = current_bar
         elif self.position:
-            # Track running peak since entry
+            # Update running peak
             self.highest_price = max(self.highest_price, close)
+            bars_in_position = current_bar - self.entry_bar
 
-            # Two exit rails in parallel:
-            #   1. ATR trailing stop — volatility-aware floor below peak.
-            #   2. Time-decay exit — fixed bar count, prevents indefinite holding.
-            # Removed the Donchian short-exit rail (close < exit_lower[-2]) which
-            # was redundant with the ATR trailing stop and caused premature exits
-            # on minor pullbacks, cutting winning trades short before the trailing
-            # stop could capture the full trend move.
-            
-            # Regime-adaptive ATR trailing stop: tighter (3.0x) in low-vol,
-            # looser (3.5x) in high-vol to avoid whipsaws during volatility spikes.
+            # Regime-adaptive base multiplier
             is_high_vol = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
-            atr_mult = self.atr_multiplier_high_vol if is_high_vol else self.atr_multiplier_low_vol
+            base_mult = self.atr_multiplier_high_vol if is_high_vol else self.atr_multiplier_low_vol
+
+            # Time-adaptive increment: multiplier grows with bars in position
+            # up to max of +atr_time_extra at time_exit_bars.
+            time_factor = min(1.0, bars_in_position / self.time_exit_bars) * self.atr_time_extra
+            atr_mult = base_mult + time_factor
             trailing_stop = self.highest_price - self.atr[-1] * atr_mult
             stop_hit = close <= trailing_stop
-            
-            # Time-decay exit: exit after N bars regardless of P&L or ATR.
-            # Regime-insensitive: doesn't expand/contract with volatility.
-            bars_in_position = current_bar - self.entry_bar
+
+            # Time-decay exit
             time_exit_hit = bars_in_position >= self.time_exit_bars
 
             if stop_hit or time_exit_hit:
