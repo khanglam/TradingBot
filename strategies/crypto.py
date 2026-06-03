@@ -206,14 +206,18 @@ class Strategy(_BTStrategy):
         # And require volume confirmation: volume > 1.2x its 20-bar SMA
         # confirms the breakout has real market participation, not just
         # a price spike on thin volume.
+        # NEW: require plus_di > minus_di to ensure breakout aligns with
+        # the current dominant bullish momentum — strengthens direction
+        # filter beyond ADX's trend-strength signal.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         momentum_confirm = self.adx[-1] > self.adx_threshold
         volume_confirm = self.data.Volume[-1] > self.vol_sma[-1] * self.vol_threshold
+        di_alignment = self.plus_di[-1] > self.minus_di[-1]
 
-        if breakout and vol_regime_high and momentum_confirm and volume_confirm and not self.position:
+        if breakout and vol_regime_high and momentum_confirm and volume_confirm and di_alignment and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
