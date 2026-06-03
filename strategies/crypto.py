@@ -102,14 +102,11 @@ class Strategy(_BTStrategy):
     breakout_period = 28
     exit_period = 15
 
-    # ATR trailing stop — volatility-aware hard exit. Now regime-adaptive AND
-    # time-adaptive: multiplier increases with bars in position (up to +1.0
-    # at time_exit_bars). This lets strong trends run longer before being
-    # stopped out, reducing premature exits on early pullbacks.
+    # ATR trailing stop — volatility-aware hard exit. Regime-adaptive:
+    # multiplier tightens in low vol, loosens in high vol.
     atr_period = 14
-    atr_multiplier_low_vol = 3.0   # tight stop in calm markets (increased from 2.5)
+    atr_multiplier_low_vol = 3.0   # tight stop in calm markets
     atr_multiplier_high_vol = 3.6  # loose stop in trending volatility
-    atr_time_extra = 1.0           # max extra multiplier after time_exit_bars
 
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 0.95x the 50-bar moving average of ATR. Filters out breakfakes
@@ -125,12 +122,6 @@ class Strategy(_BTStrategy):
     adx_period = 14
     adx_threshold = 25.0
 
-    # Volume confirmation: require current bar volume > 1.2x its 20-bar SMA
-    # to confirm the breakout is backed by real participation, not a thin-air
-    # spike.
-    vol_sma_period = 20
-    vol_threshold = 1.2
-
     # Long-term trend filter: close must be above 200-period SMA.
     # Ensures we only take long breakouts in a confirmed uptrend regime.
     sma_period = 200
@@ -141,21 +132,18 @@ class Strategy(_BTStrategy):
     vol_scale_ceil = 1.05
     base_fraction = 0.55
 
-    # Time-decay exit: exit after N bars in position, regardless of P&L.
-    # 40 bars ≈ 6-7 days on 4h chart.
-    time_exit_bars = 40
-
     def init(self) -> None:
         high = self.data.High
         low = self.data.Low
         close = self.data.Close
 
         self.upper, _ = self.I(_donchian, high, low, self.breakout_period)
+        # Exit Donchian: lower channel of exit_period
+        _, self.exit_lower = self.I(_donchian, high, low, self.exit_period)
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.atr_ma = self.I(_atr_ma, high, low, close, self.atr_period, self.atr_ma_period)
         self.adx = self.I(_adx, high, low, close, self.adx_period)
         self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
-        self.vol_sma = self.I(_sma, self.data.Volume, self.vol_sma_period)
         self.sma200 = self.I(_sma, close, self.sma_period)
 
         self.highest_price: float | None = None
@@ -168,14 +156,13 @@ class Strategy(_BTStrategy):
         close = self.data.Close[-1]
         current_bar = len(self.data) - 1
 
-        # Entry conditions
+        # Entry conditions (volume confirmation removed)
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         momentum_confirm = self.adx[-1] > self.adx_threshold
-        volume_confirm = self.data.Volume[-1] > self.vol_sma[-1] * self.vol_threshold
         trend_filter = close > self.sma200[-1]
 
-        if breakout and vol_regime_high and momentum_confirm and volume_confirm and trend_filter and not self.position:
+        if breakout and vol_regime_high and momentum_confirm and trend_filter and not self.position:
             # Inverse volatility scaling
             vol_ratio = self.atr_ma[-1] / max(self.atr[-1], 0.0001)
             size_multiplier = max(self.vol_scale_floor, min(self.vol_scale_ceil, vol_ratio))
@@ -192,17 +179,14 @@ class Strategy(_BTStrategy):
             is_high_vol = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
             base_mult = self.atr_multiplier_high_vol if is_high_vol else self.atr_multiplier_low_vol
 
-            # Time-adaptive increment: multiplier grows with bars in position
-            # up to max of +atr_time_extra at time_exit_bars.
-            time_factor = min(1.0, bars_in_position / self.time_exit_bars) * self.atr_time_extra
-            atr_mult = base_mult + time_factor
-            trailing_stop = self.highest_price - self.atr[-1] * atr_mult
+            # ATR trailing stop (regime-adaptive only)
+            trailing_stop = self.highest_price - self.atr[-1] * base_mult
             stop_hit = close <= trailing_stop
 
-            # Time-decay exit
-            time_exit_hit = bars_in_position >= self.time_exit_bars
+            # Donchian channel exit: price closes below the lower Donchian (exit_period)
+            donchian_exit = close < self.exit_lower[-1]
 
-            if stop_hit or time_exit_hit:
+            if stop_hit or donchian_exit:
                 self.position.close()
                 self.highest_price = None
                 self.entry_bar = None
