@@ -39,6 +39,7 @@ holdout, consumed only by `promote.py`.
 | `strategies/*.py` | Mutable strategies (declare `MIN_BARS_REQUIRED` for live fetch sizing) |
 | `results/*.tsv` | Experiment ledger (22-col schema; `promotions.tsv` is the lockbox audit) |
 | `loop.py`, `backtest.py`, `data_fetch.py`, `program.md` | Harness |
+| `.claude/skills/` | Agent skills (`run-loop`, `init-local-dev`, `optimize-loop`, `sync-branches`) |
 | `app.py`, `web/` | Local dashboard |
 
 ---

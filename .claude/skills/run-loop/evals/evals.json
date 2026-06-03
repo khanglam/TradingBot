@@ -1,0 +1,23 @@
+{
+  "skill_name": "run-loop",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "keep looping on crypto, 20 iterations",
+      "expected_output": "Agent runs loop.py on dev with CAMPAIGN=crypto --iters 20; does not stash results TSV; logs to results/loop-crypto-*.log",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "/run-loop stocks",
+      "expected_output": "Agent runs loop.py with CAMPAIGN=stocks and default 50 iters after pre-flight checks",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "stop all loops in progress",
+      "expected_output": "Agent runs stop_loops.py and confirms no loop.py processes remain",
+      "files": []
+    }
+  ]
+}
