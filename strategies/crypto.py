@@ -121,7 +121,7 @@ class Strategy(_BTStrategy):
     # lacks persistence. Threshold relaxed from 1.1x to 1.0x to widen entry 
     # set after repeated 0-trade crashes from over-constrained filter stack.
     atr_ma_period = 50
-    atr_vol_threshold = 1.0
+    atr_vol_threshold = 0.95
     
     # ADX momentum confirmation: require ADX > 25 on entry bars to confirm
     # the market is trending. ADX is a momentum indicator that filters at
