@@ -138,6 +138,11 @@ class Strategy(_BTStrategy):
     vol_sma_period = 20
     vol_threshold = 1.2
 
+    # Long-term trend filter: close must be above 200-period SMA.
+    # Ensures we only take long breakouts in a confirmed uptrend regime,
+    # avoiding counter‑trend breakouts that are more likely to fail.
+    sma_period = 200
+
     # Volatility-scaled position sizing: size INVERSELY proportional to
     # realized volatility. REVERSED from prior logic:
     # - High ATR (high-vol regime) → strong momentum but elevated risk → size DOWN
@@ -183,6 +188,9 @@ class Strategy(_BTStrategy):
         self.plus_di, self.minus_di = self.I(_di, high, low, close, self.adx_period)
         self.vol_sma = self.I(_sma, self.data.Volume, self.vol_sma_period)
 
+        # 200-period SMA for long-term trend filter
+        self.sma200 = self.I(_sma, close, self.sma_period)
+
         # Highest price since entry — drives the trailing stop. Reset on
         # entry, updated each bar while in position.
         self.highest_price: float | None = None
@@ -206,14 +214,16 @@ class Strategy(_BTStrategy):
         # And require volume confirmation: volume > 1.2x its 20-bar SMA
         # confirms the breakout has real market participation, not just
         # a price spike on thin volume.
+        # And require price above 200-period SMA to avoid counter-trend breakouts.
         # Use [-2] of the upper band so we're comparing against a value
         # that does NOT include today's bar (no look-ahead).
         breakout = close > self.upper[-2]
         vol_regime_high = self.atr[-1] > self.atr_ma[-1] * self.atr_vol_threshold
         momentum_confirm = self.adx[-1] > self.adx_threshold
         volume_confirm = self.data.Volume[-1] > self.vol_sma[-1] * self.vol_threshold
+        trend_filter = close > self.sma200[-1]
 
-        if breakout and vol_regime_high and momentum_confirm and volume_confirm and not self.position:
+        if breakout and vol_regime_high and momentum_confirm and volume_confirm and trend_filter and not self.position:
             # INVERSE volatility scaling: size DOWN when ATR is high (elevated risk).
             # Ratio = ATR_MA / ATR: high vol (ATR > MA) → ratio < 1 → size decreases.
             # Low vol (ATR < MA) → ratio > 1, size increases. Caps at floor/ceiling.
