@@ -113,7 +113,7 @@ class Strategy(_BTStrategy):
     # new entry filters.
     atr_period = 14
     atr_multiplier_low_vol = 3.0   # tight stop in calm markets (increased from 2.5)
-    atr_multiplier_high_vol = 3.5  # loose stop in trending volatility (increased from 3.0)
+    atr_multiplier_high_vol = 3.6  # loose stop in trending volatility
     
     # Volatility-adaptive entry gate: only breakout when current ATR is
     # above 1.0x the 50-bar moving average of ATR. Filters out breakfakes
