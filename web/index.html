@@ -1804,6 +1804,10 @@
           this.observeChart(ctx, chartRegistry.drawdown);
         },
 
+        _progressionSig(keeps, labels, trainData, valData) {
+          return JSON.stringify({ labels, trainData, valData, n: keeps.length });
+        },
+
         renderProgression() {
           const ctx = document.getElementById('chart-progression'); if (!ctx) return;
           const keeps = this.results.filter(r => r.status === 'keep');
@@ -1813,7 +1817,21 @@
           const labels = keeps.map((_, i) => '#' + (i + 1));
           const trainData = keeps.map(r => num(r.train_sharpe));
           const valData   = keeps.map(r => num(r.val_sharpe));
-          if (chartRegistry.progression) { chartRegistry.progression._sizeObserver?.disconnect?.(); chartRegistry.progression.destroy(); }
+          const sig = this._progressionSig(keeps, labels, trainData, valData);
+          const chart = chartRegistry.progression;
+          // fetchResults() polls every 4s and reassigns `this.results` even when
+          // the ledger is unchanged. Skip no-op updates so legend toggles stick.
+          if (chart && chart._progressionSig === sig) return;
+          if (chart) {
+            const visible = chart.data.datasets.map((_, i) => chart.isDatasetVisible(i));
+            chart.data.labels = labels;
+            chart.data.datasets[0].data = trainData;
+            chart.data.datasets[1].data = valData;
+            chart._progressionSig = sig;
+            chart.update('none');
+            visible.forEach((v, i) => chart.setDatasetVisibility(i, v));
+            return;
+          }
           chartRegistry.progression = new Chart(ctx, {
             type: 'line',
             data: {
@@ -1846,6 +1864,7 @@
               plugins: { legend: { display: true, position: 'bottom' } },
             },
           });
+          chartRegistry.progression._progressionSig = sig;
           this.observeChart(ctx, chartRegistry.progression);
         },
 
