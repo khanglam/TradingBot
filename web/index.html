@@ -367,8 +367,8 @@
                   <td class="px-5 py-2 font-mono text-right" x-text="fmtWinRate(row.win_rate)"></td>
                   <td class="px-5 py-2 font-mono text-right" x-text="fmtCount(row.total_trades)"></td>
                   <td class="px-5 py-2">
-                    <span class="px-2 py-0.5 rounded text-xs font-mono uppercase"
-                          :title="row.status === 'keep' ? 'Train Sharpe improved without breaking any gate.' : row.status === 'discard' ? 'Failed a gate (val regression, regime, drawdown, trade count, or no train improvement).' : 'Backtest crashed — the LLM is shown the traceback next iteration.'"
+                    <span class="px-2 py-0.5 rounded text-xs font-mono uppercase cursor-help"
+                          :title="statusTooltip(row)"
                           :class="{
                             'bg-emerald-500/20 text-accent-keep': row.status === 'keep',
                             'bg-red-500/20 text-accent-discard': row.status === 'discard',
@@ -1103,6 +1103,56 @@
         fmtReason(code) {
           if (!code) return '—';
           return this.DISCARD_LABELS[code] || code;
+        },
+        statusTooltip(row) {
+          const reason = (row.discard_reason || '').trim();
+          const label = reason ? this.fmtReason(reason) : '';
+          const n = v => (v === '' || v == null || isNaN(Number(v))) ? null : Number(v);
+          const pct = v => v == null ? '—' : v.toFixed(2) + '%';
+          const num = v => v == null ? '—' : String(v);
+          const trainDd = n(row.train_max_drawdown);
+          const valDd = n(row.max_drawdown);
+          const trainTr = n(row.train_total_trades);
+          const valTr = n(row.total_trades);
+          const trainSh = n(row.train_sharpe);
+          const valSh = n(row.val_sharpe);
+
+          if (row.status === 'keep') {
+            return `Keep — train Sharpe ${trainSh == null ? '—' : trainSh.toFixed(4)} improved without breaking val, regime, drawdown, or trade-count gates.`;
+          }
+
+          const detail = {
+            crash:
+              'Zero trades on both train and val, or the backtest raised an exception. Commit reverted; the next iteration sees the traceback in its prompt.',
+            drawdown:
+              `Train max DD ${pct(trainDd)}, val max DD ${pct(valDd)} — one or both met or exceeded the campaign drawdown limit (see configs.toml).`,
+            min_trades:
+              `Train ${num(trainTr)} trades, val ${num(valTr)} trades — need at least MIN_TRADES on both windows for Sharpe to be statistically meaningful.`,
+            dsr:
+              `Deflated Sharpe ${n(row.dsr) == null ? '—' : n(row.dsr).toFixed(4)} failed the multiple-testing significance gate (raw Sharpe may look good by luck).`,
+            regime_min:
+              `Worst val sub-period Sharpe ${n(row.val_sub_min) == null ? '—' : n(row.val_sub_min).toFixed(4)} — below SUB_PERIOD_MIN_SHARPE; strategy is regime-fragile.`,
+            regime_neg:
+              `${num(n(row.val_sub_neg_count))} val sub-periods with non-positive Sharpe — more than half of val sub-periods are losing.`,
+            val_regression:
+              `Val Sharpe ${valSh == null ? '—' : valSh.toFixed(4)} dropped more than VAL_TOLERANCE below the best val on a kept commit — train gain likely overfit.`,
+            no_improvement:
+              `Val gates passed, but train Sharpe ${trainSh == null ? '—' : trainSh.toFixed(4)} did not beat the current best — no optimization progress.`,
+          };
+
+          if (reason && detail[reason]) {
+            return `${label} — ${detail[reason]}`;
+          }
+          if (reason) {
+            return `${label} — ${reason}`;
+          }
+          if (row.status === 'crash') {
+            return 'Crash — ' + detail.crash;
+          }
+          if (row.status === 'discard') {
+            return 'Discard — failed a gate (reason not recorded on this row).';
+          }
+          return row.status || '';
         },
 
         // ── Promotion badge helpers (D7.1) ──
