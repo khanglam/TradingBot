@@ -47,6 +47,8 @@ jobs:
       OPTIMIZE_METRIC: ${{ github.event.inputs.optimize_metric || 'train_sharpe' }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash' }}
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
@@ -91,7 +93,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/
-          key: ohlcv-${{ runner.os }}-stocks-v1
+          key: ohlcv-${{ runner.os }}-stocks-v2-alpaca
           restore-keys: |
             ohlcv-${{ runner.os }}-stocks-
             ohlcv-${{ runner.os }}-
@@ -114,7 +116,7 @@ jobs:
               name="${name//_//}"
               start="2019-01-01"
             else
-              start="2015-01-01"
+              start="${DATA_FETCH_START:-2018-01-01}"
             fi
             mkdir -p "data/${asset}"
             echo "fetch: asset=$asset symbol=$name tf=$tf start=$start"

@@ -10,8 +10,7 @@ Unlike the previous Lumibot-based implementation (which hard-coded an EMA
 crossover that drifted from strategy.py the moment the loop changed it), this
 executor reuses the same backtesting.py evaluation path as the harness:
 
-    1. Fetch recent bars (yfinance for stocks, alpaca-py CryptoHistoricalData
-       for crypto — free, no API key needed for crypto bars).
+    1. Fetch recent bars (alpaca-py for stocks and crypto; stock keys required).
     2. Run a backtesting.py Backtest using the in-tree `Strategy` class.
     3. Inspect `_trades`: if the most recent trade entered/exited within the
        last `--fresh` bars, that's a fresh BUY/SELL signal.
@@ -82,52 +81,25 @@ DEFAULT_PER_SYMBOL_CASH = float(os.environ.get("PAPER_PER_SYMBOL_CASH", 10000))
 
 # ─────────────────────────── data fetchers ────────────────────────────
 
-def _fetch_stock_bars(symbol: str, days: int) -> pd.DataFrame:
-    """Daily stock bars via yfinance (matches scan._fetch_daily exactly)."""
-    import yfinance as yf
-    df = yf.download(
-        symbol,
-        period=f"{max(days, 60)}d",
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
+def _fetch_stock_bars(symbol: str, days: int, timeframe: str = "1h") -> pd.DataFrame:
+    """Stock bars via Alpaca (same source as data_fetch / backtest parquets)."""
+    from data_fetch import fetch_stock_bars
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=max(days, 60) + 5)
+    return fetch_stock_bars(
+        symbol=symbol,
+        interval=timeframe,
+        start=start,
+        end=end,
     )
-    if df is None or df.empty:
-        raise RuntimeError(f"yfinance returned no rows for {symbol}")
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-    df.index = pd.DatetimeIndex(df.index).tz_localize(None)
-    return df
 
 
 def _parse_timeframe(tf_str: str):
-    """Parse a timeframe string like '4h', '1h', '1d', '15m' into an alpaca-py TimeFrame.
+    """Parse a timeframe string into an alpaca-py TimeFrame (delegates to data_fetch)."""
+    from data_fetch import parse_interval
 
-    Accepted units: m/min/minute, h/hr/hour, d/day. Case-insensitive.
-    Examples: '4h', '1H', '15m', '1d', '30min'.
-    """
-    try:
-        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-    except ImportError as e:
-        raise SystemExit(f"alpaca-py not installed. Run: pip install alpaca-py\n(original error: {e})")
-
-    tf_str = tf_str.strip().lower()
-    import re
-    m = re.fullmatch(r"(\d+)\s*(m|min|minute|h|hr|hour|d|day)", tf_str)
-    if not m:
-        raise ValueError(
-            f"Unrecognised timeframe {tf_str!r}. Use a number + unit, e.g. '4h', '15m', '1d'."
-        )
-    amount = int(m.group(1))
-    unit_str = m.group(2)
-    if unit_str in ("m", "min", "minute"):
-        unit = TimeFrameUnit.Minute
-    elif unit_str in ("h", "hr", "hour"):
-        unit = TimeFrameUnit.Hour
-    else:
-        unit = TimeFrameUnit.Day
-    return TimeFrame(amount, unit)
+    return parse_interval(tf_str)
 
 
 def _fetch_crypto_bars(symbol: str, days: int, timeframe: str = "4h") -> pd.DataFrame:
@@ -185,7 +157,7 @@ def _fetch_crypto_bars(symbol: str, days: int, timeframe: str = "4h") -> pd.Data
 def _fetch_bars(symbol: str, asset: str, days: int, timeframe: str = "4h") -> pd.DataFrame:
     if asset == "crypto":
         return _fetch_crypto_bars(symbol, days, timeframe)
-    return _fetch_stock_bars(symbol, days)
+    return _fetch_stock_bars(symbol, days, timeframe=timeframe)
 
 
 # ─────────────────────────── signal extraction ──────────────────────────
@@ -194,10 +166,24 @@ def _bars_per_day(asset: str, timeframe: str) -> int:
     """Approximate trading bars per day. Used to convert the strategy's
     MIN_BARS_REQUIRED (count of bars) into a `days=` window the bar
     fetchers understand. Crypto trades 24/7; stocks ~252/365 days/year but
-    we treat 1d bars as 1 bar/day for the fetch window (yfinance returns
-    bar-aligned data anyway)."""
+    we approximate US equity session hours (~7 bars/day for 1h)."""
     if asset != "crypto":
-        return 1
+        tf = timeframe.strip().lower()
+        if tf.endswith("h") or tf.endswith("hr") or tf.endswith("hour"):
+            try:
+                hours = int("".join(c for c in tf if c.isdigit()))
+                return max(1, 7 * (1 if hours >= 1 else 1) // max(hours, 1))
+            except ValueError:
+                pass
+        if tf.endswith("d") or tf.endswith("day"):
+            return 1
+        if tf.endswith("m") or tf.endswith("min") or tf.endswith("minute"):
+            try:
+                minutes = int("".join(c for c in tf if c.isdigit()))
+                return max(1, (7 * 60) // minutes)
+            except ValueError:
+                pass
+        return 7
     tf = timeframe.strip().lower()
     if tf.endswith("h") or tf.endswith("hr") or tf.endswith("hour"):
         try:
@@ -475,6 +461,24 @@ def _default_symbols(asset: str) -> str:
     return os.environ.get("PAPER_WATCHLIST", "SPY,QQQ,TSLA,NVDA")
 
 
+def _paper_timeframe(asset: str) -> str:
+    if asset == "crypto":
+        return os.environ.get("PAPER_CRYPTO_TIMEFRAME", "4h")
+    tf = os.environ.get("PAPER_STOCK_TIMEFRAME", "").strip()
+    if tf:
+        return tf
+    try:
+        import backtest as bt
+        from data_fetch import timeframe_from_symbols_spec
+
+        spec = bt._cfg("SYMBOLS", "")
+        if spec:
+            return timeframe_from_symbols_spec(str(spec), default="1h")
+    except Exception:
+        pass
+    return "1h"
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--symbols", default=None,
@@ -482,8 +486,8 @@ def main() -> int:
     p.add_argument("--asset", choices=["stock", "crypto"], default="stock")
     p.add_argument("--days", type=int, default=int(os.environ.get("PAPER_LOOKBACK_DAYS", 250)))
     p.add_argument("--fresh", type=int, default=int(os.environ.get("PAPER_FRESH_BARS", 1)))
-    p.add_argument("--timeframe", default=os.environ.get("PAPER_CRYPTO_TIMEFRAME", "4h"),
-                   help="Crypto bar timeframe, e.g. '4h', '1h', '1d', '15m' (env PAPER_CRYPTO_TIMEFRAME). Ignored for stocks.")
+    p.add_argument("--timeframe", default=None,
+                   help="Bar timeframe (crypto: PAPER_CRYPTO_TIMEFRAME; stocks: PAPER_STOCK_TIMEFRAME or SYMBOLS).")
     p.add_argument("--cash", type=float, default=DEFAULT_PER_SYMBOL_CASH,
                    help="Per-symbol cash budget (default $10k, env PAPER_PER_SYMBOL_CASH).")
     p.add_argument("--dry", action="store_true",
@@ -501,6 +505,7 @@ def main() -> int:
 
     paper_env = os.environ.get("ALPACA_PAPER", "True").lower() != "false"
     paper = paper_env and not args.live
+    timeframe = args.timeframe or _paper_timeframe(args.asset)
 
     mode = "DRY" if args.dry else ("PAPER" if paper else "LIVE")
     print(f"[paper] mode={mode}  asset={args.asset}  symbols={','.join(symbols)}")
@@ -532,8 +537,8 @@ def main() -> int:
     strat_path = (ROOT / strategy_file)
     head = strat_path.read_text(encoding="utf-8").splitlines()[0] if strat_path.exists() else "(missing)"
     print(f"[paper] strategy file: {strategy_file}  | first line: {head}")
-    tf_display = f"  timeframe={args.timeframe}" if args.asset == "crypto" else ""
-    required_days = _required_days(args.asset, args.timeframe)
+    tf_display = f"  timeframe={timeframe}"
+    required_days = _required_days(args.asset, timeframe)
     effective_days = max(args.days, required_days)
     print(
         f"[paper] per-symbol cash=${args.cash:,.0f}  lookback={effective_days}d "
@@ -555,7 +560,7 @@ def main() -> int:
 
     fired_any = False
     for sym in symbols:
-        scan = _scan_symbol(sym, args.asset, days=args.days, fresh_bars=args.fresh, cash=args.cash, timeframe=args.timeframe)
+        scan = _scan_symbol(sym, args.asset, days=args.days, fresh_bars=args.fresh, cash=args.cash, timeframe=timeframe)
         sig = scan.get("signal") or "—"
         err = scan.get("error", "")
         print(f"[paper] {sym}: {sig} {err}".rstrip())

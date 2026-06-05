@@ -961,7 +961,7 @@ def _default_symbol(campaign: str) -> str:
 def paper_chart_data(campaign: str, symbol: str | None = None, bars: int = 80) -> dict:
     """Recent bars + strategy indicators (auto-detected) + paper-trade markers.
 
-    Cached for 90s so the dashboard's 30s refresh doesn't hammer Alpaca/yfinance.
+    Cached for 90s so the dashboard's 30s refresh doesn't hammer Alpaca.
     """
     if campaign not in ("stocks", "crypto"):
         raise HTTPException(400, "campaign must be 'stocks' or 'crypto'")
@@ -983,7 +983,19 @@ def paper_chart_data(campaign: str, symbol: str | None = None, bars: int = 80) -
     except Exception as e:
         raise HTTPException(500, f"import failure: {e}")
 
-    timeframe = os.environ.get("PAPER_CRYPTO_TIMEFRAME", "4h") if asset == "crypto" else "1d"
+    if asset == "crypto":
+        timeframe = os.environ.get("PAPER_CRYPTO_TIMEFRAME", "4h")
+    else:
+        from data_fetch import timeframe_from_symbols_spec
+        import backtest as bt_module
+
+        timeframe = (
+            os.environ.get("PAPER_STOCK_TIMEFRAME", "").strip()
+            or timeframe_from_symbols_spec(
+                str(bt_module._cfg("SYMBOLS", "stocks/TSLA_1h")),
+                default="1h",
+            )
+        )
     # Calendar days to request — generous enough that we get >= `bars` rows after warmup.
     days = max(60, bars * 5 if asset != "crypto" else bars)
 

@@ -18,7 +18,8 @@ max_drawdown_limit = 35.0
 data_fetch_start = "2019-01-01"
 
 [stocks]
-symbols = "stocks/TSLA_1d,stocks/NVDA_1d,stocks/PYPL_1d"
+# Stock OHLCV via Alpaca IEX feed (ALPACA_API_KEY / ALPACA_API_SECRET in .env).
+symbols = "stocks/TSLA_1h,stocks/NVDA_1h,stocks/PYPL_1h"
 strategy_file = "strategies/stocks.py"
 train_start = "2019-01-01"
 train_end = "2022-12-31"
@@ -28,4 +29,4 @@ lockbox_start = "2025-01-01"
 commission = 0.001
 min_trades = 20
 max_drawdown_limit = 30.0
-data_fetch_start = "2015-01-01"
+data_fetch_start = "2018-01-01"
