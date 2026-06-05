@@ -70,6 +70,7 @@ class Strategy(_BTStrategy):
     adx_threshold = 20  # Lowered from 25 to widen entry set after 0-trade crashes
     atr_period = 14
     take_profit_atr_multiplier = 2.0  # Fixed 2R take-profit at 2× ATR above entry
+    stop_loss_atr_multiplier = 2.0   # Stop loss at 2× ATR below entry to limit losses
 
     def init(self) -> None:
         close = self.data.Close
@@ -82,6 +83,7 @@ class Strategy(_BTStrategy):
         self.atr = self.I(_atr, high, low, close, self.atr_period)
         self.entry_price = None
         self.take_profit_level = None
+        self.stop_loss_level = None
 
     def next(self) -> None:
         if len(self.data) < self.slow + 1:
@@ -93,6 +95,11 @@ class Strategy(_BTStrategy):
             self.buy(size=0.95)
             self.entry_price = self.data.Close[-1]
             self.take_profit_level = self.entry_price + self.atr[-1] * self.take_profit_atr_multiplier
+            self.stop_loss_level = self.entry_price - self.atr[-1] * self.stop_loss_atr_multiplier
         elif self.position:
-            if self.data.Close[-1] >= self.take_profit_level:
+            # Exit on take-profit or stop-loss (whichever comes first)
+            if self.data.Close[-1] >= self.take_profit_level or self.data.Low[-1] <= self.stop_loss_level:
                 self.position.close()
+                self.entry_price = None
+                self.take_profit_level = None
+                self.stop_loss_level = None
