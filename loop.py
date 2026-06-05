@@ -582,7 +582,72 @@ DESCRIPTION_RE = re.compile(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", re.DOTALL
 CODE_RE = re.compile(r"##\s*[\w/]+\.py\s*\n+```python\s*\n(.*?)\n```", re.DOTALL)
 
 
-def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[str, str]:
+def _build_meta_summary() -> str:
+    """Synthesize a compact digest of all experiments for the LLM prompt.
+    Gives the model run-level awareness that the last-10-rows window cannot:
+    the full kept trajectory, failure taxonomy by discard_reason, and the
+    most frequently attempted (and failed) approaches across all experiments."""
+    if not RESULTS.exists():
+        return ""
+    lines = RESULTS.read_text(encoding="utf-8").splitlines()
+    if len(lines) < 2:
+        return ""
+    header = lines[0].split("\t")
+    try:
+        idx_status = header.index("status")
+        idx_reason = header.index("discard_reason")
+        idx_val    = header.index("val_sharpe")
+        idx_commit = header.index("commit")
+        idx_desc   = header.index("description")
+    except ValueError:
+        return ""
+
+    from collections import Counter
+    keeps: list[str] = []
+    reason_counts: dict[str, int] = {}
+    desc_words: list[str] = []
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) <= max(idx_status, idx_reason, idx_val, idx_commit, idx_desc):
+            continue
+        status = parts[idx_status]
+        reason = parts[idx_reason]
+        val    = parts[idx_val]
+        commit = parts[idx_commit]
+        desc   = parts[idx_desc]
+        if status == "keep":
+            try:
+                keeps.append(f"  {commit[:7]} val={float(val):.4f}  {desc[:80]}")
+            except ValueError:
+                pass
+        else:
+            key = reason if reason else "unknown"
+            reason_counts[key] = reason_counts.get(key, 0) + 1
+            desc_words.extend(desc.lower().split()[:6])
+
+    total = len(lines) - 1
+    kept_block   = "\n".join(keeps) if keeps else "  (none yet)"
+    reason_parts = "  ".join(
+        f"{k}={v}" for k, v in sorted(reason_counts.items(), key=lambda x: -x[1])
+    )
+    stop = {
+        "the","a","an","to","of","from","and","or","in","is","are","on","for",
+        "add","use","with","that","this","by","as","not","replace","change",
+        "improve","reduce","increase","lower","raise","remove","strategy",
+    }
+    counts = Counter(w for w in desc_words if w not in stop and len(w) > 3)
+    exhausted = ", ".join(w for w, _ in counts.most_common(12))
+
+    return (
+        f"## Full-run summary ({total} experiments)\n"
+        f"Kept trajectory ({len(keeps)} keeps):\n{kept_block}\n"
+        f"Failure taxonomy:  {reason_parts}\n"
+        f"Frequent keywords in failed experiments: {exhausted}\n"
+    )
+
+
+def call_llm(strategy_src: str, program_src: str, history: list[dict],
+             best_val_sharpe: float = 0.0, best_metric: float = 0.0) -> tuple[str, str]:
     """Returns (description, new_strategy_source).
 
     Uses OpenRouter (https://openrouter.ai) as the LLM backend. Any model
@@ -605,17 +670,31 @@ def call_llm(strategy_src: str, program_src: str, history: list[dict]) -> tuple[
 
     history_block = "(no prior experiments)"
     if history:
-        rows = ["commit\tsharpe\tmax_dd\ttrades\tstatus\tdescription"]
+        rows = ["commit\tval_sharpe\ttrain_sharpe\tmax_dd\ttrades\tval_sub_min\tstatus\tdiscard_reason\tdescription"]
         for r in history:
             rows.append(
-                f"{r['commit']}\t{r['val_sharpe']}\t{r['max_drawdown']}\t"
-                f"{r['total_trades']}\t{r['status']}\t{r['description']}"
+                f"{r['commit']}\t{r['val_sharpe']}\t{r.get('train_sharpe', '')}\t"
+                f"{r['max_drawdown']}\t{r['total_trades']}\t{r.get('val_sub_min', '')}\t"
+                f"{r['status']}\t{r.get('discard_reason', '')}\t{r['description']}"
             )
         history_block = "\n".join(rows)
 
+    current_baseline_val = float(history[-1].get("val_sharpe", 0.0)) if history else 0.0
+    acceptance_floor = best_val_sharpe - VAL_TOLERANCE
+    meta_line = (
+        f"[meta] OPTIMIZE_METRIC={OPTIMIZE_METRIC}  "
+        f"best_train_so_far={best_metric:.4f}  "
+        f"best_val_ever_kept={best_val_sharpe:.4f}  "
+        f"acceptance_floor={acceptance_floor:.4f} (val_sharpe must exceed this to keep)  "
+        f"current_baseline_val={current_baseline_val:.4f}\n\n"
+    )
+    meta_summary = _build_meta_summary()
+
     user_msg = (
-        f"# Current {STRATEGY_REL}\n```python\n{strategy_src}\n```\n\n"
-        f"# Last {len(history)} experiments (results.tsv tail)\n```\n{history_block}\n```\n\n"
+        meta_line
+        + (meta_summary + "\n" if meta_summary else "")
+        + f"# Current {STRATEGY_REL}\n```python\n{strategy_src}\n```\n\n"
+        + f"# Last {len(history)} experiments (results.tsv tail)\n```\n{history_block}\n```\n\n"
     )
 
     # If the immediately-previous iteration crashed, show the LLM the exact
@@ -706,7 +785,9 @@ def one_iteration(best_metric: float, best_val_sharpe: float) -> tuple[str, floa
         f"best_val_sharpe={best_val_sharpe:.4f}  asking LLM…"
     )
     try:
-        description, new_code = call_llm(strategy_src, program_src, history)
+        description, new_code = call_llm(strategy_src, program_src, history,
+                                          best_val_sharpe=best_val_sharpe,
+                                          best_metric=best_metric)
     except Exception as e:
         print(f"[loop] llm error: {e}")
         return "llm_error", best_metric, best_val_sharpe

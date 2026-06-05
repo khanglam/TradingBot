@@ -79,6 +79,7 @@ recently failed.
 | ≥2 `discard` rows clustered just under best | You're orbiting the current basin with cosmetic tweaks | Make a **structurally different** change (different exit family, regime gate, sizing rule), not another parameter nudge |
 | Most recent `keep` followed by crashes | The last kept change pushed the strategy near a 0-trade cliff; further filters tip it over | Relax one of the conditions added in the last keep, or change the exit instead of the entry |
 | Mixed crashes from unrelated mutations | Genuine exploration; broad-search mode | Free choice from the Mutation Menu |
+| Most or all recent rows show `discard_reason=val_regression` and `train_sharpe` is healthy (≥1.0) but `val_sharpe` keeps failing the holdout gate | The strategy has a **generalization gap** — mutations are improving train but the gains don't transfer to val. This is NOT a signal-selection problem; the val gate is working correctly. Your change complexity has outpaced your val evidence. | **Stop adding signals. Simplify instead.** Do one of: (1) **Remove** the weakest existing filter entirely to improve generalization; (2) Check `val_sub_min` in the history — if one sub-period dominates the win, you need to reduce exposure in that sub-period, not reinforce it; (3) Try a qualitatively different trade frequency (2× or 0.5× current trade count via changing the breakout period or entry threshold). Read the `acceptance_floor` from the `[meta]` line at the top of the prompt and state explicitly how your change targets it. Do NOT propose another entry/exit variation until the generalization gap closes. |
 
 **The "stacked entry filter" trap.** Current baseline already requires
 EMA crossup AND ADX>25. Anything you AND onto entries will further shrink
@@ -119,6 +120,13 @@ entry set."
 - Pullback to MA (buy dip in uptrend)
 - Mean reversion (z-score of return distribution)
 - Range-break with confirmation
+
+**Simplify (remove a signal) — highest priority when `val_regression` dominates**
+- Remove one entry condition entirely (e.g., drop the ADX filter, rely on Donchian + vol_regime alone)
+- Remove one exit condition when two exits overlap (e.g., drop Donchian exit, keep only ATR trailing stop)
+- Reduce the number of required `and` conditions in `next()` from N to N-1
+- Revert a recently added parameter tightening (e.g., raise a threshold that was lowered to add entries)
+- Generalization improves when complexity decreases; this is the correct move when train looks good but val keeps failing
 
 **Don't bother**
 - Adding a short side (a bad short side wipes out good longs; defer until
