@@ -67,7 +67,7 @@ class Strategy(_BTStrategy):
     fast = 15
     slow = 45
     adx_period = 14
-    adx_threshold = 25
+    adx_threshold = 20  # Lowered from 25 to widen entry set after 0-trade crashes
     atr_period = 14
     take_profit_atr_multiplier = 2.0  # Fixed 2R take-profit at 2× ATR above entry
 
