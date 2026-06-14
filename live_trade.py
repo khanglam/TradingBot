@@ -33,7 +33,7 @@ executor reuses the same backtesting.py evaluation path as the harness:
            PAPER_PER_SYMBOL_CASH=10000
            PAPER_WATCHLIST=SPY,QQQ,TSLA,NVDA
            PAPER_CRYPTO_WATCHLIST=BTC/USD,ETH/USD
-    3. pip install alpaca-py (only required for non-dry runs).
+    3. uv pip install alpaca-py (only required for non-dry runs).
 
 ## Usage
 
@@ -117,7 +117,7 @@ def _fetch_crypto_bars(symbol: str, days: int, timeframe: str = "4h") -> pd.Data
         from alpaca.data.requests import CryptoBarsRequest
     except ImportError as e:
         raise SystemExit(
-            "alpaca-py not installed. Run: pip install alpaca-py\n"
+            "alpaca-py not installed. Run: uv pip install alpaca-py\n"
             f"(original error: {e})"
         )
 
@@ -300,7 +300,7 @@ def _alpaca_clients(paper: bool):
         from alpaca.trading.enums import QueryOrderStatus
     except ImportError as e:
         raise SystemExit(
-            "alpaca-py not installed. Run: pip install alpaca-py\n"
+            "alpaca-py not installed. Run: uv pip install alpaca-py\n"
             f"(original error: {e})"
         )
 

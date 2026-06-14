@@ -19,12 +19,10 @@ Before doing anything, verify:
 
 1. **Working tree is clean**: run `git status --porcelain`. If dirty, stop: "Working tree has uncommitted changes; commit or stash before running /optimize-loop."
 2. **Project root**: the cwd must contain `loop.py`, `backtest.py`, and `.venv/`. If not, stop with a clear message.
-3. **Venv exists**: check for `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (macOS/Linux). If absent, tell the user to run `/init-local-dev` first.
-4. **Data exists**: at least one `.parquet` file must exist under `data/`. If absent, stop: "No OHLCV data found. Run `python data_fetch.py` first."
+3. **uv + venv**: `uv` on PATH and `.venv/` present. If absent, tell the user to run `/init-local-dev` first.
+4. **Data exists**: at least one `.parquet` file must exist under `data/`. If absent, stop: "No OHLCV data found. Run `uv run python data_fetch.py` first."
 
-Resolve the Python executable once here and reuse it throughout:
-- Windows: `.venv/Scripts/python.exe`
-- macOS/Linux: `.venv/bin/python`
+Run all Python commands via `uv run python` (cross-platform).
 
 ### 0b — Diagnose the real per-iteration bottleneck
 
@@ -33,11 +31,11 @@ Resolve the Python executable once here and reuse it throughout:
 | Component | How to measure |
 |---|---|
 | LLM call | Estimate: count input + output tokens, multiply by model speed |
-| Backtest | Measure: time `python backtest.py` once |
+| Backtest | Measure: time `uv run python backtest.py` once |
 | Git ops | Estimate: ~3s (commit + optional reset) |
 
 **Step 1 — Measure backtest time (rough, single run):**
-Run `python backtest.py` once with `/usr/bin/time -p` (or `time` on Windows). Record wall-clock seconds as `T_backtest_rough`.
+Run `uv run python backtest.py` once with `/usr/bin/time -p` (or `time` on Windows). Record wall-clock seconds as `T_backtest_rough`.
 
 **Step 2 — Estimate LLM time:**
 
@@ -75,7 +73,7 @@ Print:
 
 **If LLM share > 70%**: the bottleneck is the LLM call. The priority list in Phase 2 targets LLM latency. The speed gate uses **token-count reduction** as the proxy for speedup (since LLM wall-clock is proportional to tokens generated).
 
-**If LLM share ≤ 70%**: the bottleneck is the backtest. The priority list targets backtest execution. The speed gate uses **actual `python backtest.py` timing**.
+**If LLM share ≤ 70%**: the bottleneck is the backtest. The priority list targets backtest execution. The speed gate uses **actual `uv run python backtest.py` timing**.
 
 ### 0c — Load run history
 
@@ -98,7 +96,7 @@ Use this history throughout Phase 2 Step 1:
 
 ### 1a. Correctness fingerprint
 
-Run `python backtest.py` **once**. Capture stdout. Parse the `---` block and record every metric as the **correctness fingerprint** (used for all iterations regardless of which bottleneck we're targeting):
+Run `uv run python backtest.py` **once**. Capture stdout. Parse the `---` block and record every metric as the **correctness fingerprint** (used for all iterations regardless of which bottleneck we're targeting):
 
 ```
 fingerprint = {val_sharpe, sortino, calmar, max_drawdown, win_rate, total_trades, total_return_pct}
@@ -109,24 +107,24 @@ If the run crashes or produces `val_sharpe: 0.000000` with `total_trades: 0`, st
 ### 1b. Timing baseline
 
 **If bottleneck = LLM** (from Phase 0):
-- Run `python backtest.py` once for a rough `T_backtest` (not the optimization target, just for reference).
+- Run `uv run python backtest.py` once for a rough `T_backtest` (not the optimization target, just for reference).
 - Set `T_baseline_tokens = effective_output_tokens` from Phase 0 (this is what we optimize against).
 - Print: `[baseline] model=<slug>  T_llm_estimate=<T>s  T_backtest=<T>s  effective_output_tokens=<N>`
 
 **If bottleneck = backtest** (from Phase 0):
-- Run `python backtest.py` **five times** back-to-back. Drop min and max. Average remaining three → `T_baseline`.
+- Run `uv run python backtest.py` **five times** back-to-back. Drop min and max. Average remaining three → `T_baseline`.
 - Print: `[baseline] val_sharpe=<X>  total_trades=<N>  T_baseline=<T>s (avg of 3 mid runs)`
 
 ### 1c. Harness integrity baseline (mandatory — do not skip)
 
-These checks ensure `/optimize-loop` does not break the autoresearch loop (parse errors, WinError 2, truncated diffs). Run from **project root** with the venv Python.
+These checks ensure `/optimize-loop` does not break the autoresearch loop (parse errors, WinError 2, truncated diffs). Run from **project root** via `uv run python`.
 
 **Load env:** ensure `.env` exists (copy from `.env.example` if needed). Confirm `MAX_OUTPUT_TOKENS` is set (default **8000**). If `program.md` already requests unified diffs, **`MAX_OUTPUT_TOKENS` must be ≥ 4096** — never 800 or 2048.
 
 **A. Diff apply smoke test** (required if `loop.py` contains `DIFF_RE` or `_apply_unified_diff`):
 
 ```python
-# Run: python -c "..." from project root
+# Run: uv run python -c "..." from project root
 import loop
 src = "line1\nline2\nline3\n"
 diff = "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n line1\n-line2\n+LINE2\n line3\n"
@@ -138,7 +136,7 @@ print("[integrity] diff apply OK")
 
 **B. In-process vs subprocess backtest** (required if `run_backtest()` no longer uses `subprocess.run([PYTHON, "backtest.py"])`):
 
-1. Run `python backtest.py` once → parse fingerprint `F_sub`.
+1. Run `uv run python backtest.py` once → parse fingerprint `F_sub`.
 2. Run:
 
 ```python
@@ -255,7 +253,7 @@ Apply the change via file edits. Do not commit yet.
 
 ### Step 3 — Correctness gate
 
-Run `python backtest.py` once. Parse the `---` block. Compare every field in the fingerprint.
+Run `uv run python backtest.py` once. Parse the `---` block. Compare every field in the fingerprint.
 
 If this iteration changed `run_backtest()` to in-process, also run the **Phase 1c-B** subprocess vs in-process comparison; both must match before KEEP.
 
@@ -289,7 +287,7 @@ Gate passes if `speedup > 1.05`.
 
 **If bottleneck = backtest:**
 
-Run `python backtest.py` **five times**. Drop min and max. Average remaining three → `T_new`.
+Run `uv run python backtest.py` **five times**. Drop min and max. Average remaining three → `T_new`.
 ```
 speedup = T_baseline / T_new
 ```
@@ -327,7 +325,7 @@ After all Phase 2 iterations, if **any change was kept**, run from a **`dev`** c
 
 ```bash
 git checkout dev
-python loop.py --iters 1
+uv run python loop.py --iters 1
 ```
 
 Requirements for PASS:
@@ -355,7 +353,7 @@ Files modified: <list>
 
 Next steps:
   - Review the diffs: git diff loop.py backtest.py program.md
-  - Test end-to-end: python loop.py --iters 1  (requires OPENROUTER_API_KEY)
+  - Test end-to-end: uv run python loop.py --iters 1  (requires OPENROUTER_API_KEY)
   - Commit when satisfied: git add -p && git commit -m "perf: <summary>"
   - Run history saved to: results/optimize-loop-history.jsonl
 ```

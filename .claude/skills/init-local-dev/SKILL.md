@@ -1,11 +1,11 @@
 ---
 name: init-local-dev
-description: Bootstrap (or repair) a local TradingBot dev environment idempotently. Creates the Python virtualenv, installs requirements, fetches the dev branch, and checks out dev for research. OS-agnostic — works on macOS, Linux, and Windows.
+description: Bootstrap (or repair) a local TradingBot dev environment idempotently. Creates the Python virtualenv with uv, installs requirements, fetches the dev branch, and checks out dev for research. OS-agnostic — works on macOS, Linux, and Windows.
 ---
 
 # /init-local-dev
 
-Set up everything a developer needs to run TradingBot locally: virtualenv, dependencies, and the `dev` branch checkout. Every step is idempotent.
+Set up everything a developer needs to run TradingBot locally: uv, virtualenv, dependencies, and the `dev` branch checkout. Every step is idempotent.
 
 ## Detect environment first
 
@@ -13,7 +13,7 @@ Before doing anything, capture:
 
 - **Project root** = the current working directory (must contain `loop.py`, `app.py`, and a `.git` directory). If not, abort with a clear message.
 - **OS** = inspect via `uname -s` on macOS/Linux or check `$OS` / Python's `platform.system()` on Windows.
-- **Python interpreter** = whichever of `python3`, `python`, or `py -3` resolves first. Verify version ≥ 3.11.
+- **`uv`** = must be on PATH (`uv --version`). If missing, tell the user to install from https://docs.astral.sh/uv/getting-started/installation/
 
 ## The steps (run sequentially, each idempotent)
 
@@ -34,23 +34,27 @@ If local HEAD is not `dev`:
 git checkout dev 2>/dev/null || git checkout -b dev origin/dev
 ```
 
-### 3. Create the virtualenv (skip if `.venv/` exists)
+### 3. Ensure Python 3.11+ (via uv)
 
-Run `<python> -m venv .venv` if missing.
+Run `uv python install 3.12` if no suitable interpreter is available. Optionally `uv python pin 3.12` in the project root.
 
-### 4. Install requirements (skip if importable)
+### 4. Create the virtualenv (skip if `.venv/` exists)
 
-Use `.venv/bin/pip` or `.venv\Scripts\pip.exe`. Pre-check: `import fastapi, backtesting, ccxt, openai`.
+Run `uv venv .venv --python 3.12` if missing.
 
-### 5. Ensure `data/` exists
+### 5. Install requirements (skip if importable)
+
+Run `uv pip install -r requirements.txt`. Pre-check: `uv run python -c "import fastapi, backtesting, ccxt, openai"`.
+
+### 6. Ensure `data/` exists
 
 `mkdir -p data` (or `mkdir data` on Windows) if missing.
 
-### 6. Verify `.env` (don't create)
+### 7. Verify `.env` (don't create)
 
 Tell user to copy `.env.example` if `.env` is missing.
 
-### 7. Print final summary
+### 8. Print final summary
 
 ```
 Setup complete:
@@ -60,9 +64,9 @@ Setup complete:
   ✓ data/
 
 Next:
-  - Fetch OHLCV: <venv-python> data_fetch.py ...
-  - Dashboard:   <venv-python> app.py   (from dev)
-  - Loop:        <venv-python> loop.py --iters 10
+  - Fetch OHLCV: uv run python data_fetch.py ...
+  - Dashboard:   uv run python app.py   (from dev)
+  - Loop:        uv run python loop.py --iters 10
 ```
 
 ## Behavior rules

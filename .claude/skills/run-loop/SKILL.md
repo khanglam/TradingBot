@@ -38,9 +38,9 @@ Run from **project root** (directory containing `loop.py`, `backtest.py`, `.git`
 
 ### 0a — Environment
 
-1. **Venv** — `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (macOS/Linux). If missing → tell user to run `/init-local-dev`.
+1. **uv + venv** — `uv` on PATH and `.venv/` present. If missing → tell user to run `/init-local-dev`.
 2. **`.env`** — `OPENROUTER_API_KEY` must be set (loop refuses without it). Point to `.env.example` if missing.
-3. **Data** — at least one `.parquet` under `data/`. If missing → `python data_fetch.py` with `CAMPAIGN` set.
+3. **Data** — at least one `.parquet` under `data/`. If missing → `uv run python data_fetch.py` with `CAMPAIGN` set.
 4. **Branch** — must be `dev`. If not → `git checkout dev` (or stop and ask user).
 
 ### 0b — Working tree
@@ -59,20 +59,20 @@ If local time is near **03:00 America/Los_Angeles**, warn that GHA may push to `
 
 ## Phase 1 — Run the loop
 
-Resolve Python once; set env for the whole session:
+Set env for the whole session (use `uv run python` — works on all platforms):
 
 **Windows (PowerShell):**
 ```powershell
 $env:CAMPAIGN = "<campaign>"
 $log = "results/loop-<campaign>-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-.venv\Scripts\python.exe loop.py --iters <N> 2>&1 | Tee-Object -FilePath $log
+uv run python loop.py --iters <N> 2>&1 | Tee-Object -FilePath $log
 ```
 
 **macOS / Linux:**
 ```bash
 export CAMPAIGN="<campaign>"
 log="results/loop-<campaign>-$(date +%Y%m%d-%H%M%S).log"
-.venv/bin/python loop.py --iters <N> 2>&1 | tee "$log"
+uv run python loop.py --iters <N> 2>&1 | tee "$log"
 ```
 
 ### Long runs

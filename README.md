@@ -39,14 +39,18 @@ TradingBot/
 
 ## First-time setup
 
-Use `/init-local-dev` or manually:
+Requires **[uv](https://docs.astral.sh/uv/)** and **Python 3.11+**. Use `/init-local-dev` or manually:
 
 ```bash
-python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt   # Windows; use .venv/bin/pip on macOS/Linux
+# Install uv: https://docs.astral.sh/uv/getting-started/installation/
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 git fetch origin dev
 git checkout dev
+
+uv python install 3.12
+uv venv .venv --python 3.12
+uv pip install -r requirements.txt
 
 cp .env.example .env   # add OPENROUTER_API_KEY
 ```
@@ -54,7 +58,7 @@ cp .env.example .env   # add OPENROUTER_API_KEY
 Fetch OHLCV (example):
 
 ```bash
-.venv/Scripts/python.exe data_fetch.py --asset crypto --symbol BTC/USDT --timeframe 4h --start 2019-01-01
+uv run python data_fetch.py --asset crypto --symbol BTC/USDT --timeframe 4h --start 2019-01-01
 ```
 
 ## Run the dashboard
@@ -62,7 +66,7 @@ Fetch OHLCV (example):
 From a **`dev`** checkout:
 
 ```bash
-.venv/Scripts/python.exe app.py
+uv run python app.py
 # http://127.0.0.1:8000
 ```
 
@@ -71,8 +75,8 @@ From a **`dev`** checkout:
 From **`dev`**, clean git tree:
 
 ```bash
-.venv/Scripts/python.exe loop.py --iters 10
-OPTIMIZE_METRIC=calmar .venv/Scripts/python.exe loop.py --iters 10
+uv run python loop.py --iters 10
+OPTIMIZE_METRIC=calmar uv run python loop.py --iters 10
 ```
 
 Avoid running locally at **03:00 PDT** when GitHub Actions pushes to `dev`.
@@ -90,9 +94,9 @@ the third holdout, consumed only by `promote.py` before paper trading.
 | `lockbox` | 2025 → present | 2025 → present | promote.py only — blind to loop |
 
 ```bash
-.venv/Scripts/python.exe backtest.py --window train+val   # loop's default
-.venv/Scripts/python.exe backtest.py --window lockbox     # manual peek
-.venv/Scripts/python.exe promote.py                       # one-shot gate
+uv run python backtest.py --window train+val   # loop's default
+uv run python backtest.py --window lockbox     # manual peek
+uv run python promote.py                       # one-shot gate
 ```
 
 ## GitHub Actions
@@ -112,8 +116,8 @@ Runs against **frozen** strategies on `main` (checkout `main` locally or let CI 
 
 ```bash
 git checkout main
-.venv/Scripts/python.exe live_trade.py --dry --symbols SPY --asset stock
-.venv/Scripts/python.exe live_trade.py --asset stock
+uv run python live_trade.py --dry --symbols SPY --asset stock
+uv run python live_trade.py --asset stock
 ```
 
 See `.env.example` for `PAPER_*` variables.

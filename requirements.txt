@@ -1,4 +1,4 @@
-# Core trading / data / loop (see README "First-time setup")
+# Core trading / data / loop — install with: uv pip install -r requirements.txt
 alpaca-py
 backtesting
 ccxt

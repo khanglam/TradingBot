@@ -1,7 +1,7 @@
 """TradingBot dashboard.
 
 Run:
-    .venv/Scripts/python.exe app.py
+    uv run python app.py
 Then open http://127.0.0.1:8000
 
 Two files, no build step:
@@ -1270,7 +1270,7 @@ def alpaca_positions() -> dict:
     try:
         from alpaca.trading.client import TradingClient
     except ImportError:
-        return {"error": "alpaca-py not installed (pip install alpaca-py)"}
+        return {"error": "alpaca-py not installed (uv pip install alpaca-py)"}
     try:
         client = TradingClient(api_key, api_secret, paper=paper)
         account = client.get_account()
